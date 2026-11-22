@@ -15,9 +15,12 @@ public sealed class OwnerMembershipConsumer : IIntegrationEventConsumer
     {
         ArgumentNullException.ThrowIfNull(integrationEvent);
         await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
-            "INSERT INTO iam.tenant_membership (tenant_id, user_id, roles) VALUES (core.current_tenant(), $1, '{TenantOwner}') " +
-            "ON CONFLICT (tenant_id, user_id) DO NOTHING");
+            "WITH m AS (INSERT INTO iam.tenant_membership (tenant_id, user_id) VALUES (core.current_tenant(), $1) " +
+            "ON CONFLICT (tenant_id, user_id) DO NOTHING RETURNING user_id) " +
+            "INSERT INTO iam.role_assignment (tenant_id, id, user_id, role, scope_type) " +
+            "SELECT core.current_tenant(), $2, user_id, 'TenantOwner', 'Tenant' FROM m");
         cmd.Parameters.Add(new NpgsqlParameter { Value = integrationEvent.Payload.GetProperty("ownerUserId").GetGuid() });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = Guid.CreateVersion7() });
         await cmd.ExecuteNonQueryAsync(cancellationToken);
     }
 }

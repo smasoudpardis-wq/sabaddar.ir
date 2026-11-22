@@ -297,7 +297,8 @@ INSERT INTO iam.merchant_user (id, idp_issuer, idp_subject, display_name) VALUES
   ('e0000000-0000-0000-0000-000000000001', 'https://kc/realms/merchant', 'sub-owner', 'مالک'),
   ('e0000000-0000-0000-0000-000000000002', 'https://kc/realms/merchant', 'sub-other', 'دیگری');
 SELECT set_config('app.tenant_id', :A, false);
-INSERT INTO iam.tenant_membership (tenant_id, user_id, roles) VALUES (:A, 'e0000000-0000-0000-0000-000000000001', '{TenantOwner}');
+INSERT INTO iam.tenant_membership (tenant_id, user_id) VALUES (:A, 'e0000000-0000-0000-0000-000000000001');
+INSERT INTO iam.role_assignment (tenant_id, id, user_id, role, scope_type) VALUES (:A, gen_random_uuid(), 'e0000000-0000-0000-0000-000000000001', 'TenantOwner', 'Tenant');
 SELECT set_config('app.tenant_id', :B, false);
 INSERT INTO iam.tenant_membership (tenant_id, user_id) VALUES (:B, 'e0000000-0000-0000-0000-000000000001'),
                                                          (:B, 'e0000000-0000-0000-0000-000000000002');
@@ -306,9 +307,9 @@ SELECT set_config('app.tenant_id', '', false);
 SELECT set_config('app.user_id', 'e0000000-0000-0000-0000-000000000001', false);
 SELECT t.ok('T80 my_memberships returns the caller''s active memberships across tenants (A and B)',
   (SELECT count(*) FROM iam.my_memberships()) = 2);
-SELECT t.ok('T85 my_memberships returns the roles of each membership (US-022 decides MFA from them)',
-  (SELECT roles FROM iam.my_memberships() WHERE tenant_id = :A) = '{TenantOwner}'
-  AND (SELECT roles FROM iam.my_memberships() WHERE tenant_id = :B) = '{}');
+SELECT t.ok('T85 my_memberships returns each membership''s role assignments with scope (US-022/025)',
+  (SELECT assignments FROM iam.my_memberships() WHERE tenant_id = :A) = '[{"role":"TenantOwner","scopeType":"Tenant","scopeId":null}]'::jsonb
+  AND (SELECT assignments FROM iam.my_memberships() WHERE tenant_id = :B) = '[]'::jsonb);
 SELECT t.ok('T81 without a tenant context the membership table itself stays hidden (RLS)',
   (SELECT count(*) FROM iam.tenant_membership) = 0);
 SELECT set_config('app.user_id', 'e0000000-0000-0000-0000-000000000002', false);
@@ -319,8 +320,23 @@ SELECT t.ok('T83 no user context returns nothing', (SELECT count(*) FROM iam.my_
 SELECT set_config('app.tenant_id', :A, false);
 SELECT t.expect_error('T84 a membership cannot be written for another tenant', '42501',
   format($$INSERT INTO iam.tenant_membership (tenant_id, user_id) VALUES (%L, 'e0000000-0000-0000-0000-000000000002')$$, :B));
+SELECT set_config('app.tenant_id', :A, false);
 SELECT t.expect_error('T86 an unknown role is rejected', '23514',
-  $$UPDATE iam.tenant_membership SET roles = '{SuperUser}' WHERE user_id = 'e0000000-0000-0000-0000-000000000001'$$);
+  format($$INSERT INTO iam.role_assignment (tenant_id, id, user_id, role, scope_type) VALUES (%L, gen_random_uuid(), 'e0000000-0000-0000-0000-000000000001', 'SuperUser', 'Tenant')$$, :A));
+SELECT t.expect_error('T97 tenant-wide roles cannot be narrowed to a branch', '23514',
+  format($$INSERT INTO iam.role_assignment (tenant_id, id, user_id, role, scope_type, scope_id) VALUES (%L, gen_random_uuid(), 'e0000000-0000-0000-0000-000000000001', 'Accountant', 'Branch', 'a0000000-0000-0000-0000-000000000001')$$, :A));
+SELECT t.expect_error('T98 the last TenantOwner cannot be removed', 'RC010',
+  $$DELETE FROM iam.role_assignment WHERE role = 'TenantOwner'$$);
+SELECT t.expect_error('T99 role assignments are immutable (remove and re-add)', 'RC001',
+  $$UPDATE iam.role_assignment SET scope_type = 'Tenant'$$);
+INSERT INTO iam.invitation (tenant_id, id, token_hash, display_name, assignments, invited_by, expires_at)
+  VALUES (:A, gen_random_uuid(), sha256('secret-token'), 'صندوق‌دار', '[{"role":"Cashier","scopeType":"Branch","scopeId":"a0000000-0000-0000-0000-000000000001"}]', 'e0000000-0000-0000-0000-000000000001', now() + interval '7 days'),
+         (:A, gen_random_uuid(), sha256('expired-token'), 'قدیمی', '[{"role":"Cashier","scopeType":"Tenant","scopeId":null}]', 'e0000000-0000-0000-0000-000000000001', now() - interval '1 minute');
+SELECT set_config('app.tenant_id', '', false);
+SELECT t.ok('T100 invitation_tenant finds a pending invitation only by its token hash, never an expired one',
+  iam.invitation_tenant(sha256('secret-token')) = :A::uuid AND iam.invitation_tenant(sha256('expired-token')) IS NULL
+  AND iam.invitation_tenant(sha256('guess')) IS NULL);
+SELECT t.ok('T101 invitations are invisible without the tenant context (RLS)', (SELECT count(*) FROM iam.invitation) = 0);
 -- US-006 idempotency registry (core)
 SELECT set_config('app.tenant_id', :A, false);
 INSERT INTO core.idempotency_record (tenant_id, key, operation, payload_hash, status)

@@ -128,7 +128,7 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
-      x-permission: tenant.member
+      x-permission: authenticated
       x-idempotent: true
       x-requirements:
       - TEN-001
@@ -626,7 +626,7 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
-      x-permission: tenant.member
+      x-permission: authenticated
       x-idempotent: false
       x-requirements:
       - IAM-001
@@ -663,7 +663,7 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
-      x-permission: tenant.member
+      x-permission: authenticated
       x-idempotent: false
       x-requirements:
       - IAM-001
@@ -721,6 +721,9 @@ paths:
       tags:
       - Access
       summary: دعوت کاربر با نقش و Scope
+      description: 'Each requested role must be assignable by the caller at that scope: the caller manages users there and
+        holds every permission of the role over the same reach (anti-escalation, D06 §6); otherwise 403 forbidden. inviteToken
+        is returned once; share it as a link until SMS/e-mail delivery exists (X-03).'
       security: *id001
       requestBody:
         required: true
@@ -734,15 +737,13 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/User'
+                $ref: '#/components/schemas/Invitation'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '409':
-          $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Unprocessable'
         '429':
@@ -755,6 +756,48 @@ paths:
                 $ref: '#/components/schemas/Problem'
       x-permission: iam.users.manage
       x-scope: Branch
+      x-idempotent: false
+      x-requirements:
+      - IAM-001
+      - IAM-006
+      x-audited: true
+  /invitations/{token}/accept:
+    post:
+      operationId: acceptInvitation
+      tags:
+      - Access
+      summary: پذیرش دعوت (یک‌بار مصرف، ۷ روز)
+      description: Callable by any valid identity holding the link, also before it is a RetailCloud user (the user is created).
+        Unknown, used, revoked or expired tokens all answer 404.
+      security: *id001
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvitationAccepted'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: authenticated
       x-idempotent: false
       x-requirements:
       - IAM-001
@@ -9318,6 +9361,54 @@ components:
       - name
       - scopes
       - expiresAt
+    Invitation:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        displayName:
+          type: string
+        status:
+          type: string
+          enum:
+          - Pending
+          - Accepted
+          - Revoked
+        expiresAt:
+          type: string
+          format: date-time
+        roleAssignments:
+          type: array
+          items:
+            $ref: '#/components/schemas/RoleGrant'
+        inviteToken:
+          type: string
+          description: Only in the creation response
+      required:
+      - id
+      - displayName
+      - status
+      - expiresAt
+      - roleAssignments
+    InvitationAccepted:
+      type: object
+      additionalProperties: false
+      properties:
+        tenantId:
+          type: string
+          format: uuid
+        tenantName:
+          type: string
+        roles:
+          type: array
+          items:
+            type: string
+      required:
+      - tenantId
+      - tenantName
+      - roles
     InvitationCreate:
       type: object
       additionalProperties: false
@@ -10678,6 +10769,28 @@ components:
       required:
       - roleId
       - scopeType
+    RoleGrant:
+      type: object
+      additionalProperties: false
+      properties:
+        role:
+          type: string
+        scopeType:
+          type: string
+          enum:
+          - Tenant
+          - Branch
+          - Warehouse
+          - Register
+        scopeId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+      required:
+      - role
+      - scopeType
+      - scopeId
     Sale:
       type: object
       additionalProperties: false
@@ -12381,3 +12494,12 @@ x-error-catalog:
   internal:
     status: 500
     meaning: Unexpected error; details only in logs, correlate with traceId (SEC-T-016)
+  forbidden:
+    status: 403
+    meaning: The caller's roles do not grant the permission at this scope (IAM-006, D06 §6.1)
+  duplicate-assignment:
+    status: 409
+    meaning: The user already has this role at this scope
+  last-owner:
+    status: 409
+    meaning: A tenant must keep at least one TenantOwner

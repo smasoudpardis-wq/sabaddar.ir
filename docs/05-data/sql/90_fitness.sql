@@ -50,6 +50,8 @@ WHERE EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rc_tenant_directory')
   AND (n.nspname || '.' || c.relname, a.attname::text) NOT IN (VALUES
         ('platform.tenant','id'), ('platform.tenant','status'), ('platform.tenant','legal_name'),
         ('iam.tenant_membership','tenant_id'), ('iam.tenant_membership','user_id'), ('iam.tenant_membership','status'),
-        ('iam.tenant_membership','roles'),
+        ('iam.role_assignment','tenant_id'), ('iam.role_assignment','user_id'), ('iam.role_assignment','role'),
+        ('iam.role_assignment','scope_type'), ('iam.role_assignment','scope_id'),
+        ('iam.invitation','tenant_id'), ('iam.invitation','token_hash'), ('iam.invitation','status'), ('iam.invitation','expires_at'),
         ('core.outbox','tenant_id'), ('core.outbox','published_at'), ('core.outbox','dead_at'), ('core.outbox','next_attempt_at'),
         ('core.outbox','producer'), ('core.outbox','occurred_at'));

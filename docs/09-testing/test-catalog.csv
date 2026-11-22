@@ -269,7 +269,7 @@ T81,D05,without a tenant context the membership table itself stays hidden (RLS),
 T82,D05,suspended membership is not returned; other users,P0,T,"DB-Integration (automated, passing)",E,,automated
 T83,D05,no user context returns nothing,P0,T,"DB-Integration (automated, passing)",E,,automated
 T84,D05,a membership cannot be written for another tenant,P0,T,"DB-Integration (automated, passing)",E,,automated
-T85,D05,my_memberships returns the roles of each membership (US-022 decides MFA from them),P0,T,"DB-Integration (automated, passing)",E,,automated
+T85,D05,my_memberships returns each membership,P0,T,"DB-Integration (automated, passing)",E,,automated
 T86,D05,an unknown role is rejected,P0,T,"DB-Integration (automated, passing)",E,,automated
 T87,D05,the same key is independent per tenant and invisible to other tenants,P0,T,"DB-Integration (automated, passing)",E,,automated
 T88,D05,a malformed key is rejected,P0,T,"DB-Integration (automated, passing)",E,,automated
@@ -281,3 +281,6 @@ T93,D05,the application cannot write the inbox (consumers run in Workers),P0,T,"
 T94,D05,without a tenant context the worker sees no outbox rows (TM-042),P0,T,"DB-Integration (automated, passing)",E,,automated
 T95,D05,outbox_due_tenants lists only tenant ids with due messages,P0,T,"DB-Integration (automated, passing)",E,,automated
 T96,D05,with the tenant context the worker sees that tenant,P0,T,"DB-Integration (automated, passing)",E,,automated
+T97,D05,tenant-wide roles cannot be narrowed to a branch,P0,T,"DB-Integration (automated, passing)",E,,automated
+T98,D05,the last TenantOwner cannot be removed,P0,T,"DB-Integration (automated, passing)",E,,automated
+T99,D05,role assignments are immutable (remove and re-add),P0,T,"DB-Integration (automated, passing)",E,,automated

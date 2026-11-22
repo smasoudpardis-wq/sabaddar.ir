@@ -16,6 +16,13 @@ public sealed class RequestContextMiddleware(RequestDelegate next)
     public const string TenantHeader = "X-RC-Tenant";
     private static readonly TimeSpan MembershipCacheTtl = TimeSpan.FromSeconds(30); // IAM-009: revocation visible ≤ 60 s
 
+    /// <summary>Makes membership/role changes visible to the next request of that user on this instance.</summary>
+    public static void ForgetMemberships(IMemoryCache cache, UserId user)
+    {
+        ArgumentNullException.ThrowIfNull(cache);
+        cache.Remove($"memberships:{user.Value}");
+    }
+
     public async Task InvokeAsync(HttpContext http, RequestContext context, IUserDirectory directory, IMemoryCache cache)
     {
         if (http.User.Identity?.IsAuthenticated != true)

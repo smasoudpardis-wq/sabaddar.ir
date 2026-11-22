@@ -42,7 +42,9 @@ public sealed class MfaTests : IClassFixture<ApiFactory>, IAsyncLifetime
             await uow.ExecuteAsync(new FixedTenantContext(new TenantId(t)), async (s, ct) =>
             {
                 await Exec(s, ct, "INSERT INTO platform.tenant (id, legal_name, industry_code) VALUES ($1, $2, 'supermarket')", t, role);
-                return await Exec(s, ct, "INSERT INTO iam.tenant_membership (tenant_id, user_id, roles) VALUES ($1, $2, $3)", t, user, new[] { role });
+                await Exec(s, ct, "INSERT INTO iam.tenant_membership (tenant_id, user_id) VALUES ($1, $2)", t, user);
+                return await Exec(s, ct, "INSERT INTO iam.role_assignment (tenant_id, id, user_id, role, scope_type) VALUES ($1, $2, $3, $4, 'Tenant')",
+                    t, Guid.CreateVersion7(), user, role);
             });
         }
     }

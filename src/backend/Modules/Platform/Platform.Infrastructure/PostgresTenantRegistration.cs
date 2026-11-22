@@ -69,3 +69,27 @@ public sealed class BranchAndRegisterSetupStep : ITenantSetupStep
         return (bool)(await cmd.ExecuteScalarAsync(cancellationToken))!;
     }
 }
+
+public sealed class BranchScopeLookup : IScopeLookup
+{
+    public ScopeType Type => ScopeType.Branch;
+
+    public async Task<Guid?> BranchOfAsync(IUnitOfWorkScope scope, Guid id, CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command("SELECT id FROM platform.branch WHERE id = $1");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = id });
+        return await cmd.ExecuteScalarAsync(cancellationToken) as Guid?;
+    }
+}
+
+public sealed class RegisterScopeLookup : IScopeLookup
+{
+    public ScopeType Type => ScopeType.Register;
+
+    public async Task<Guid?> BranchOfAsync(IUnitOfWorkScope scope, Guid id, CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command("SELECT branch_id FROM platform.register WHERE id = $1");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = id });
+        return await cmd.ExecuteScalarAsync(cancellationToken) as Guid?;
+    }
+}

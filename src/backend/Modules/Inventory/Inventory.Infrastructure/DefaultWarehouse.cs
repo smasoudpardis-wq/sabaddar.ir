@@ -33,3 +33,15 @@ public sealed class WarehouseSetupStep : ITenantSetupStep
         return (bool)(await cmd.ExecuteScalarAsync(cancellationToken))!;
     }
 }
+
+public sealed class WarehouseScopeLookup : IScopeLookup
+{
+    public ScopeType Type => ScopeType.Warehouse;
+
+    public async Task<Guid?> BranchOfAsync(IUnitOfWorkScope scope, Guid id, CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command("SELECT branch_id FROM inv.warehouse WHERE id = $1");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = id });
+        return await cmd.ExecuteScalarAsync(cancellationToken) as Guid?;
+    }
+}

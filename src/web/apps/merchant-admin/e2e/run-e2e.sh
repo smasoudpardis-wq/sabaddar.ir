@@ -28,15 +28,19 @@ done
 T1=0194f000-0000-7000-8000-0000000000a1; T2=0194f000-0000-7000-8000-0000000000a2; TF=0194f000-0000-7000-8000-0000000000af
 U=0194f000-0000-7000-8000-0000000000b1
 psql -v ON_ERROR_STOP=1 -q -d "$DB" <<SQL
+DELETE FROM iam.role_assignment WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM iam.tenant_membership WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM iam.merchant_user WHERE id = '$U' OR (idp_issuer = '$ISSUER' AND idp_subject = '$SUB');
 DELETE FROM platform.tenant WHERE id IN ('$T1','$T2','$TF');
+DELETE FROM iam.role_assignment WHERE user_id IN (SELECT id FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$NEW_SUB');
 DELETE FROM iam.tenant_membership WHERE user_id IN (SELECT id FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$NEW_SUB');
 DELETE FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$NEW_SUB';
 INSERT INTO platform.tenant (id, legal_name, industry_code) VALUES
   ('$T1','فروشگاه الف','supermarket'), ('$T2','فروشگاه ب','supermarket'), ('$TF','فروشگاه غریبه','supermarket');
 INSERT INTO iam.merchant_user (id, idp_issuer, idp_subject, display_name) VALUES ('$U','$ISSUER','$SUB','مالک آزمایشی');
-INSERT INTO iam.tenant_membership (tenant_id, user_id, roles) VALUES ('$T1','$U','{TenantOwner}'), ('$T2','$U','{Cashier}');
+INSERT INTO iam.tenant_membership (tenant_id, user_id) VALUES ('$T1','$U'), ('$T2','$U');
+INSERT INTO iam.role_assignment (tenant_id, id, user_id, role, scope_type) VALUES
+  ('$T1', gen_random_uuid(), '$U', 'TenantOwner', 'Tenant'), ('$T2', gen_random_uuid(), '$U', 'Cashier', 'Tenant');
 SQL
 
 # 3. API, and the BFF with the Valkey session store. setsid: each server gets its own process group so the whole tree

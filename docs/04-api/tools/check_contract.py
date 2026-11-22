@@ -12,7 +12,7 @@ root = pathlib.Path(__file__).resolve().parents[2]
 spec = yaml.safe_load((root / "04-api/D07-API-OpenAPI.yaml").read_text(encoding="utf-8"))
 d06 = (root / "03-security/D06-Security-Threat-Model.md").read_text(encoding="utf-8")
 matrix = d06.split("### 6.2")[1].split("### 6.3")[0]
-known = set(re.findall(r"^\| `([a-z.]+)` \|", matrix, re.M)) | {"tenant.member"}
+known = set(re.findall(r"^\| `([a-z.]+)` \|", matrix, re.M)) | {"tenant.member", "authenticated"}
 MUST_BE_IDEMPOTENT = {"finalizeSale", "recordTender", "createReturn", "postGoodsReceipt", "postAdjustment",
                       "postTransfer", "confirmCount", "createPaymentIntent", "recordCollection", "postJournal",
                       "reverseJournal", "writeOff", "completeRefundManually", "paySupplier", "postPurchaseReturn",

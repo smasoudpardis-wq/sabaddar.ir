@@ -39,8 +39,11 @@ public interface IUnitOfWorkScope
     TenantId? TenantId { get; }
 }
 
-/// <summary>A tenant the current user is an active member of, with the user's roles there (D02 §2).</summary>
-public sealed record MembershipInfo(TenantId TenantId, string TenantName, IReadOnlyList<string> Roles);
+/// <summary>A tenant the current user is an active member of, with the user's role assignments there (D06 §6).</summary>
+public sealed record MembershipInfo(TenantId TenantId, string TenantName, IReadOnlyList<RoleGrant> Assignments)
+{
+    public IReadOnlyList<string> Roles => [.. Assignments.Select(a => a.Role).Distinct()];
+}
 
 /// <summary>Port implemented by IdentityAccess: maps a validated IdP identity to an internal user (ADR-003).</summary>
 public interface IUserDirectory
@@ -138,4 +141,16 @@ public interface IIntegrationEventConsumer
     bool CanHandle(string eventType, int eventVersion);
 
     Task HandleAsync(IUnitOfWorkScope scope, IntegrationEvent integrationEvent, CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// Resolves a branch/warehouse/register id of the active tenant (RLS) to a <see cref="ScopeRef"/> with its branch, or
+/// null if it does not exist there. One implementation per owning module (Platform: branch, register; Inventory: warehouse).
+/// </summary>
+public interface IScopeLookup
+{
+    ScopeType Type { get; }
+
+    /// <summary>The branch the object belongs to (for a branch: itself), or null if unknown in this tenant.</summary>
+    Task<Guid?> BranchOfAsync(IUnitOfWorkScope scope, Guid id, CancellationToken cancellationToken);
 }

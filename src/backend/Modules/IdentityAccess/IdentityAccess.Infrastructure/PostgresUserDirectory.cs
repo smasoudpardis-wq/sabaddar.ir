@@ -43,14 +43,23 @@ public sealed class PostgresUserDirectory(IUnitOfWork unitOfWork) : IUserDirecto
     public Task<IReadOnlyList<MembershipInfo>> ActiveMembershipsAsync(UserId user, CancellationToken cancellationToken) =>
         unitOfWork.ExecuteWithoutTenantAsync<IReadOnlyList<MembershipInfo>>(user, async (s, ct) =>
         {
-            await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)s).Command("SELECT tenant_id, tenant_name, roles FROM iam.my_memberships()");
+            await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)s).Command("SELECT tenant_id, tenant_name, assignments::text FROM iam.my_memberships()");
             await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct);
             var list = new List<MembershipInfo>();
             while (await r.ReadAsync(ct))
             {
-                list.Add(new MembershipInfo(new TenantId(r.GetGuid(0)), r.GetString(1), r.GetFieldValue<string[]>(2)));
+                list.Add(new MembershipInfo(new TenantId(r.GetGuid(0)), r.GetString(1), ParseAssignments(r.GetString(2))));
             }
 
             return list;
         }, cancellationToken);
+
+    private static RoleGrant[] ParseAssignments(string json)
+    {
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        return [.. doc.RootElement.EnumerateArray().Select(a => new RoleGrant(
+            a.GetProperty("role").GetString()!,
+            Enum.Parse<ScopeType>(a.GetProperty("scopeType").GetString()!),
+            a.GetProperty("scopeId").ValueKind == System.Text.Json.JsonValueKind.Null ? null : a.GetProperty("scopeId").GetGuid()))];
+    }
 }

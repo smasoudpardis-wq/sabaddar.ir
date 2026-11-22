@@ -1,0 +1,78 @@
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
+using RetailCloud.BuildingBlocks.Application;
+
+namespace RetailCloud.BuildingBlocks.Api;
+
+/// <summary>
+/// IAM-006 / AT-015: the explicit policy of an endpoint — a permission of D02 §3.2, or the pseudo-permissions
+/// <see cref="Permissions.TenantMember"/> / <see cref="Permissions.Authenticated"/>. It must equal the operation's
+/// <c>x-permission</c> in D07 (checked by a test). An endpoint without it is denied at runtime (<see cref="DefaultDenyFilter"/>).
+/// </summary>
+[AttributeUsage(AttributeTargets.Method | AttributeTargets.Class)]
+public sealed class EndpointPolicyAttribute(string permission) : Attribute
+{
+    public string Permission { get; } = permission;
+}
+
+public static class EndpointPolicies
+{
+    /// <summary>Requires an active tenant and a role granting <paramref name="permission"/> somewhere in it. Resource
+    /// scope (which branch/warehouse/register) is checked by the handler with <see cref="AccessPolicy.Allows"/>.</summary>
+    public static TBuilder RequirePermission<TBuilder>(this TBuilder builder, string permission) where TBuilder : IEndpointConventionBuilder
+    {
+        if (!Permissions.All.Contains(permission))
+        {
+            throw new ArgumentException($"Unknown permission '{permission}'", nameof(permission));
+        }
+
+        builder.WithMetadata(new EndpointPolicyAttribute(permission));
+        builder.AddEndpointFilter(new RequirePermissionFilter(permission));
+        return builder;
+    }
+
+    public static TBuilder RequireTenantMember<TBuilder>(this TBuilder builder) where TBuilder : IEndpointConventionBuilder
+    {
+        builder.WithMetadata(new EndpointPolicyAttribute(Permissions.TenantMember));
+        builder.AddEndpointFilter(new RequireActiveTenantFilter());
+        return builder;
+    }
+
+    /// <summary>Any validated identity: the endpoint itself must not reveal tenant data (e.g. /me, sign-up).</summary>
+    public static TBuilder AllowAnyAuthenticated<TBuilder>(this TBuilder builder) where TBuilder : IEndpointConventionBuilder =>
+        builder.WithMetadata(new EndpointPolicyAttribute(Permissions.Authenticated));
+
+    internal static IResult Forbidden(HttpContext http) =>
+        Problems.Create(http, StatusCodes.Status403Forbidden, "forbidden", "Your role does not allow this operation");
+}
+
+internal sealed class RequirePermissionFilter(string permission) : IEndpointFilter
+{
+    public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
+    {
+        HttpContext http = context.HttpContext;
+        RequestContext ctx = http.RequestServices.GetRequiredService<RequestContext>();
+        if (ctx.ActiveMembership is null)
+        {
+            return Problems.Create(http, StatusCodes.Status403Forbidden, "tenant-not-selected", "Select an active tenant first");
+        }
+
+        return AccessPolicy.HasAnywhere(ctx.ActiveMembership.Assignments, permission)
+            ? await next(context)
+            : EndpointPolicies.Forbidden(http);
+    }
+}
+
+/// <summary>Group filter on /api/v1: any endpoint that forgot to declare a policy is refused (Default Deny, IAM-006).</summary>
+public sealed class DefaultDenyFilter : IEndpointFilter
+{
+    public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(next);
+        return context.HttpContext.GetEndpoint()?.Metadata.GetMetadata<EndpointPolicyAttribute>() is null
+            ? EndpointPolicies.Forbidden(context.HttpContext)
+            : await next(context);
+    }
+}

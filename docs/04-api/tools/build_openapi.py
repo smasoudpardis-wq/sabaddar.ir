@@ -9,6 +9,7 @@ the security test generator (SEC-T-010/011/012, D06 §12) rely on the x-* extens
 Usage:  python3 docs/04-api/tools/build_openapi.py        (writes the YAML next to this folder)
 Edit THIS file, not the YAML.
 """
+import json
 import pathlib
 import yaml
 
@@ -151,6 +152,10 @@ schema("InvitationCreate", **{"email?": "str", "mobile?": "str"}, displayName="s
        roleAssignments=["#RoleAssignmentInput"])
 schema("RoleAssignmentInput", roleId="uuid", scopeType=("enum", ["Tenant", "Branch", "Warehouse", "Register"]), **{"scopeId?": "uuid"})
 schema("RoleAssignment", id="uuid", roleId="uuid", roleName="str", scopeType="str", scopeId="uuid?")
+schema("RoleGrant", role="str", scopeType=("enum", ["Tenant", "Branch", "Warehouse", "Register"]), scopeId="uuid?")
+schema("Invitation", id="uuid", displayName="str", status=("enum", ["Pending", "Accepted", "Revoked"]), expiresAt="dt",
+       roleAssignments=["#RoleGrant"], **{"inviteToken?": ("desc", "str", "Only in the creation response")})
+schema("InvitationAccepted", tenantId="uuid", tenantName="str", roles=["str"])
 schema("User", id="uuid", displayName="str", status=("enum", ["Invited", "Active", "Disabled"]),
        roleAssignments=["#RoleAssignment"], lastLoginAt="dt?")
 schema("UserUpdate", expectedVersion="int", **{"status?": ("enum", ["Active", "Disabled"]), "displayName?": "str"})
@@ -497,6 +502,9 @@ ERROR_CATALOG = {
     "idempotency-key-required": (400, "Missing or malformed Idempotency-Key on an operation of BR-030"),
     "validation": (400, "Malformed request body or parameters; context.errors[]"),
     "internal": (500, "Unexpected error; details only in logs, correlate with traceId (SEC-T-016)"),
+    "forbidden": (403, "The caller's roles do not grant the permission at this scope (IAM-006, D06 §6.1)"),
+    "duplicate-assignment": (409, "The user already has this role at this scope"),
+    "last-owner": (409, "A tenant must keep at least one TenantOwner"),
 }
 
 # ----------------------------------------------------------------------------- operations
@@ -610,7 +618,7 @@ def ex(summary, value):
 
 # ---------------- Platform & tenant
 tag("Tenant", "ثبت‌نام، تنظیمات، شعب، صندوق و دستگاه (TEN)")
-op("post", "/tenants", "registerTenant", "Tenant", "ثبت‌نام کسب‌وکار (Owner باید MFA فعال کرده باشد)", body="TenantRegistration",
+op("post", "/tenants", "registerTenant", "Tenant", "ثبت‌نام کسب‌وکار (Owner باید MFA فعال کرده باشد)", perm="authenticated", body="TenantRegistration",
    resp="Tenant", resp_code="201", reqs=["TEN-001", "TEN-001.1"], audited=True, conflict=True, idem=True,
    desc="Callable by a valid identity that is not yet a RetailCloud user (self-service sign-up, UC-10); requires acr=mfa "
         "(403 mfa-required). The tenant id is derived from the caller identity and the Idempotency-Key, so a retry or "
@@ -641,12 +649,19 @@ op("get", "/exports/{exportId}", "getExport", "Tenant", "وضعیت Export و ل
 
 # ---------------- IAM
 tag("Access", "کاربران، نقش‌ها، Approval و دسترسی پشتیبانی (IAM)")
-op("get", "/me", "getMe", "Access", "کاربر جاری، عضویت‌ها و مجوزهای مؤثر", resp="Me", reqs=["IAM-001", "IAM-006"])
+op("get", "/me", "getMe", "Access", "کاربر جاری، عضویت‌ها و مجوزهای مؤثر", perm="authenticated", resp="Me", reqs=["IAM-001", "IAM-006"])
 op("post", "/me/active-tenant", "selectActiveTenant", "Access", "انتخاب Tenant فعال (BFF Session را بازسازی می‌کند)",
-   body="ActiveTenantSelect", no_content=True, reqs=["IAM-001", "BR-001"], audited=True)
+   perm="authenticated", body="ActiveTenantSelect", no_content=True, reqs=["IAM-001", "BR-001"], audited=True)
 op("get", "/users", "listUsers", "Access", "کاربران Tenant", perm="iam.users.manage", scope="Branch", resp="User", list_of=True, page=True, reqs=["IAM-001", "IAM-006"])
 op("post", "/users/invitations", "inviteUser", "Access", "دعوت کاربر با نقش و Scope", perm="iam.users.manage", scope="Branch",
-   body="InvitationCreate", resp="User", resp_code="201", reqs=["IAM-001"], audited=True, conflict=True)
+   body="InvitationCreate", resp="Invitation", resp_code="201", reqs=["IAM-001", "IAM-006"], audited=True,
+   desc="Each requested role must be assignable by the caller at that scope: the caller manages users there and holds "
+        "every permission of the role over the same reach (anti-escalation, D06 §6); otherwise 403 forbidden. "
+        "inviteToken is returned once; share it as a link until SMS/e-mail delivery exists (X-03).")
+op("post", "/invitations/{token}/accept", "acceptInvitation", "Access", "پذیرش دعوت (یک‌بار مصرف، ۷ روز)", perm="authenticated",
+   resp="InvitationAccepted", reqs=["IAM-001"], audited=True,
+   desc="Callable by any valid identity holding the link, also before it is a RetailCloud user (the user is created). "
+        "Unknown, used, revoked or expired tokens all answer 404.")
 op("patch", "/users/{userId}", "updateUser", "Access", "فعال/غیرفعال‌سازی کاربر (ابطال Session در ≤ ۶۰s)",
    perm="iam.users.manage", scope="Branch", body="UserUpdate", resp="User", reqs=["IAM-009"], audited=True, conflict=True)
 op("post", "/users/{userId}/role-assignments", "addRoleAssignment", "Access", "تخصیص نقش", perm="iam.users.manage",
@@ -1130,5 +1145,9 @@ if __name__ == "__main__":
     header = ("# GENERATED FILE — do not edit by hand. Source: docs/04-api/tools/build_openapi.py\n"
               "# RetailCloud D07 — OpenAPI 3.1 (Draft 0.1.0)\n")
     OUT.write_text(header + yaml.safe_dump(spec, allow_unicode=True, sort_keys=False, width=120), encoding="utf-8")
+    # Manifest for the API's default-deny test (EndpointPolicyTests): operation -> method, path, permission.
+    manifest = [{"operationId": o["operationId"], "method": m.upper(), "path": p, "permission": o.get("x-permission")}
+                for p, item in spec["paths"].items() for m, o in item.items()]
+    (OUT.parent / "D07-operations.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     n_ops = sum(len(v) for v in PATHS.values())
     print(f"wrote {OUT} — {len(PATHS)} paths, {n_ops} operations, {len(SCHEMAS)} schemas")

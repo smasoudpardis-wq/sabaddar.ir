@@ -48,6 +48,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<RequestContext>();
         services.AddSingleton(TimeProvider.System);
         services.AddProblemDetails(o => o.CustomizeProblemDetails = ProblemDefaults.Customize);
+        services.ConfigureHttpJsonOptions(o => o.SerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter()));
         return services;
     }
 
