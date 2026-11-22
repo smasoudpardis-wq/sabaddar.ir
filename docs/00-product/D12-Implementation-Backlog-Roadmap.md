@@ -44,6 +44,8 @@ python3 docs/00-product/tools/build_backlog.py   # تولید CSV و جدول + 
 | 1 | US-007 محیط Dev (Compose) | 🟡 بخشی | `src/backend/dev/compose.yaml` (نحو معتبر؛ اجرا نشده). Mirrorها و Staging منتظر زیرساخت‌اند (X-07) |
 | 1 | SP-01 Keycloak | ✅ Done — ۱۷/۱۷ بررسی | ADR-003 «نتیجه Spike SP-01»؛ `src/backend/dev/keycloak/`؛ Job `identity` در CI. **یک تصمیم منتظر کارفرما:** ورود مشتری بیرون از Keycloak |
 | 1 | SP-04 مؤدیان | ⏳ باز | به دسترسی Sandbox وابسته است (X-01) |
+| 2 | US-003 UnitOfWork + Guard + حالت بدون Tenant | ✅ Done | `ExecuteWithoutTenantAsync` برای جست‌وجوی هویت پیش از انتخاب Tenant |
+| 2 | US-021 ورود از طریق BFF | 🟡 سمت API Done؛ BFF باقی است | `Hosts/RetailCloud.Api` + `BuildingBlocks.Api`: اعتبارسنجی JWT (aud، iss، انقضا، امضا)، نگاشت کاربر، انتخاب Tenant فقط با عضویت، 404 یکسان؛ Schema `iam` (15_iam.sql، T80–T84)؛ ۷ تست API با اثبات شکست روی دو باگ عمدی |
 
 ## 1. رویکرد تحویل
 

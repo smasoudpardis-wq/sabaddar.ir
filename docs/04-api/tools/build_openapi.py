@@ -125,7 +125,8 @@ schema("TenantRegistration", legalName="str", industryCode=("enum", ["supermarke
        firstBranchName="str")
 schema("Tenant", id="uuid", legalName="str", industryCode="str", timeZone="str", baseCurrency=("enum", ["IRR"]),
        pricingMode=("enum", ["TaxExclusive", "TaxInclusive"]),
-       status=("enum", ["Trial", "Active", "Suspended", "Closed"]), plan="str", trialEndsAt="dt?", version="int")
+       status=("enum", ["Trial", "Active", "Suspended", "Closed"]), version="int",
+       **{"plan?": ("desc", "str", "From Subscription (US-014); absent until then"), "trialEndsAt?": "dt?"})
 schema("TenantUpdate", expectedVersion="int", **{"legalName?": "str", "timeZone?": "str",
                                                   "pricingMode?": ("enum", ["TaxExclusive", "TaxInclusive"]),
                                                   "returnWindowDays?": "int", "negativeStockPolicy?": ("enum", ["Forbid", "AllowWithWarning"])})
@@ -487,6 +488,10 @@ ERROR_CATALOG = {
     "invalid-qr": (401, "Wrong audience/signature"),
     "otp-invalid": (422, "Wrong/expired OTP; attempts remaining in context"),
     "rate-limited": (429, "Generic rate limit"),
+    "not-found": (404, "Not found or belongs to another tenant — indistinguishable (BR-003, D-48)"),
+    "invalid-token": (401, "Token lacks required claims"),
+    "user-not-provisioned": (403, "Valid identity but no active RetailCloud user (IAM-001, IAM-009)"),
+    "tenant-not-selected": (403, "Tenant-scoped operation without an active tenant (BR-001)"),
 }
 
 # ----------------------------------------------------------------------------- operations
@@ -1098,7 +1103,7 @@ spec = {
             "merchantBearer": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT",
                                "description": "Keycloak realm `merchant`, aud `merchant-api`. Sent by the BFF only."},
             "customerBearer": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT",
-                               "description": "Realm `customer`, aud `customer-api`."},
+                               "description": "Issued by RetailCloud CustomerIdentity after OTP (not Keycloak, ADR-003 §6 as amended); iss retailcloud-customer, aud customer-api; held by the portal BFF only."},
             "platformBearer": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT",
                                "description": "Realm `platform`, aud `platform-api`; WebAuthn + IP allowlist (AUTH-13)."},
             "integrationKey": {"type": "apiKey", "in": "header", "name": "X-Api-Key",

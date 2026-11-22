@@ -290,4 +290,32 @@ SELECT set_config('app.tenant_id', :A, false);
 SELECT t.ok('T74 tampering detected at seq 2', audit.verify_chain() = 2);
 RESET ROLE;
 
+------------------------------------------------------------------ identity & access (IAM-001, BR-001)
+\echo '== identity & access'
+SET ROLE rc_app;
+INSERT INTO iam.merchant_user (id, idp_issuer, idp_subject, display_name) VALUES
+  ('e0000000-0000-0000-0000-000000000001', 'https://kc/realms/merchant', 'sub-owner', 'مالک'),
+  ('e0000000-0000-0000-0000-000000000002', 'https://kc/realms/merchant', 'sub-other', 'دیگری');
+SELECT set_config('app.tenant_id', :A, false);
+INSERT INTO iam.tenant_membership (tenant_id, user_id) VALUES (:A, 'e0000000-0000-0000-0000-000000000001');
+SELECT set_config('app.tenant_id', :B, false);
+INSERT INTO iam.tenant_membership (tenant_id, user_id) VALUES (:B, 'e0000000-0000-0000-0000-000000000001'),
+                                                         (:B, 'e0000000-0000-0000-0000-000000000002');
+UPDATE iam.tenant_membership SET status = 'Suspended' WHERE user_id = 'e0000000-0000-0000-0000-000000000002';
+SELECT set_config('app.tenant_id', '', false);
+SELECT set_config('app.user_id', 'e0000000-0000-0000-0000-000000000001', false);
+SELECT t.ok('T80 my_memberships returns the caller''s active memberships across tenants (A and B)',
+  (SELECT count(*) FROM iam.my_memberships()) = 2);
+SELECT t.ok('T81 without a tenant context the membership table itself stays hidden (RLS)',
+  (SELECT count(*) FROM iam.tenant_membership) = 0);
+SELECT set_config('app.user_id', 'e0000000-0000-0000-0000-000000000002', false);
+SELECT t.ok('T82 suspended membership is not returned; other users'' memberships never are',
+  (SELECT count(*) FROM iam.my_memberships()) = 0);
+SELECT set_config('app.user_id', '', false);
+SELECT t.ok('T83 no user context returns nothing', (SELECT count(*) FROM iam.my_memberships()) = 0);
+SELECT set_config('app.tenant_id', :A, false);
+SELECT t.expect_error('T84 a membership cannot be written for another tenant', '42501',
+  format($$INSERT INTO iam.tenant_membership (tenant_id, user_id) VALUES (%L, 'e0000000-0000-0000-0000-000000000002')$$, :B));
+RESET ROLE;
+
 \echo '== ALL CHECKS PASSED'

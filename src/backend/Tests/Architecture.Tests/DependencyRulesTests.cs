@@ -13,6 +13,19 @@ public class DependencyRulesTests
     private static readonly Assembly Application = typeof(IUnitOfWork).Assembly;
     private static readonly Assembly Infrastructure = typeof(PostgresUnitOfWork).Assembly;
 
+    // Module Application layers (one per module as they are added)
+    private static readonly Assembly[] ModuleApplications =
+    [
+        typeof(RetailCloud.IdentityAccess.Application.IdentityAccessModule).Assembly,
+        typeof(RetailCloud.Platform.Application.ITenantProfileQuery).Assembly,
+    ];
+
+    private static readonly Assembly[] ModuleInfrastructures =
+    [
+        typeof(RetailCloud.IdentityAccess.Infrastructure.PostgresUserDirectory).Assembly,
+        typeof(RetailCloud.Platform.Infrastructure.PostgresTenantProfileQuery).Assembly,
+    ];
+
     private static readonly string[] InfrastructureNamespaces =
     [
         "Microsoft.EntityFrameworkCore", "Npgsql", "Microsoft.AspNetCore", "System.Net.Http", "System.Data",
@@ -33,6 +46,26 @@ public class DependencyRulesTests
         AssertSuccess(Types.InAssembly(Application).ShouldNot()
             .HaveDependencyOnAny([.. InfrastructureNamespaces, "RetailCloud.BuildingBlocks.Infrastructure"])
             .GetResult(), "R2");
+
+    [Fact]
+    public void R2_module_application_layers_do_not_depend_on_infrastructure_or_web() =>
+        AssertSuccess(Types.InAssemblies(ModuleApplications).ShouldNot()
+            .HaveDependencyOnAny([.. InfrastructureNamespaces, "RetailCloud.BuildingBlocks.Infrastructure", "RetailCloud.BuildingBlocks.Api"])
+            .GetResult(), "R2 (modules)");
+
+    [Fact]
+    public void R3_modules_do_not_reference_each_others_infrastructure()
+    {
+        foreach (Assembly a in ModuleInfrastructures)
+        {
+            string own = a.GetName().Name!.Replace(".Infrastructure", "", StringComparison.Ordinal);
+            string[] others = ModuleInfrastructures.Concat(ModuleApplications)
+                .Select(x => x.GetName().Name!)
+                .Where(n => !n.StartsWith(own, StringComparison.Ordinal))
+                .ToArray();
+            AssertSuccess(Types.InAssembly(a).ShouldNot().HaveDependencyOnAny(others).GetResult(), $"R3 ({own})");
+        }
+    }
 
     [Fact]
     public void R8_application_and_domain_never_use_HttpClient() =>

@@ -11,6 +11,13 @@ BEGIN
     END IF;
   END LOOP;
 END $$;
+-- Tenant directory (D-37): the ONLY non-superuser BYPASSRLS role; owns two narrow SECURITY DEFINER functions
+-- (core.list_tenant_ids in 91_oracles.sql, iam.my_memberships in 15_iam.sql) and can read nothing else (fitness rule 5).
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rc_tenant_directory') THEN
+    CREATE ROLE rc_tenant_directory NOLOGIN BYPASSRLS;
+  END IF;
+END $$;
 -- Real login users (e.g. api_svc) are granted membership: GRANT rc_app TO api_svc;
 -- Login users are issued as short-lived dynamic credentials by OpenBao (D04 §3.3).
 
@@ -20,7 +27,7 @@ CREATE EXTENSION IF NOT EXISTS btree_gist;  -- exclusion constraints on (uuid, r
 DO $$
 DECLARE s text;
 BEGIN
-  FOREACH s IN ARRAY ARRAY['core','platform','merch','inv','sales','acc','ar','cid','tax','audit'] LOOP
+  FOREACH s IN ARRAY ARRAY['core','platform','iam','merch','inv','sales','acc','ar','cid','tax','audit'] LOOP
     EXECUTE format('CREATE SCHEMA IF NOT EXISTS %I AUTHORIZATION rc_migrator', s);
     EXECUTE format('REVOKE ALL ON SCHEMA %I FROM PUBLIC', s);
   END LOOP;

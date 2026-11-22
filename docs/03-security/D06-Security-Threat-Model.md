@@ -313,7 +313,7 @@ Decide(user, action, resource, context):
 | AUTH-09 | OTP مشتری | ۶ رقم؛ ۲ دقیقه؛ ۵ تلاش؛ HMAC ذخیره؛ Rate Limit (CUS-001)؛ ارسال فقط پس از CAPTCHA در صورت ریسک | AT-120، SEC-T-043 |
 | AUTH-10 | ابطال | غیرفعال‌سازی کاربر ← ابطال Sessionهای Keycloak و BFF و حذف Cache Membership در ≤ ۶۰s | AT-018 |
 | AUTH-11 | Step-up | ABAC-05 | SEC-T-080 |
-| AUTH-12 | Session مشتری | Realm `customer`؛ Session کوتاه (۳۰ دقیقه Idle)؛ بدون «مرا به خاطر بسپار» برای عملیات حساس (اتصال بله، تغییر شماره) | SEC-T-081 |
+| AUTH-12 | Session مشتری | صادرشده توسط CustomerIdentity پس از OTP (نه Keycloak؛ ADR-003 بند ۶)؛ Session مات در BFF پورتال؛ Token داخلی `aud=customer-api` ≤ ۱۰ دقیقه؛ Session کوتاه (۳۰ دقیقه Idle)؛ بدون «مرا به خاطر بسپار» برای عملیات حساس (اتصال بله، تغییر شماره) | SEC-T-081 |
 | AUTH-13 | Platform Admin | دامنه جدا، IP Allowlist، WebAuthn اجباری، Session ۳۰ دقیقه | SEC-T-082 |
 
 ---

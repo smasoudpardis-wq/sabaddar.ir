@@ -20,6 +20,6 @@
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
     <!-- test naming (underscores) and fixtures -->
-    <NoWarn>$(NoWarn);CA1707;CA1515;CA2007;CA1861;CA1859</NoWarn>
+    <NoWarn>$(NoWarn);CA1707;CA1515;CA2007;CA1861;CA1859;CA1068</NoWarn>
   </PropertyGroup>
 </Project>

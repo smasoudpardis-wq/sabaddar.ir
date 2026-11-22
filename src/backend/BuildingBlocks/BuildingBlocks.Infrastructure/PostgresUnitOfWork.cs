@@ -20,10 +20,20 @@ namespace RetailCloud.BuildingBlocks.Infrastructure;
 /// </summary>
 public sealed class PostgresUnitOfWork(NpgsqlDataSource dataSource) : IUnitOfWork
 {
-    public async Task<T> ExecuteAsync<T>(ITenantContext tenant, Func<IUnitOfWorkScope, CancellationToken, Task<T>> work,
+    public Task<T> ExecuteAsync<T>(ITenantContext tenant, Func<IUnitOfWorkScope, CancellationToken, Task<T>> work,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(tenant);
+        return RunAsync(tenant.TenantId, tenant.UserId, work, cancellationToken);
+    }
+
+    public Task<T> ExecuteWithoutTenantAsync<T>(UserId? user, Func<IUnitOfWorkScope, CancellationToken, Task<T>> work,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(null, user, work, cancellationToken);
+
+    private async Task<T> RunAsync<T>(TenantId? tenantId, UserId? userId, Func<IUnitOfWorkScope, CancellationToken, Task<T>> work,
+        CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(work);
 
         await using NpgsqlConnection connection = await dataSource.OpenConnectionAsync(cancellationToken);
@@ -34,12 +44,12 @@ public sealed class PostgresUnitOfWork(NpgsqlDataSource dataSource) : IUnitOfWor
                          "SELECT set_config('app.tenant_id', $1, true), set_config('app.user_id', $2, true)",
                          connection, transaction))
         {
-            set.Parameters.Add(new NpgsqlParameter { Value = tenant.TenantId.Value.ToString() });
-            set.Parameters.Add(new NpgsqlParameter { Value = tenant.UserId?.Value.ToString() ?? string.Empty });
+            set.Parameters.Add(new NpgsqlParameter { Value = tenantId?.Value.ToString() ?? string.Empty });
+            set.Parameters.Add(new NpgsqlParameter { Value = userId?.Value.ToString() ?? string.Empty });
             await set.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        var scope = new PostgresUnitOfWorkScope(tenant.TenantId, connection, transaction);
+        var scope = new PostgresUnitOfWorkScope(tenantId, connection, transaction);
         try
         {
             T result = await work(scope, cancellationToken);
@@ -64,14 +74,14 @@ public sealed class PostgresUnitOfWorkScope : IUnitOfWorkScope, IAsyncDisposable
 {
     private readonly List<DbContext> _contexts = [];
 
-    internal PostgresUnitOfWorkScope(TenantId tenantId, NpgsqlConnection connection, NpgsqlTransaction transaction)
+    internal PostgresUnitOfWorkScope(TenantId? tenantId, NpgsqlConnection connection, NpgsqlTransaction transaction)
     {
         TenantId = tenantId;
         Connection = connection;
         Transaction = transaction;
     }
 
-    public TenantId TenantId { get; }
+    public TenantId? TenantId { get; }
 
     public NpgsqlConnection Connection { get; }
 

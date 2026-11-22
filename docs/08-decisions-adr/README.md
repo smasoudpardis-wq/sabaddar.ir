@@ -7,7 +7,7 @@
 |---|---|---|
 | [ADR-001](ADR-001-modular-monolith.md) | Modular Monolith | Proposed |
 | [ADR-002](ADR-002-multitenant-isolation.md) | Multitenant Data Isolation | Proposed |
-| [ADR-003](ADR-003-identity-model.md) | Identity Model | Proposed |
+| [ADR-003](ADR-003-identity-model.md) | Identity Model | Proposed (بند ۶ Accepted) |
 | [ADR-004](ADR-004-transaction-consistency.md) | Transaction Consistency | Proposed |
 | [ADR-005](ADR-005-inventory-costing.md) | Inventory Costing | Proposed — نیاز تأیید حسابدار |
 | [ADR-006](ADR-006-offline-pos.md) | Offline POS | Proposed |

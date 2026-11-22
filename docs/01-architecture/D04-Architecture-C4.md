@@ -110,7 +110,7 @@ flowchart TB
     WEB["Web BFF — Next.js (Node)<br/>SSR، OIDC Client، HttpOnly Session،<br/>پراکسی به API"]
     API["RetailCloud.Api — ASP.NET Core<br/>Modular Monolith (15 ماژول)"]
     WRK["RetailCloud.Workers — .NET<br/>Outbox Relay، Process Managers،<br/>Adapters خروجی"]
-    IDP["IdP — Keycloak<br/>Realm: merchant / customer / platform"]
+    IDP["IdP — Keycloak<br/>Realm: merchant / platform"]
     CBK["Callback Gateway (همان API،<br/>مسیر جدا و Rate Limit جدا)"]
   end
 
@@ -172,7 +172,7 @@ flowchart TB
 | Callback Gateway | همان Api با Endpoint Group جدا | Callback PSP و Webhook بله: اعتبارسنجی، Inbox، پاسخ سریع | با Api | Inbox | ADR-012 |
 | **TaxSigningService** | .NET minimal API، Container جدا، Namespace و NetworkPolicy جدا | فقط `Sign(taxInvoiceId)`: محتوا را خودش می‌خواند، Hash را تطبیق می‌دهد و از KMS امضا می‌گیرد | ۲ نمونه | هیچ (Stateless) | ADR-011 |
 | KMS | OpenBao Transit Engine (کلید `exportable=false`) یا HSM شبکه‌ای داخلی | تولید و نگهداری کلید و عملیات امضا | HA ۳ نود (Raft) | کلیدها | ADR-011 |
-| IdP | Keycloak (نسخه پشتیبانی‌شده جاری) | احراز، MFA (TOTP و WebAuthn)، Session IdP، سه Realm | ۲+ نمونه، DB جدا | Postgres جدا | ADR-003 |
+| IdP | Keycloak (26.x؛ SP-01) | احراز کاربران فروشگاه و پلتفرم، MFA (TOTP و WebAuthn)، دو Realm. ورود مشتری با OTP در CustomerIdentity است (ADR-003 بند ۶ اصلاح‌شده) | ۲+ نمونه، DB جدا | Postgres جدا | ADR-003 |
 | PostgreSQL | PostgreSQL 17/18 + Patroni (HA) + pgBackRest (Backup/PITR) | داده اصلی، RLS | عمودی + Read Replica برای گزارش | همه | ADR-002، ADR-010 |
 | PgBouncer | transaction pooling | Pool اتصال. با `SET LOCAL` سازگار است چون Context داخل تراکنش است | ۲ نمونه | — | ADR-002 |
 | Redis | Redis/Valkey (Sentinel) | Cache کالا و قیمت، Rate Limit، `jti` مصرف‌شده QR، Session BFF | Sentinel | داده موقت (قابل بازسازی) | — |
@@ -410,7 +410,7 @@ src/web/
 |---|---|---|
 | ADR-001 | Modular Monolith | Proposed |
 | ADR-002 | Multitenant Data Isolation (Shared DB + RLS) | Proposed |
-| ADR-003 | Identity Model (Keycloak، سه Realm، BFF) | Proposed |
+| ADR-003 | Identity Model (Keycloak دو Realm، BFF؛ مشتری در CID) | Proposed (بند ۶ Accepted) |
 | ADR-004 | Transaction Consistency (Single DB Tx + Outbox + Idempotency) | Proposed |
 | ADR-005 | Inventory Costing (Moving WAC) | Proposed — نیاز تأیید حسابدار |
 | ADR-006 | Offline POS (Draft-only) | Proposed |

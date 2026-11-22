@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 DB=rc_d05_test
 PGOPTIONS="-c client_min_messages=warning" psql -v ON_ERROR_STOP=1 -q -d postgres -c "DROP DATABASE IF EXISTS $DB" -c "CREATE DATABASE $DB"
-for f in 00_bootstrap_superuser.sql 01_core.sql 10_platform.sql 20_merch.sql 30_inv.sql 40_sales.sql \
+for f in 00_bootstrap_superuser.sql 01_core.sql 10_platform.sql 15_iam.sql 20_merch.sql 30_inv.sql 40_sales.sql \
          50_acc.sql 55_ar.sql 60_cid.sql 70_tax.sql 80_audit.sql; do
   PGOPTIONS="-c client_min_messages=warning" psql -v ON_ERROR_STOP=1 -q -d $DB -f "$f"
 done

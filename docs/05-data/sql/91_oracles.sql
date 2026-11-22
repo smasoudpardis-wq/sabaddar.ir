@@ -2,11 +2,7 @@
 -- Run as superuser (creates the tenant-directory role); the runner itself executes as rc_worker under RLS.
 
 -- Tenant directory (D-37): the ONLY BYPASSRLS role; can read nothing but tenant ids/status, via one function.
-DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rc_tenant_directory') THEN
-    CREATE ROLE rc_tenant_directory NOLOGIN BYPASSRLS;
-  END IF;
-END $$;
+-- (role rc_tenant_directory is created in 00_bootstrap_superuser.sql)
 GRANT USAGE ON SCHEMA platform, core TO rc_tenant_directory;
 GRANT SELECT (id, status) ON platform.tenant TO rc_tenant_directory;
 

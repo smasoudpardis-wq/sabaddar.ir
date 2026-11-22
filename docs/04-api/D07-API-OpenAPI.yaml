@@ -7603,7 +7603,8 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: Realm `customer`, aud `customer-api`.
+      description: Issued by RetailCloud CustomerIdentity after OTP (not Keycloak, ADR-003 §6 as amended); iss retailcloud-customer,
+        aud customer-api; held by the portal BFF only.
     platformBearer:
       type: http
       scheme: bearer
@@ -11711,16 +11712,17 @@ components:
           - Active
           - Suspended
           - Closed
+        version:
+          type: integer
+          format: int32
         plan:
           type: string
+          description: From Subscription (US-014); absent until then
         trialEndsAt:
           type:
           - string
           - 'null'
           format: date-time
-        version:
-          type: integer
-          format: int32
       required:
       - id
       - legalName
@@ -11729,8 +11731,6 @@ components:
       - baseCurrency
       - pricingMode
       - status
-      - plan
-      - trialEndsAt
       - version
     TenantCustomer:
       type: object
@@ -12288,3 +12288,15 @@ x-error-catalog:
   rate-limited:
     status: 429
     meaning: Generic rate limit
+  not-found:
+    status: 404
+    meaning: Not found or belongs to another tenant — indistinguishable (BR-003, D-48)
+  invalid-token:
+    status: 401
+    meaning: Token lacks required claims
+  user-not-provisioned:
+    status: 403
+    meaning: Valid identity but no active RetailCloud user (IAM-001, IAM-009)
+  tenant-not-selected:
+    status: 403
+    meaning: Tenant-scoped operation without an active tenant (BR-001)
