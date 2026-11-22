@@ -90,3 +90,20 @@ jobs:
         run: |
           dotnet test src/backend/RetailCloud.sln -c Release --no-build --logger "trx;LogFileName=results.trx" 2>&1 | tee test.log
           ! grep -E "Skipped: [1-9]" test.log
+
+  identity:
+    name: SP-01 Keycloak realm checks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - name: Start Keycloak with realm-as-code
+        run: |
+          docker run -d --name rc-kc -p 8080:8080 -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
+            -v "$GITHUB_WORKSPACE/src/backend/dev/keycloak:/opt/keycloak/data/import:ro" keycloak/keycloak:26.0 start-dev --import-realm
+          for i in $(seq 1 90); do curl -sf http://127.0.0.1:8080/realms/platform/.well-known/openid-configuration >/dev/null && break; sleep 2; done
+      - name: Run identity checks (browser login via Playwright)
+        run: |
+          mkdir -p /tmp/pw && cd /tmp/pw && npm init -y >/dev/null && npm i playwright@1.48.2 >/dev/null && npx playwright install --with-deps chromium >/dev/null
+          cd "$GITHUB_WORKSPACE/src/backend/dev/keycloak" && KC=http://127.0.0.1:8080 NODE_PATH=/tmp/pw/node_modules node spike-sp01.js

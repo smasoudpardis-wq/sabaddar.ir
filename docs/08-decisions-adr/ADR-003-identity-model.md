@@ -28,3 +28,35 @@
 ## جایگزین‌ها
 - **OpenIddict داخل Api:** کنترل کامل ولی پیاده‌سازی MFA، WebAuthn و UI ورود با ما. **گزینه دوم** اگر Spike Keycloak برای OTP مشتری ناموفق باشد.
 - **Token در مرورگر (SPA خالص):** سطح XSS بزرگ‌تر. رد شد.
+
+## نتیجه Spike SP-01 (2026-11-22)
+
+**محیط:** Keycloak 26.0 (Docker Hub `keycloak/keycloak:26.0`؛ quay.io از این محیط در دسترس نبود، که برای Mirror داخلی هم مهم است) با Realmهای تعریف‌شده به‌صورت کد (`src/backend/dev/keycloak/*-realm.json`). اسکریپت خودکار `spike-sp01.js` ورود واقعی را با مرورگر (Playwright) انجام می‌دهد.
+
+**۱۷ از ۱۷ بررسی PASS شد:**
+
+| # | بررسی | کنترل D06 |
+|---|---|---|
+| C1 | درخواست بدون PKCE رد می‌شود (`invalid_request`) | AUTH-01 |
+| C2 | `state` برگردانده می‌شود | AUTH-01 |
+| C3 | تبادل code بدون `code_verifier` رد می‌شود | AUTH-01 |
+| C4–C8 | با Verifier: Token صادر می‌شود؛ `aud=merchant-api`؛ `iss` = Realm merchant؛ عمر Access Token دقیقاً ۶۰۰ ثانیه؛ `azp` = Client BFF | AUTH-05، BR-004 |
+| C10–C11 | Refresh یک Refresh Token جدید می‌دهد و استفاده دوباره از قبلی رد می‌شود | AUTH-06 |
+| C9، C9b | تکرار Authorization Code رد می‌شود **و** Sessionی که از آن صادر شده باطل می‌شود | AUTH-01 |
+| C12 | Password Grant برای BFF غیرفعال است | — |
+| C13–C14 | Token پلتفرم `platform-api` دارد و نه `merchant-api`، با Issuer جدا. کاربر فروشگاه به Realm پلتفرم وارد نمی‌شود | BR-004 |
+| C15–C16 | ۱۰ ورود ناموفق، حساب را **موقتاً** قفل می‌کند و رمز درست هم تا پایان قفل پذیرفته نمی‌شود | AUTH-04 |
+
+**یافته‌های فرعی:**
+- (۱) Keycloak 26 نام و نام خانوادگی را در پروفایل اجباری می‌کند. Onboarding کاربران (US-025) باید آن‌ها را بفرستد، وگرنه کاربر به صفحه تکمیل پروفایل می‌رود.
+- (۲) قالب ورود فارسی و RTL پیش‌فرض کار می‌کند.
+- (۳) Chromium برای `localhost` از IPv6 استفاده می‌کند. Redirect URIهای Dev روی `127.0.0.1` تنظیم شده‌اند.
+
+**باز ماند — پیشنهاد اصلاح بند ۶ `[Proposed — نیاز به تأیید کارفرما]`:** ورود **مشتری** با OTP بیرون از Keycloak بماند. ماژول CustomerIdentity OTP را تأیید می‌کند و BFF پورتال یک Session مات (HttpOnly) نگه می‌دارد. Api درخواست‌های `/c/*` را با Token کوتاه‌عمری می‌پذیرد که BFF با کلید Transit خودش امضا می‌کند (`aud=customer-api`، JWKS داخلی).
+
+دلایل:
+- (الف) منطق OTP، Rate Limit، Blind Index و رضایت از قبل در CID است (ADR-003 بند ۶).
+- (ب) اتصال آن به Keycloak به افزونه سفارشی Java (Authenticator SPI) یا قابلیت Token Exchange نیاز دارد. این یعنی کد و عملیات بیشتر در مسیر حساس.
+- (ج) شماره موبایل مشتری در یک سیستم دوم (Keycloak) تکرار نمی‌شود (حداقل‌سازی، D06 §8).
+
+جایگزین: Realm `customer` در Keycloak با Authenticator سفارشی. پس از تأیید این گزینه، Realm `customer` از برنامه حذف و D04 و D06 به‌روز می‌شوند.

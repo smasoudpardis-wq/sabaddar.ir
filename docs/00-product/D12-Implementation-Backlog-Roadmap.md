@@ -42,7 +42,8 @@ python3 docs/00-product/tools/build_backlog.py   # تولید CSV و جدول + 
 | 1 | US-002 BuildingBlocks: Money، Quantity، TaxRate، Ids، Result، Clock (+ Gtin، PublicCustomerCode) | ✅ Done | ۳۹ تست Unit و Property (FsCheck، تا ۲٬۰۰۰ مورد تصادفی به ازای هر Property) |
 | 1 | SP-07 EF Core + Npgsql با تراکنش مشترک و RLS | ✅ Done — تأیید شد | ۷ تست Integration؛ D04 §5.3 |
 | 1 | US-007 محیط Dev (Compose) | 🟡 بخشی | `src/backend/dev/compose.yaml` (نحو معتبر؛ اجرا نشده). Mirrorها و Staging منتظر زیرساخت‌اند (X-07) |
-| 1 | SP-01 Keycloak / SP-04 مؤدیان | ⏳ باز | SP-04 به دسترسی Sandbox وابسته است (X-01) |
+| 1 | SP-01 Keycloak | ✅ Done — ۱۷/۱۷ بررسی | ADR-003 «نتیجه Spike SP-01»؛ `src/backend/dev/keycloak/`؛ Job `identity` در CI. **یک تصمیم منتظر کارفرما:** ورود مشتری بیرون از Keycloak |
+| 1 | SP-04 مؤدیان | ⏳ باز | به دسترسی Sandbox وابسته است (X-01) |
 
 ## 1. رویکرد تحویل
 
