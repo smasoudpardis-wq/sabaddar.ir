@@ -16,6 +16,9 @@ DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rc_app_test') THEN
     CREATE ROLE rc_app_test LOGIN PASSWORD 'rc_app_test' NOSUPERUSER NOBYPASSRLS IN ROLE rc_app;
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rc_worker_test') THEN
+    CREATE ROLE rc_worker_test LOGIN PASSWORD 'rc_worker_test' NOSUPERUSER NOBYPASSRLS IN ROLE rc_worker;
+  END IF;
 END $$;
 SQL
 psql -v ON_ERROR_STOP=1 -q -d "$DB" -At -f "$SQL/90_fitness.sql" | { read -r line && { echo "FITNESS FAILED: $line"; exit 1; } || true; }

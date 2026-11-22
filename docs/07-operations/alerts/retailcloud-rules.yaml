@@ -38,11 +38,18 @@ groups:
           summary: "finalizeSale p95 above 2s for 10 minutes"
           runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-01"
       - alert: RCOutboxLag
-        expr: max by (schema) (rc_outbox_oldest_pending_seconds) > 300
+        expr: max by (producer) (rc_outbox_oldest_pending_seconds) > 300
         for: 5m
         labels: {severity: page, slo: S5}
         annotations:
-          summary: "Outbox {{ $labels.schema }} oldest pending message older than 5 minutes"
+          summary: "Outbox ({{ $labels.producer }}) oldest pending message older than 5 minutes"
+          runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-02"
+      - alert: RCOutboxDeadLetter
+        expr: max by (producer) (rc_outbox_dead) > 0
+        for: 1m
+        labels: {severity: ticket}
+        annotations:
+          summary: "Outbox ({{ $labels.producer }}) has dead-lettered messages; inspect last_error and replay"
           runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-02"
 
   - name: rc-integrity

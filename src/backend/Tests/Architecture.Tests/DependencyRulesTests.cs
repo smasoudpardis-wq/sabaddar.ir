@@ -118,6 +118,22 @@ public class DependencyRulesTests
         Assert.Empty(offenders);
     }
 
+    [Fact]
+    public void R10_only_BuildingBlocks_Infrastructure_writes_outbox_and_inbox_directly()
+    {
+        // Modules emit through IOutbox (envelope, prefix and tenant rules) and consume through IIntegrationEventConsumer.
+        string root = FindRepoRoot();
+        string[] forbidden = ["INSERT INTO core.outbox", "UPDATE core.outbox", "INSERT INTO core.inbox"];
+        var offenders = Directory.EnumerateFiles(Path.Combine(root, "src", "backend"), "*.cs", SearchOption.AllDirectories)
+            .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}Tests{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            .Where(f => !f.Contains("BuildingBlocks.Infrastructure", StringComparison.Ordinal))
+            .Where(f => forbidden.Any(x => File.ReadAllText(f).Contains(x, StringComparison.OrdinalIgnoreCase)))
+            .Select(f => Path.GetRelativePath(root, f))
+            .ToList();
+        Assert.Empty(offenders);
+    }
+
     private static string FindRepoRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

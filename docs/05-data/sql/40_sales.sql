@@ -136,25 +136,10 @@ CALL core.enable_tenant_rls('sales.sale_tender');
 
 -- Idempotency records live in core.idempotency_record (shared by every module, US-006).
 
-CREATE TABLE sales.outbox (
-  tenant_id     uuid NOT NULL,
-  id            uuid NOT NULL,
-  event_type    text NOT NULL,
-  event_version int  NOT NULL,
-  aggregate_id  uuid NOT NULL,
-  payload       jsonb NOT NULL,
-  occurred_at   timestamptz NOT NULL DEFAULT now(),
-  published_at  timestamptz,
-  attempts      int NOT NULL DEFAULT 0,
-  next_attempt_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (tenant_id, id)
-);
-CREATE INDEX ix_outbox_pending ON sales.outbox (next_attempt_at, id) WHERE published_at IS NULL;
-CALL core.enable_tenant_rls('sales.outbox');
+-- Integration events go to core.outbox (shared transactional outbox, US-005 / ADR-013).
 
 GRANT USAGE ON SCHEMA sales TO rc_app, rc_worker, rc_reporting;
 GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA sales TO rc_app;
 GRANT DELETE ON sales.sale_line TO rc_app;            -- draft line removal (guard blocks finalized)
-GRANT SELECT, UPDATE ON sales.outbox TO rc_worker;
 GRANT SELECT ON sales.sale, sales.sale_line, sales.sale_tender TO rc_worker, rc_reporting;
 RESET ROLE;

@@ -30,7 +30,7 @@ CROSS JOIN (VALUES ('rc_reporting'),('rc_tax_signer')) AS r(rolname)
 WHERE n.nspname = 'cid' AND c.relkind = 'r' AND has_table_privilege(r.rolname, c.oid, 'SELECT')
 UNION ALL
 -- (5) The only non-superuser BYPASSRLS role is rc_tenant_directory; it holds no table-level privileges and only the
---     column grants platform.tenant(id,status,legal_name) and iam.tenant_membership(tenant_id,user_id,status).
+--     the allow-listed column grants below (tenant id + status columns needed by its SECURITY DEFINER functions).
 SELECT 'unexpected-bypassrls', rolname FROM pg_roles
 WHERE rolbypassrls AND NOT rolsuper AND rolname <> 'rc_tenant_directory'
 UNION ALL
@@ -41,9 +41,15 @@ WHERE c.relkind IN ('r','p') AND n.nspname NOT IN ('pg_catalog','information_sch
   AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rc_tenant_directory')
   AND has_table_privilege('rc_tenant_directory', c.oid, 'SELECT,INSERT,UPDATE,DELETE')
 UNION ALL
-SELECT 'tenant-directory-overprivileged', 'platform.tenant column ' || a.attname
-FROM pg_attribute a
+SELECT 'tenant-directory-overprivileged', n.nspname || '.' || c.relname || ' column ' || a.attname
+FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rc_tenant_directory')
-  AND a.attrelid = 'platform.tenant'::regclass AND a.attnum > 0 AND NOT a.attisdropped
-  AND a.attname NOT IN ('id','status','legal_name')
-  AND has_column_privilege('rc_tenant_directory', 'platform.tenant'::regclass, a.attname, 'SELECT');;
+  AND c.relkind IN ('r','p') AND n.nspname NOT IN ('pg_catalog','information_schema')
+  AND a.attnum > 0 AND NOT a.attisdropped
+  AND has_column_privilege('rc_tenant_directory', c.oid, a.attname, 'SELECT')
+  AND (n.nspname || '.' || c.relname, a.attname::text) NOT IN (VALUES
+        ('platform.tenant','id'), ('platform.tenant','status'), ('platform.tenant','legal_name'),
+        ('iam.tenant_membership','tenant_id'), ('iam.tenant_membership','user_id'), ('iam.tenant_membership','status'),
+        ('iam.tenant_membership','roles'),
+        ('core.outbox','tenant_id'), ('core.outbox','published_at'), ('core.outbox','dead_at'), ('core.outbox','next_attempt_at'),
+        ('core.outbox','producer'), ('core.outbox','occurred_at'));

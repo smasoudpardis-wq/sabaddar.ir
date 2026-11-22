@@ -334,10 +334,10 @@ src/backend/
 - **Testing:** xUnit، Testcontainers (PostgreSQL واقعی)، FsCheck (Property-based)، Verify (Snapshot Test برای Payload مؤدیان و Posting).
 
 ### 5.5 Outbox / Inbox
-- جدول `{schema}.outbox (id ULID, event_type, version, tenant_id, payload jsonb, occurred_at, published_at null, attempts, next_attempt_at)` با RLS. Relay با نقش Worker، به ازای هر Tenant یا دسته‌ای با `SET LOCAL` درست.
+- جدول مشترک `core.outbox` (`id` UUIDv7، `producer`، `event_type` با پیشوند ماژول، `event_version`، `payload jsonb`، `published_at`، `attempts`، `next_attempt_at`، `dead_at`) با RLS. Relay با نقش Worker، به ازای هر Tenant با `SET LOCAL` درست (اصلاح ADR-013، US-005).
 - Relay: `SELECT … WHERE published_at IS NULL AND next_attempt_at <= now() ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 100` ← Dispatch به Handlerهای درون‌فرایندی Workers ← `published_at = now()`.
 - ترتیب: به ازای `(tenant_id, aggregate_id)` حفظ می‌شود (Handler باید Idempotent باشد و نسبت به خارج از ترتیب بودن مقاوم باشد).
-- Inbox: `{consumer_schema}.inbox (consumer, event_id) PRIMARY KEY`. Handler و Insert Inbox در یک تراکنش هستند.
+- Inbox: `core.inbox (tenant_id, consumer, event_id) PRIMARY KEY`. Consumer و Insert Inbox در یک تراکنش هستند.
 
 ---
 

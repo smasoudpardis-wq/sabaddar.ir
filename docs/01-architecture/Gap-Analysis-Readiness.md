@@ -23,7 +23,7 @@ source: "سند مرجع §25.2 (گام ۴) و §26؛ D01–D12"
 | D08 Flows | Draft 0.1 | **۲۲ نمودار Render شد؛ ۱۵ سند حسابداری نمونه متوازن** |
 | D09 UX | Draft 0.1 | همه ۲۹ کد خطا پیام فارسی دارند؛ Operationها و مجوزها با D06 و D07 سازگارند |
 | D10 Test Plan | Draft 0.1 | **کاتالوگ ۲۶۵ تست تولیدشده؛ صفر ارجاع بی‌تعریف** |
-| D11 Ops | Draft 0.1 | ۲۲ Alert با Runbook موجود (ساختار)؛ **PromQL با promtool بررسی نشده** |
+| D11 Ops | Draft 0.1 | ۲۳ Alert با Runbook موجود (ساختار)؛ **PromQL با promtool بررسی نشده** |
 | D12 Backlog | Draft 0.1 | **۱۰۷ آیتم؛ پوشش P0 ۱۳۹/۱۳۹ و NFR ۴۱/۴۱؛ بدون حلقه یا وابستگی معکوس** |
 | همه اسناد | — | **۴۸ نمودار Mermaid در Chromium Render شد** |
 

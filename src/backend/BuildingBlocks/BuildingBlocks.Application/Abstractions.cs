@@ -85,3 +85,40 @@ public abstract record IdempotencyClaim
     /// <summary>A concurrent request with the key did not finish within the wait: 409 in-progress.</summary>
     public sealed record Busy : IdempotencyClaim;
 }
+
+/// <summary>Integration event envelope (D03 §7.1). <see cref="EventId"/> is the outbox row id (UUIDv7).</summary>
+public sealed record IntegrationEvent(
+    Guid EventId,
+    string EventType,
+    int EventVersion,
+    TenantId TenantId,
+    DateTimeOffset OccurredAt,
+    string? CorrelationId,
+    string? CausationId,
+    string Producer,
+    Guid AggregateId,
+    System.Text.Json.JsonElement Payload);
+
+/// <summary>
+/// Transactional outbox (ADR-013, US-005): the event is written in the producer's unit of work, so it exists if and
+/// only if the business change committed. <paramref name="eventType"/> must start with the producer's lower-case name.
+/// </summary>
+public interface IOutbox
+{
+    Task<Guid> AddAsync(IUnitOfWorkScope scope, string producer, string eventType, int eventVersion, Guid aggregateId,
+        object payload, string? causationId, CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// A consumer of integration events, run by the Workers relay inside its own unit of work together with the inbox row
+/// (D03 §7.1 rule 4): effects and dedup commit together. Must tolerate out-of-order delivery (D04 §5.5).
+/// </summary>
+public interface IIntegrationEventConsumer
+{
+    /// <summary>Stable consumer name; part of the inbox key. Never rename a deployed consumer.</summary>
+    string Consumer { get; }
+
+    bool CanHandle(string eventType, int eventVersion);
+
+    Task HandleAsync(IUnitOfWorkScope scope, IntegrationEvent integrationEvent, CancellationToken cancellationToken);
+}

@@ -336,6 +336,25 @@ SELECT t.expect_error('T89 Completed needs a 2xx response status (only successes
   $$UPDATE core.idempotency_record SET status = 'Completed', response_status = 409, completed_at = now()$$);
 SELECT t.expect_error('T90 the application cannot delete idempotency records (retention, D-14; purge is the worker''s)', '42501',
   $$DELETE FROM core.idempotency_record$$);
+-- US-005 outbox / inbox (core)
+SELECT set_config('app.tenant_id', :A, false);
+INSERT INTO core.outbox (tenant_id, id, producer, event_type, event_version, aggregate_id, payload)
+  VALUES (:A, gen_random_uuid(), 'Sales', 'sales.sale-finalized', 1, gen_random_uuid(), '{}');
+SELECT t.expect_error('T91 the application writes events but cannot read or change the outbox', '42501',
+  $$SELECT count(*) FROM core.outbox$$);
+SELECT t.expect_error('T92 a module can only emit events with its own prefix (sales.* from Sales)', '23514',
+  format($$INSERT INTO core.outbox (tenant_id, id, producer, event_type, event_version, aggregate_id, payload)
+           VALUES (%L, gen_random_uuid(), 'Sales', 'tax.invoice-requested', 1, gen_random_uuid(), '{}')$$, :A));
+SELECT t.expect_error('T93 the application cannot write the inbox (consumers run in Workers)', '42501',
+  format($$INSERT INTO core.inbox (tenant_id, consumer, event_id) VALUES (%L, 'x', gen_random_uuid())$$, :A));
+RESET ROLE;
+SET ROLE rc_worker;
+SELECT set_config('app.tenant_id', '', false);
+SELECT t.ok('T94 without a tenant context the worker sees no outbox rows (TM-042)', (SELECT count(*) FROM core.outbox) = 0);
+SELECT t.ok('T95 outbox_due_tenants lists only tenant ids with due messages', ARRAY(SELECT core.outbox_due_tenants()) = ARRAY[:A::uuid]);
+SELECT set_config('app.tenant_id', :A, false);
+SELECT t.ok('T96 with the tenant context the worker sees that tenant''s message', (SELECT count(*) FROM core.outbox) = 1);
+DELETE FROM core.outbox;
 RESET ROLE;
 DELETE FROM core.idempotency_record;  -- test rows were left InProgress on purpose; oracle O-4 would flag them
 

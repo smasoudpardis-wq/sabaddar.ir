@@ -275,3 +275,9 @@ T87,D05,the same key is independent per tenant and invisible to other tenants,P0
 T88,D05,a malformed key is rejected,P0,T,"DB-Integration (automated, passing)",E,,automated
 T89,D05,"Completed needs a 2xx response status (only successes are stored, D-34)",P0,T,"DB-Integration (automated, passing)",E,,automated
 T90,D05,"the application cannot delete idempotency records (retention, D-14; purge is the worker",P0,T,"DB-Integration (automated, passing)",E,,automated
+T91,D05,the application writes events but cannot read or change the outbox,P0,T,"DB-Integration (automated, passing)",E,,automated
+T92,D05,a module can only emit events with its own prefix (sales.* from Sales),P0,T,"DB-Integration (automated, passing)",E,,automated
+T93,D05,the application cannot write the inbox (consumers run in Workers),P0,T,"DB-Integration (automated, passing)",E,,automated
+T94,D05,without a tenant context the worker sees no outbox rows (TM-042),P0,T,"DB-Integration (automated, passing)",E,,automated
+T95,D05,outbox_due_tenants lists only tenant ids with due messages,P0,T,"DB-Integration (automated, passing)",E,,automated
+T96,D05,with the tenant context the worker sees that tenant,P0,T,"DB-Integration (automated, passing)",E,,automated

@@ -129,8 +129,10 @@ flowchart LR
 |---|---|---|
 | `rc_http_server_duration_seconds` | Histogram | `operation` (operationId D07)، `status_class` |
 | `rc_finalize_total` | Counter | `result` (`ok`، `conflict`، `error`)، `code` |
-| `rc_outbox_oldest_pending_seconds` | Gauge | `schema` |
-| `rc_outbox_pending` | Gauge | `schema` |
+| `rc_outbox_oldest_pending_seconds` | Gauge | `producer` |
+| `rc_outbox_pending` | Gauge | `producer` |
+| `rc_outbox_dead` | Gauge | `producer` (هر مقدار > ۰ یعنی پیام Dead-letter منتظر بررسی دستی است) |
+| `rc_outbox_published_total`، `rc_outbox_handler_failures_total` | Counter | `producer`/`consumer`، `event_type` |
 | `rc_oracle_violations` | Gauge | `oracle` (O-2..O-14) — خروجی `core.run_oracles()` |
 | `rc_db_rls_denied_total` | Counter | `table` (از Log خطای 42501 نقش App) |
 | `rc_tax_invoices` | Gauge | `status` |
@@ -224,7 +226,7 @@ flowchart LR
 | PgBouncer | `default_pool_size` بر اساس `max_connections` DB (هدف ۳۰۰ اتصال واقعی)؛ Alert در ۸۰٪ |
 | Partition | Job ماهانه: ساخت Partitionهای ۳ ماه آینده (D05 §7)؛ Alert اگر `rc_partition_default_rows` > ۰ |
 | Vacuum | Autovacuum Tuning برای جداول Append-heavy (`stock_movement`، `audit_record`، `outbox`) |
-| Outbox Cleanup | `DROP PARTITION` روزانه پس از ۷ روز |
+| Outbox Cleanup | `MessagingRetention` در Workers (هر ساعت، به ازای هر Tenant): Outbox منتشرشده > ۷ روز، Inbox > ۳۰ روز، Idempotency > ۸ روز. Partition زمانی وقتی حجم لازم کند (معیار: > ۱۰ میلیون ردیف) |
 | Retention | PM-10 هفتگی (D03)؛ گزارش به داشبورد |
 | بازبینی ظرفیت | ماهانه؛ آستانه اقدام: DB > ۷۰٪ CPU پایدار یا > ۶۰٪ دیسک |
 

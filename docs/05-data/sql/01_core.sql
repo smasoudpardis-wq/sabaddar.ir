@@ -46,6 +46,85 @@ CALL core.enable_tenant_rls('core.idempotency_record');
 GRANT SELECT, INSERT, UPDATE ON core.idempotency_record TO rc_app;
 GRANT SELECT, DELETE ON core.idempotency_record TO rc_worker;
 
+-- Transactional outbox (ADR-013 amended by US-005: one table for all producers). Written by the producer in the
+-- same transaction as its change; the Workers relay dispatches per tenant with that tenant's context (TM-042).
+-- Envelope = D03 §7.1. event_type must be prefixed by the producing module (module ownership).
+CREATE TABLE core.outbox (
+  tenant_id       uuid NOT NULL,
+  id              uuid NOT NULL,                       -- UUIDv7: time-ordered, = envelope eventId
+  producer        text NOT NULL CHECK (producer ~ '^[A-Z][A-Za-z]+$'),
+  event_type      text NOT NULL,
+  event_version   int  NOT NULL CHECK (event_version >= 1),
+  aggregate_id    uuid NOT NULL,
+  payload         jsonb NOT NULL,
+  correlation_id  text,
+  causation_id    text,
+  occurred_at     timestamptz NOT NULL DEFAULT now(),
+  published_at    timestamptz,
+  attempts        int NOT NULL DEFAULT 0,
+  next_attempt_at timestamptz NOT NULL DEFAULT now(),
+  last_error      text,
+  dead_at         timestamptz,                         -- gave up after max attempts: alert, manual replay
+  PRIMARY KEY (tenant_id, id),
+  CHECK (event_type LIKE lower(producer) || '.%'),
+  CHECK (published_at IS NULL OR dead_at IS NULL)
+);
+CREATE INDEX ix_outbox_pending ON core.outbox (tenant_id, next_attempt_at, id) WHERE published_at IS NULL AND dead_at IS NULL;
+CALL core.enable_tenant_rls('core.outbox');
+
+-- Consumer-side dedup (D03 §7.1 rule 4): inserted in the same transaction as the handler's effects.
+CREATE TABLE core.inbox (
+  tenant_id    uuid NOT NULL,
+  consumer     text NOT NULL,
+  event_id     uuid NOT NULL,
+  processed_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, consumer, event_id)
+);
+CALL core.enable_tenant_rls('core.inbox');
+
+-- Wake the relay at COMMIT (NOTIFY is transactional); polling stays as the safety net.
+CREATE OR REPLACE FUNCTION core.outbox_notify() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM pg_notify('rc_outbox', '');
+  RETURN NULL;
+END $$;
+CREATE TRIGGER outbox_notify AFTER INSERT ON core.outbox FOR EACH STATEMENT EXECUTE FUNCTION core.outbox_notify();
+
+GRANT INSERT ON core.outbox TO rc_app;
+GRANT SELECT, INSERT, UPDATE ON core.outbox TO rc_worker;   -- handlers may emit follow-up events
+GRANT SELECT, INSERT ON core.inbox TO rc_worker;
+GRANT DELETE ON core.outbox, core.inbox TO rc_worker;       -- retention purge (7 days, ADR-013)
+
 GRANT USAGE ON SCHEMA core TO rc_app, rc_worker, rc_reporting, rc_tax_signer;
 GRANT EXECUTE ON FUNCTION core.current_tenant() TO rc_app, rc_worker, rc_reporting, rc_tax_signer;
 RESET ROLE;
+
+-- Which tenants have due outbox messages? The relay cannot see core.outbox without a tenant context (FORCE RLS), so
+-- this narrow function (owner rc_tenant_directory, column grants only; fitness rule 5) returns tenant ids only.
+GRANT USAGE ON SCHEMA core TO rc_tenant_directory;
+GRANT SELECT (tenant_id, published_at, dead_at, next_attempt_at, producer, occurred_at) ON core.outbox TO rc_tenant_directory;
+CREATE OR REPLACE FUNCTION core.outbox_due_tenants(p_limit int DEFAULT 500) RETURNS SETOF uuid
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
+  SELECT DISTINCT tenant_id FROM core.outbox
+  WHERE published_at IS NULL AND dead_at IS NULL AND next_attempt_at <= now()
+  LIMIT p_limit
+$$;
+ALTER FUNCTION core.outbox_due_tenants(int) OWNER TO rc_tenant_directory;
+REVOKE ALL ON FUNCTION core.outbox_due_tenants(int) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION core.outbox_due_tenants(int) TO rc_worker;
+
+-- Metrics for D11 (rc_outbox_pending, rc_outbox_oldest_pending_seconds, rc_outbox_dead): aggregates only, no tenant ids.
+CREATE OR REPLACE FUNCTION core.outbox_stats()
+RETURNS TABLE (producer text, pending bigint, oldest_pending_seconds double precision, dead bigint)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
+  SELECT o.producer,
+         count(*) FILTER (WHERE o.published_at IS NULL AND o.dead_at IS NULL),
+         coalesce(extract(epoch FROM now() - min(o.occurred_at) FILTER (WHERE o.published_at IS NULL AND o.dead_at IS NULL)), 0)::float8,
+         count(*) FILTER (WHERE o.dead_at IS NOT NULL)
+  FROM core.outbox o
+  WHERE o.published_at IS NULL
+  GROUP BY o.producer
+$$;
+ALTER FUNCTION core.outbox_stats() OWNER TO rc_tenant_directory;
+REVOKE ALL ON FUNCTION core.outbox_stats() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION core.outbox_stats() TO rc_worker;
