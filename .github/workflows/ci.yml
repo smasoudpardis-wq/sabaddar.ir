@@ -107,3 +107,45 @@ jobs:
         run: |
           mkdir -p /tmp/pw && cd /tmp/pw && npm init -y >/dev/null && npm i playwright@1.48.2 >/dev/null && npx playwright install --with-deps chromium >/dev/null
           cd "$GITHUB_WORKSPACE/src/backend/dev/keycloak" && KC=http://127.0.0.1:8080 NODE_PATH=/tmp/pw/node_modules node spike-sp01.js
+
+  web-e2e:
+    name: US-021 BFF login end-to-end (Keycloak + API + BFF + browser)
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_PASSWORD: postgres }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      RC_TEST_PG: Host=localhost;Port=5432;Database=rc_it;Username=rc_app_test;Password=rc_app_test
+      DOTNET_NOLOGO: "1"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { global-json-file: src/backend/global.json }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22", cache: npm, cache-dependency-path: src/web/apps/merchant-admin/package-lock.json }
+      - name: Start Keycloak with realm-as-code
+        run: |
+          docker run -d --name rc-kc -p 8080:8080 -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
+            -v "$GITHUB_WORKSPACE/src/backend/dev/keycloak:/opt/keycloak/data/import:ro" keycloak/keycloak:26.0 start-dev --import-realm
+      - run: sudo apt-get install -y -qq postgresql-client
+      - run: src/backend/scripts/setup-test-db.sh rc_it
+      - run: dotnet build src/backend/Hosts/RetailCloud.Api -c Debug
+      - name: Build BFF
+        working-directory: src/web/apps/merchant-admin
+        run: npm ci --no-audit --no-fund && npm run typecheck && npm run build
+      - name: Install Playwright
+        run: mkdir -p /tmp/pw && cd /tmp/pw && npm init -y >/dev/null && npm i playwright@1.48.2 >/dev/null && npx playwright install --with-deps chromium >/dev/null
+      - name: Wait for Keycloak
+        run: for i in $(seq 1 90); do curl -sf http://127.0.0.1:8080/realms/merchant/.well-known/openid-configuration >/dev/null && break; sleep 2; done
+      - name: End-to-end checks
+        run: NODE_PATH=/tmp/pw/node_modules LOGS=/tmp src/web/apps/merchant-admin/e2e/run-e2e.sh

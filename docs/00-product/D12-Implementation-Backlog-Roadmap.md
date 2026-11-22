@@ -42,10 +42,10 @@ python3 docs/00-product/tools/build_backlog.py   # تولید CSV و جدول + 
 | 1 | US-002 BuildingBlocks: Money، Quantity، TaxRate، Ids، Result، Clock (+ Gtin، PublicCustomerCode) | ✅ Done | ۳۹ تست Unit و Property (FsCheck، تا ۲٬۰۰۰ مورد تصادفی به ازای هر Property) |
 | 1 | SP-07 EF Core + Npgsql با تراکنش مشترک و RLS | ✅ Done — تأیید شد | ۷ تست Integration؛ D04 §5.3 |
 | 1 | US-007 محیط Dev (Compose) | 🟡 بخشی | `src/backend/dev/compose.yaml` (نحو معتبر؛ اجرا نشده). Mirrorها و Staging منتظر زیرساخت‌اند (X-07) |
-| 1 | SP-01 Keycloak | ✅ Done — ۱۷/۱۷ بررسی | ADR-003 «نتیجه Spike SP-01»؛ `src/backend/dev/keycloak/`؛ Job `identity` در CI. **یک تصمیم منتظر کارفرما:** ورود مشتری بیرون از Keycloak |
+| 1 | SP-01 Keycloak | ✅ Done — ۱۸/۱۸ بررسی | ADR-003 «نتیجه Spike SP-01»؛ `src/backend/dev/keycloak/`؛ Job `identity` در CI. ورود مشتری بیرون از Keycloak: **Accepted** (ADR-003 §6). بررسی C8b (وجود `sub` در Token) بعد از کشف باگ در E2E اضافه شد |
 | 1 | SP-04 مؤدیان | ⏳ باز | به دسترسی Sandbox وابسته است (X-01) |
 | 2 | US-003 UnitOfWork + Guard + حالت بدون Tenant | ✅ Done | `ExecuteWithoutTenantAsync` برای جست‌وجوی هویت پیش از انتخاب Tenant |
-| 2 | US-021 ورود از طریق BFF | 🟡 سمت API Done؛ BFF باقی است | `Hosts/RetailCloud.Api` + `BuildingBlocks.Api`: اعتبارسنجی JWT (aud، iss، انقضا، امضا)، نگاشت کاربر، انتخاب Tenant فقط با عضویت، 404 یکسان؛ Schema `iam` (15_iam.sql، T80–T84)؛ ۷ تست API با اثبات شکست روی دو باگ عمدی |
+| 2 | US-021 ورود از طریق BFF | ✅ Done (یک پیگیری) | **API:** `Hosts/RetailCloud.Api` + `BuildingBlocks.Api` (JWT: aud، iss، انقضا، امضا؛ نگاشت کاربر؛ انتخاب Tenant فقط با عضویت؛ 404 یکسان)، Schema `iam` (T80–T84)، ۷ تست API. **BFF:** `src/web/apps/merchant-admin` (Next.js 15؛ Code + PKCE S256 + state + nonce؛ Token فقط سمت سرور؛ Cookie `HttpOnly`/`SameSite=Lax` و `__Host-` در Production؛ CSRF با Origin + Double-submit؛ Refresh با چرخش؛ CSP با nonce). **E2E:** `e2e/run-e2e.sh`، ۱۷/۱۷ بررسی مرورگری روی Keycloak + API + BFF واقعی، Job `web-e2e` در CI؛ Mutation (حذف CSRF) ۳ بررسی را قرمز کرد. E2E یک باگ واقعی پیدا کرد: Realm-as-code Scope `basic` را نداشت و Token بدون `sub` بود (اصلاح شد). **پیگیری:** Session Store فعلاً در حافظه است؛ نسخه‌ی Valkey (برای چند Instance) در Sprint بعد کنار US-022 |
 
 ## 1. رویکرد تحویل
 

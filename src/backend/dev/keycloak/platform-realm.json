@@ -31,6 +31,60 @@
   "defaultLocale": "fa",
   "clientScopes": [
     {
+      "name": "basic",
+      "protocol": "openid-connect",
+      "description": "Subject and auth_time (built-in in Keycloak 25+; realm-as-code must declare it explicitly)",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "sub",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-sub-mapper",
+          "config": {
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "auth_time",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usersessionmodel-note-mapper",
+          "config": {
+            "user.session.note": "AUTH_TIME",
+            "claim.name": "auth_time",
+            "jsonType.label": "long",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "profile",
+      "protocol": "openid-connect",
+      "description": "Display name only (PRIV: no email/phone in tokens)",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "full name",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-full-name-mapper",
+          "config": {
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
       "name": "platform-api-audience",
       "protocol": "openid-connect",
       "attributes": {
@@ -72,9 +126,8 @@
         "post.logout.redirect.uris": "http://127.0.0.1:3001/*"
       },
       "defaultClientScopes": [
-        "openid",
+        "basic",
         "profile",
-        "email",
         "platform-api-audience"
       ],
       "optionalClientScopes": [

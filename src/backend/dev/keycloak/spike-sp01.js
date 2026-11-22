@@ -75,6 +75,9 @@ async function token(realm, form) {
   check('C6 issuer is the merchant realm', at.iss === `${KC}/realms/merchant`, at.iss);
   check('C7 access token lifetime is 10 minutes (AUTH-05)', at.exp - at.iat === 600, `${at.exp - at.iat}s`);
   check('C8 authorized party is the BFF client', at.azp === M.client, at.azp);
+  // C8b — the API keys users on (iss, sub); realm-as-code must declare the 'basic' scope (found by the US-021 E2E)
+  check('C8b access token carries sub and auth_time, no email', typeof at.sub === 'string' && at.sub.length > 0 && typeof at.auth_time === 'number' && !('email' in at),
+    `sub=${at.sub} auth_time=${at.auth_time}`);
   // C10/C11 — refresh token rotation with reuse detection (AUTH-06)
   const r1 = await token(M.realm, { grant_type: 'refresh_token', client_id: M.client, client_secret: SECRET, refresh_token: t.body.refresh_token });
   check('C10 refresh returns a new refresh token', r1.status === 200 && r1.body.refresh_token && r1.body.refresh_token !== t.body.refresh_token,

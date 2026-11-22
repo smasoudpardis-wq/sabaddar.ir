@@ -33,7 +33,7 @@
 
 **محیط:** Keycloak 26.0 (Docker Hub `keycloak/keycloak:26.0`؛ quay.io از این محیط در دسترس نبود، که برای Mirror داخلی هم مهم است) با Realmهای تعریف‌شده به‌صورت کد (`src/backend/dev/keycloak/*-realm.json`). اسکریپت خودکار `spike-sp01.js` ورود واقعی را با مرورگر (Playwright) انجام می‌دهد.
 
-**۱۷ از ۱۷ بررسی PASS شد:**
+**۱۸ از ۱۸ بررسی PASS شد** (C8b بعداً اضافه شد):
 
 | # | بررسی | کنترل D06 |
 |---|---|---|
@@ -41,6 +41,7 @@
 | C2 | `state` برگردانده می‌شود | AUTH-01 |
 | C3 | تبادل code بدون `code_verifier` رد می‌شود | AUTH-01 |
 | C4–C8 | با Verifier: Token صادر می‌شود؛ `aud=merchant-api`؛ `iss` = Realm merchant؛ عمر Access Token دقیقاً ۶۰۰ ثانیه؛ `azp` = Client BFF | AUTH-05، BR-004 |
+| C8b | Access Token دارای `sub` و `auth_time` است و `email` ندارد. **سابقه:** E2E بخش US-021 نشان داد Realm-as-code وقتی `clientScopes` را صریح تعریف می‌کند، Scopeهای داخلی Keycloak (از جمله `basic` که `sub` را می‌گذارد) ساخته نمی‌شوند؛ Scopeهای `basic` و `profile` (فقط نام) صریح اضافه شدند | AUTH-05، D06 §8 |
 | C10–C11 | Refresh یک Refresh Token جدید می‌دهد و استفاده دوباره از قبلی رد می‌شود | AUTH-06 |
 | C9، C9b | تکرار Authorization Code رد می‌شود **و** Sessionی که از آن صادر شده باطل می‌شود | AUTH-01 |
 | C12 | Password Grant برای BFF غیرفعال است | — |
