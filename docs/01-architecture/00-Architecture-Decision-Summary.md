@@ -21,21 +21,21 @@ related: ["../00-product/D01-Vision-PRD-MVP.md", "../README.md"]
 
 | ID | نوع | شرح | مبنا / ارجاع | Owner | وضعیت |
 |---|---|---|---|---|---|
-| A-01 | ASM | تیم توسعه با .NET و TypeScript آشناست؛ Stack بخش 7 مبنا قرار می‌گیرد. | §7 | CTO کارفرما | باز |
-| A-02 | ASM | استقرار Production داخل ایران است (دیتاسنتر/ابر داخلی). وابستگی حیاتی به SaaS خارجی (IdP، Email، Monitoring ابری) نداریم. | §13 آخرین بند | حقوقی + CTO | **OQ-01** |
+| A-01 | DEC | بک‌اند **.NET (LTS جاری) + EF Core**؛ فرانت TypeScript/Next.js طبق §7. | §7، پاسخ کارفرما 2026-11-22 | CTO کارفرما | **Confirmed** |
+| A-02 | DEC | استقرار Production **داخل ایران** (دیتاسنتر/ابر داخلی). هیچ وابستگی حیاتی به SaaS خارجی (IdP، Email، Monitoring ابری، CDN خارجی) مجاز نیست؛ داده مشتری از کشور خارج نمی‌شود. | §13، پاسخ کارفرما 2026-11-22 | حقوقی + CTO | **Confirmed** |
 | A-03 | ASM | MVP فقط ارز `IRR` دارد؛ چندارزی در مدل پشتیبانی می‌شود ولی UI آن در MVP نیست. | ACC-008، §13 | مالی | باز |
-| A-04 | ASM | ارسال صورتحساب به سامانه مؤدیان در MVP **نیست** (P1)؛ فقط فاکتور دیجیتال مشتری. Tax Rule ساده و Versioned در MVP. | §2، §13 | مشاور مالیاتی | **OQ-02** |
-| A-05 | ASM | پرداخت MVP: نقد + کارتخوان بیرونی (ثبت دستی مرجع) + حداقل یک PSP آنلاین. PSP مشخص نشده است. | SAL-006 | مالی/بازرگانی | **OQ-03** |
+| A-04 | DEC | **ارسال صورتحساب الکترونیکی به سامانه مؤدیان در MVP است** (P0). از طریق `TaxAuthority` Adapter مستقل و ناهمگام (Outbox)، جدا از فاکتور دیجیتال مشتری. مسیر اتصال (مستقیم با کلید مودی یا از طریق شرکت معتمد) و قالب‌های صورتحساب نیاز به Verification و تأیید مشاور مالیاتی دارد. | §13، پاسخ کارفرما 2026-11-22 | مشاور مالیاتی + Architect | **Confirmed (Scope)** — جزئیات: OQ-06 |
+| A-05 | DEC | پرداخت MVP: نقد + **کارتخوان مستقل با ورود دستی شماره پیگیری/مرجع** + **یک درگاه آنلاین (PSP)**. نام PSP هنوز انتخاب نشده (OQ-07). | SAL-006، پاسخ کارفرما 2026-11-22 | مالی/بازرگانی | **Confirmed** |
 | A-06 | ASM | حجم آغازین §17.1 (۱۰۰ Tenant) برای طراحی کافی است؛ معماری تا ۱۰٬۰۰۰ Tenant بدون بازنویسی مقیاس می‌گیرد. | §17.1 | PM | باز |
 | D-01 | DEC | **Modular Monolith** با یک Deployable اصلی (`RetailCloud.Api`) و یک Deployable جدا برای `RetailCloud.Workers`. | §6.1، ADR-001 | Architect | Proposed |
 | D-02 | DEC | **یک پایگاه PostgreSQL، یک Schema به ازای هر Bounded Context**؛ جداول Tenant-owned با `tenant_id` + `FORCE RLS`. | §8.2، ADR-002 | Architect/DBA | Proposed |
 | D-03 | DEC | دو قلمرو هویتی جدا: `merchant` و `customer` با Audience، Client و سیاست Session مستقل. | §8.3، §15.1، ADR-003 | Security | Proposed |
 | D-04 | DEC | `FinalizeSale` یک **تراکنش DB واحد** است که Sale، StockMovement، JournalEntry، IdempotencyRecord و OutboxMessage را می‌نویسد. فراخوانی خارجی داخل تراکنش ممنوع است. | SAL-007، §11.1، ADR-004 | Architect | Proposed |
-| D-05 | DEC | بهای تمام‌شده: **Moving Weighted Average** به ازای `(tenant, variant, warehouse)`. | INV-006، ADR-005 | مالی | Proposed — نیاز تأیید حسابدار |
+| D-05 | DEC | بهای تمام‌شده: **Moving Weighted Average** به ازای `(tenant, variant, warehouse)`؛ FIFO به‌عنوان گزینه بعدی در مدل پیش‌بینی می‌شود. هر دو روش با استاندارد حسابداری شماره ۸ ایران سازگارند؛ LIFO پشتیبانی نمی‌شود. روش هر Tenant ثابت و تغییر آن فقط در ابتدای سال مالی با ثبت دلیل. | INV-006، ADR-005 | مالی | Proposed — نیاز تأیید حسابدار رسمی (OQ-05) |
 | D-06 | DEC | آفلاین MVP: فقط **Offline Draft Basket**؛ Finalize بدون سرور ممنوع است. | §12.2، ADR-006 | PM | Proposed |
 | D-07 | DEC | پول: `Money(amount: long, currency)` بر حسب **ریال** (IRR بدون Minor Unit). تومان فقط برای نمایش است. Float/Double ممنوع. | §11.2، §13، ADR-009 | Architect | Proposed |
 | D-08 | DEC | زمان: ذخیره `timestamptz` (UTC)؛ «روز کاری» و دوره مالی بر اساس `TenantTimeZone`. تاریخ شمسی فقط در UI و گزارش است. | §13، ADR-009 | Architect | Proposed |
-| D-09 | DEC | IdP پیشنهادی: **Self-hosted OIDC** (Keycloak یا OpenIddict). انتخاب نهایی پس از Spike است. | A-02، ADR-003 | Security | Proposed |
+| D-09 | DEC | IdP: **Self-hosted OIDC** (Keycloak یا OpenIddict) — الزام ناشی از A-02. انتخاب بین این دو پس از Spike. | A-02، ADR-003 | Security | Proposed |
 | D-10 | DEC | ارتباط بین ماژول‌ها: (۱) Application Port هم‌زمان در همان UoW برای مسیرهای Atomic، (۲) Integration Event از طریق Outbox برای بقیه. دسترسی مستقیم به جدول ماژول دیگر ممنوع است و با Architecture Test کنترل می‌شود. | §6.4 | Architect | Proposed |
 
 ---
@@ -138,6 +138,7 @@ Contracts  ◄── referenced by other modules (only this!)
 | 11 | Notifications | Generic | `notif` | Notification, Template, ChannelPreference | پیام، تلاش ارسال، وضعیت Provider، Template | بله (Recipient از CID) | `NotificationDelivered/Failed` | NOT-001..007 |
 | 12 | Reporting | Supporting | `rpt` | — (Read Models) | Projectionهای گزارشی (قابل بازسازی؛ هیچ داده اصلی) | بله | — | RPT-001 |
 | 13 | AuditCompliance | Generic | `audit` | AuditRecord (append-only, hash-chained) | ممیزی امنیتی و کسب‌وکار، Retention، Export | بله + Platform | — | AUD-001,002، TEN-005 |
+| 14 | **TaxCompliance** (جدید — A-04) | Supporting | `tax` | TaxInvoiceSubmission, TaxProfile | پروفایل مالیاتی Tenant (شناسه ملی/کد اقتصادی، شناسه حافظه مالیاتی)، صورتحساب الکترونیکی ارسالی، وضعیت و پاسخ سامانه، ابطال/اصلاحیه | بله | `TaxInvoiceAccepted`, `TaxInvoiceRejected` | §13، INT-002 |
 
 **زیرساخت مشترک (Context نیست):** `BuildingBlocks` شامل `OutboxMessage`، `InboxMessage`، `IdempotencyRecord` (هر ماژول جدول خودش را در Schema خودش دارد؛ Relay مشترک)، `TenantContext`، `Money`، `Clock`.
 
@@ -184,6 +185,8 @@ flowchart TB
   INV -. "events" .-> RPT
   ACC -. "events" .-> RPT
   IAM -. "security events" .-> AUD
+  TAX["TaxCompliance"]
+  SAL -. "SaleFinalized / SaleReturned (Outbox)" .-> TAX
 ```
 
 **توضیح:** خطوط پیوسته ارتباط هم‌زمان درون‌فرایندی هستند. خطوط «same tx» در یک تراکنش DB اجرا می‌شوند. خطوط نقطه‌چین رویدادهای Outbox با تحویل at-least-once هستند و مصرف‌کننده Idempotent است (Inbox). همه ماژول‌ها رویداد ممیزی را از طریق یک Port مشترک به `AuditCompliance` می‌نویسند (برای خوانایی رسم نشده است).
@@ -238,7 +241,7 @@ sequenceDiagram
 | 6 | **جعل/تکرار Callback پرداخت** (§8.5) | M / H | تأیید فقط با Verify سرور-به-سرور؛ تطبیق مبلغ/ارز/مرجع؛ Return URL فقط UI؛ Inbox Dedup. | Reconciliation و صف `NeedsReview`. | P0-5. |
 | 7 | **پوشش ناکافی/مجوز داده بارکد** (R-04) | **H** / M | Provider Chain؛ تأیید انسانی اجباری زیر آستانه Confidence؛ ثبت `license/attribution/expires_at`؛ عدم Republish بدون مجوز. | Metric نرخ Hit به ازای منبع؛ **Pilot پوشش با ۲۰۰–۵۰۰ بارکد واقعی** قبل از Gate C. | تست: Provider Down → ورود دستی بدون خطا. |
 | 8 | **API بله ناپایدار یا متفاوت با فرض** (R-05) | M / M | Adapter؛ هیچ رفتار محصول قبل از تست Sandbox متعهد نمی‌شود؛ Fallback به SMS با رضایت؛ Delivery هرگز در تراکنش فروش نیست. | Dead Letter + داشبورد وضعیت Provider. | P0-7. |
-| 9 | **الزامات مالیاتی/قانونی متغیر** (R-06) | H / H | Tax Policy Versioned؛ Adapter مؤدیان جدا؛ «فاکتور دیجیتال ≠ صورتحساب رسمی» در UI و قرارداد؛ داده لازم برای مؤدیان از روز اول ذخیره شود (شناسه کالا/خدمت، کد اقتصادی) حتی اگر ارسال P1 باشد. | Review حقوقی در Gate A و Gate F. | تست: تغییر نرخ فقط فاکتورهای جدید را تحت تأثیر قرار دهد. |
+| 9 | **الزامات مالیاتی/قانونی و سامانه مؤدیان در MVP** (R-06) | **H** / **H** | Tax Policy Versioned؛ `TaxAuthority` Adapter ناهمگام از طریق Outbox با وضعیت‌های `Pending/Sent/Accepted/Rejected/NeedsReview`؛ فروش هرگز منتظر پاسخ مؤدیان نمی‌ماند؛ ابطال/اصلاح صورتحساب طبق قواعد سامانه؛ «فاکتور دیجیتال مشتری ≠ صورتحساب رسمی»؛ داده لازم (شناسه کالا/خدمت، شناسه ملی/کد اقتصادی خریدار در صورت لزوم، شماره منحصربه‌فرد مالیاتی) در Snapshot فاکتور؛ کلیدهای امضا در Vault/HSM. | داشبورد صف ارسال، Alert برای Rejected و تأخیر بیش از مهلت قانونی؛ Review حقوقی در Gate A و F. | تست Contract با Sandbox سامانه/شرکت معتمد؛ تست تغییر نرخ فقط روی فاکتورهای جدید؛ تست قطعی سامانه ← فروش ادامه، صف بازارسال. |
 | 10 | **Erosion مرز ماژول‌ها و پیچیدگی** (R-09) | H / M | Architecture Tests در CI؛ Contracts کوچک؛ ممنوعیت SharedKernel بزرگ؛ ADR برای هر استثنا. | گزارش وابستگی در هر Release. | Fitness Functions §الف-۳. |
 
 ریسک‌های پایش‌شده خارج از Top 10: R-08 (آفلاین)، R-10 (خرابی Provider)، R-11 (ریال/تومان)، R-12 (هزینه زیرساخت)، و **R-13 جدید: از دست رفتن داده/عدم بازیابی** (کنترل: PITR + Restore Drill ماهانه، P0-10). همه در D12 در Risk Register کامل می‌آیند.
@@ -274,11 +277,13 @@ sequenceDiagram
 
 | ID | پرسش | اثر بر معماری | Default فعلی | مهلت تصمیم |
 |---|---|---|---|---|
-| OQ-01 | محل استقرار Production: داخل ایران یا خارج؟ آیا انتقال داده مشتری به خارج مجاز است؟ | IdP، Email، Monitoring، DR، قوانین داده | داخل ایران، همه سرویس‌ها Self-hosted | قبل از D11 |
-| OQ-02 | آیا اتصال سامانه مؤدیان در MVP الزامی است (به‌خاطر مشتریان مشمول)؟ | Scope و مدل داده فاکتور | P1؛ داده لازم از MVP ذخیره می‌شود | قبل از D02 نهایی |
-| OQ-03 | PSPهای هدف (نام شرکت‌ها) و کارتخوان‌ها: یکپارچه یا مستقل؟ | Payments Adapter، Reconciliation | یک PSP آنلاین + کارتخوان مستقل با ورود دستی مرجع | قبل از D07 |
-| OQ-04 | آیا تیم بک‌اند .NET را تأیید می‌کند؟ | کل Stack | .NET LTS جاری + EF Core | قبل از D04 |
-| OQ-05 | روش بهای تمام‌شده (WAC) با حسابدار رسمی کارفرما تأیید شده است؟ | Inventory/Accounting | WAC | قبل از D05 |
+| OQ-01 | ~~محل استقرار~~ | — | **پاسخ: داخل ایران** (A-02) | بسته |
+| OQ-02 | ~~مؤدیان در MVP؟~~ | — | **پاسخ: بله، در MVP** (A-04) | بسته |
+| OQ-03 | ~~مدل پرداخت~~ | — | **پاسخ: یک درگاه آنلاین + کارتخوان مستقل با ورود دستی مرجع** (A-05) | بسته |
+| OQ-04 | ~~.NET~~ | — | **پاسخ: تأیید شد** (A-01) | بسته |
+| OQ-05 | تأیید WAC توسط حسابدار رسمی کارفرما (WAC و FIFO هر دو با استاندارد ۸ سازگارند) | Inventory/Accounting | WAC | قبل از D05 |
+| OQ-06 | مسیر اتصال مؤدیان: مستقیم (کلید خصوصی هر مودی در سامانه) یا از طریق شرکت معتمد/ارائه‌دهنده خدمات مالیاتی؟ کدام شرکت؟ | Tax Adapter، مدیریت کلید، امنیت، هزینه | از طریق **شرکت معتمد** (کاهش ریسک نگهداری کلید هر Tenant) `[REC]` | قبل از D05/D07 |
+| OQ-07 | نام PSP آنلاین منتخب | Payments Adapter، Reconciliation | Adapter عمومی؛ اولین پیاده‌سازی پس از انتخاب | قبل از D07 |
 
 ---
 
@@ -288,5 +293,5 @@ sequenceDiagram
 - **Open Food Facts:** شرایط ODbL برای Cache/Republish، Rate Limit و پوشش کالاهای ایرانی (در Pilot اندازه‌گیری شود).
 - **GS1 Iran:** وجود API، قرارداد و هزینه.
 - **PSP منتخب:** مستند Verify، Callback، Refund و فایل تسویه برای Reconciliation.
-- **سامانه مؤدیان:** آخرین مستندات رسمی و شرکت معتمد؛ با مشاور مالیاتی بررسی شود.
+- **سامانه مؤدیان (P0):** آخرین مستندات رسمی API، قالب‌ها و الگوهای صورتحساب، مهلت ارسال، قواعد ابطال/اصلاح/برگشت، Sandbox، الزامات کلید امضا و شرکت معتمد منتخب؛ با مشاور مالیاتی بررسی شود.
 - **SMS Provider داخلی:** وضعیت Delivery Report و الزامات خط خدماتی/تبلیغاتی.
