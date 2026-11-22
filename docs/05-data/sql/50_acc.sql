@@ -1,0 +1,161 @@
+SET ROLE rc_migrator;
+
+CREATE TABLE acc.account (
+  tenant_id       uuid NOT NULL,
+  id              uuid NOT NULL,
+  code            text NOT NULL,
+  name            text NOT NULL,
+  account_type    text NOT NULL CHECK (account_type IN ('Asset','Liability','Equity','Revenue','Expense')),
+  parent_id       uuid,
+  is_system       boolean NOT NULL DEFAULT false,
+  requires_detail boolean NOT NULL DEFAULT false,
+  is_postable     boolean NOT NULL DEFAULT true,
+  PRIMARY KEY (tenant_id, id),
+  UNIQUE (tenant_id, code),
+  FOREIGN KEY (tenant_id, parent_id) REFERENCES acc.account (tenant_id, id)
+);
+CALL core.enable_tenant_rls('acc.account');
+
+CREATE TABLE acc.fiscal_period (
+  tenant_id   uuid NOT NULL,
+  id          uuid NOT NULL,
+  fiscal_year int  NOT NULL,        -- Jalali year, e.g. 1405
+  period_no   int  NOT NULL CHECK (period_no BETWEEN 1 AND 12),
+  span        tstzrange NOT NULL CHECK (NOT isempty(span) AND lower_inc(span) AND NOT upper_inc(span)),
+  status      text NOT NULL DEFAULT 'Open' CHECK (status IN ('Open','Closed','Locked')),
+  PRIMARY KEY (tenant_id, id),
+  UNIQUE (tenant_id, fiscal_year, period_no),
+  EXCLUDE USING gist (tenant_id WITH =, span WITH &&)           -- periods never overlap
+);
+CALL core.enable_tenant_rls('acc.fiscal_period');
+
+CREATE TABLE acc.journal_entry (
+  tenant_id    uuid NOT NULL,
+  id           uuid NOT NULL,
+  status       text NOT NULL DEFAULT 'Draft' CHECK (status IN ('Draft','Posted','Reversed')),
+  effective_at timestamptz NOT NULL,
+  period_id    uuid NOT NULL,
+  description  text,
+  source_type  text,
+  source_id    uuid,
+  purpose      text,                 -- e.g. 'revenue', 'cogs'
+  rule_version int,
+  reversal_of  uuid,
+  reversed_by  uuid,
+  posted_at    timestamptz,
+  PRIMARY KEY (tenant_id, id),
+  FOREIGN KEY (tenant_id, period_id)   REFERENCES acc.fiscal_period (tenant_id, id),
+  FOREIGN KEY (tenant_id, reversal_of) REFERENCES acc.journal_entry (tenant_id, id),
+  CHECK (status = 'Draft' OR posted_at IS NOT NULL),
+  CHECK ((source_type IS NULL) = (source_id IS NULL))
+);
+CREATE UNIQUE INDEX ux_journal_source ON acc.journal_entry (tenant_id, source_type, source_id, purpose)
+  WHERE source_type IS NOT NULL;                                     -- DI-044
+CREATE UNIQUE INDEX ux_journal_one_reversal ON acc.journal_entry (tenant_id, reversal_of)
+  WHERE reversal_of IS NOT NULL;                                     -- DI-045
+CALL core.enable_tenant_rls('acc.journal_entry');
+
+CREATE TABLE acc.journal_line (
+  tenant_id   uuid NOT NULL,
+  entry_id    uuid NOT NULL,
+  line_no     int  NOT NULL,
+  account_id  uuid NOT NULL,
+  detail_type text,                  -- 'Customer' | 'Supplier' | 'Branch'
+  detail_id   uuid,
+  debit       bigint NOT NULL DEFAULT 0,
+  credit      bigint NOT NULL DEFAULT 0,
+  PRIMARY KEY (tenant_id, entry_id, line_no),
+  FOREIGN KEY (tenant_id, entry_id)   REFERENCES acc.journal_entry (tenant_id, id),
+  FOREIGN KEY (tenant_id, account_id) REFERENCES acc.account (tenant_id, id),   -- DI-046
+  CONSTRAINT ck_one_side CHECK ((debit > 0 AND credit = 0) OR (credit > 0 AND debit = 0)),
+  CHECK ((detail_type IS NULL) = (detail_id IS NULL))
+);
+CREATE INDEX ix_journal_line_account ON acc.journal_line (tenant_id, account_id);
+CALL core.enable_tenant_rls('acc.journal_line');
+
+-- Posting protocol: INSERT entry as Draft -> INSERT lines -> UPDATE status='Posted' (same tx).
+-- DI-040: deferred check at COMMIT that every Posted entry is balanced with >= 2 lines
+-- and that detail-required accounts carry a detail (DI-043) and the period is Open (DI-042).
+CREATE OR REPLACE FUNCTION acc.check_entry() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+  v_tenant uuid := COALESCE(NEW.tenant_id, OLD.tenant_id);
+  -- fields read via jsonb because NEW/OLD have different shapes for the two tables
+  v_row    jsonb := to_jsonb(COALESCE(NEW, OLD));
+  v_entry  uuid := (CASE WHEN TG_TABLE_NAME = 'journal_entry' THEN v_row->>'id' ELSE v_row->>'entry_id' END)::uuid;
+  v_status text; v_period_status text; v_eff timestamptz; v_span tstzrange;
+  v_dr bigint; v_cr bigint; v_n int; v_missing_detail int;
+BEGIN
+  SELECT e.status, p.status, e.effective_at, p.span INTO v_status, v_period_status, v_eff, v_span
+    FROM acc.journal_entry e JOIN acc.fiscal_period p ON p.tenant_id = e.tenant_id AND p.id = e.period_id
+   WHERE e.tenant_id = v_tenant AND e.id = v_entry;
+  IF v_status IS DISTINCT FROM 'Posted' THEN RETURN NULL; END IF;
+
+  SELECT COALESCE(sum(debit),0), COALESCE(sum(credit),0), count(*),
+         count(*) FILTER (WHERE a.requires_detail AND l.detail_id IS NULL)
+    INTO v_dr, v_cr, v_n, v_missing_detail
+    FROM acc.journal_line l JOIN acc.account a ON a.tenant_id = l.tenant_id AND a.id = l.account_id
+   WHERE l.tenant_id = v_tenant AND l.entry_id = v_entry;
+
+  IF v_n < 2 OR v_dr <> v_cr THEN
+    RAISE EXCEPTION 'journal % unbalanced or too few lines (dr=%, cr=%, n=%)', v_entry, v_dr, v_cr, v_n
+      USING ERRCODE = 'RC010';
+  END IF;
+  IF v_missing_detail > 0 THEN
+    RAISE EXCEPTION 'journal % has lines without required detail account', v_entry USING ERRCODE = 'RC011';
+  END IF;
+  RETURN NULL;
+END $$;
+
+CREATE CONSTRAINT TRIGGER tr_entry_balanced AFTER INSERT OR UPDATE ON acc.journal_entry
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION acc.check_entry();
+CREATE CONSTRAINT TRIGGER tr_line_balanced AFTER INSERT OR UPDATE OR DELETE ON acc.journal_line
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION acc.check_entry();
+
+-- DI-041/042: immutability of Posted entries; posting only into Open periods.
+CREATE OR REPLACE FUNCTION acc.guard_entry() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE v_period_status text; v_span tstzrange;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    IF OLD.status <> 'Draft' THEN RAISE EXCEPTION 'posted journal cannot be deleted' USING ERRCODE = 'RC012'; END IF;
+    RETURN OLD;
+  END IF;
+  IF TG_OP = 'UPDATE' AND OLD.status IN ('Posted','Reversed') THEN
+    IF NOT (OLD.status = 'Posted' AND NEW.status = 'Reversed' AND OLD.reversed_by IS NULL AND NEW.reversed_by IS NOT NULL
+            AND (to_jsonb(NEW) - ARRAY['status','reversed_by']) = (to_jsonb(OLD) - ARRAY['status','reversed_by'])) THEN
+      RAISE EXCEPTION 'posted journal % is immutable (use a reversal)', OLD.id USING ERRCODE = 'RC012';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF NEW.status = 'Posted' THEN
+    SELECT status, span INTO v_period_status, v_span FROM acc.fiscal_period
+     WHERE tenant_id = NEW.tenant_id AND id = NEW.period_id FOR SHARE;
+    IF v_period_status <> 'Open' THEN
+      RAISE EXCEPTION 'period is % — posting not allowed', v_period_status USING ERRCODE = 'RC013';
+    END IF;
+    IF NOT (NEW.effective_at <@ v_span) THEN
+      RAISE EXCEPTION 'effective_at outside the period span' USING ERRCODE = 'RC014';
+    END IF;
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tr_entry_guard BEFORE INSERT OR UPDATE OR DELETE ON acc.journal_entry
+  FOR EACH ROW EXECUTE FUNCTION acc.guard_entry();
+
+CREATE OR REPLACE FUNCTION acc.guard_line() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE v_status text;
+BEGIN
+  SELECT status INTO v_status FROM acc.journal_entry
+   WHERE tenant_id = COALESCE(NEW.tenant_id, OLD.tenant_id) AND id = COALESCE(NEW.entry_id, OLD.entry_id);
+  IF v_status IN ('Posted','Reversed') THEN
+    RAISE EXCEPTION 'lines of a posted journal are immutable' USING ERRCODE = 'RC012';
+  END IF;
+  RETURN COALESCE(NEW, OLD);
+END $$;
+CREATE TRIGGER tr_line_guard BEFORE INSERT OR UPDATE OR DELETE ON acc.journal_line
+  FOR EACH ROW EXECUTE FUNCTION acc.guard_line();
+
+GRANT USAGE ON SCHEMA acc TO rc_app, rc_worker, rc_reporting;
+GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA acc TO rc_app;
+GRANT DELETE ON acc.journal_entry, acc.journal_line TO rc_app;   -- drafts only (guarded)
+GRANT SELECT ON ALL TABLES IN SCHEMA acc TO rc_worker, rc_reporting;
+RESET ROLE;

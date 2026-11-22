@@ -1,0 +1,29 @@
+-- RetailCloud — D05 sample DDL. Run as a superuser ONCE per cluster/database.
+-- Creates group roles, extensions and schemas. All objects are owned by rc_migrator.
+-- Target: PostgreSQL 16+ (production target 17/18). Tested on 16.
+
+DO $$
+DECLARE r text;
+BEGIN
+  FOREACH r IN ARRAY ARRAY['rc_migrator','rc_app','rc_worker','rc_reporting','rc_tax_signer'] LOOP
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
+      EXECUTE format('CREATE ROLE %I NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB', r);
+    END IF;
+  END LOOP;
+END $$;
+-- Real login users (e.g. api_svc) are granted membership: GRANT rc_app TO api_svc;
+-- Login users are issued as short-lived dynamic credentials by OpenBao (D04 §3.3).
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;    -- digest() for audit hash chain
+CREATE EXTENSION IF NOT EXISTS btree_gist;  -- exclusion constraints on (uuid, range)
+
+DO $$
+DECLARE s text;
+BEGIN
+  FOREACH s IN ARRAY ARRAY['core','platform','merch','inv','sales','acc','ar','cid','tax','audit'] LOOP
+    EXECUTE format('CREATE SCHEMA IF NOT EXISTS %I AUTHORIZATION rc_migrator', s);
+    EXECUTE format('REVOKE ALL ON SCHEMA %I FROM PUBLIC', s);
+  END LOOP;
+END $$;
+
+DO $$ BEGIN EXECUTE format('GRANT CREATE ON DATABASE %I TO rc_migrator', current_database()); END $$;
