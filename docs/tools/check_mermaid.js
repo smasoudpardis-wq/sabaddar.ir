@@ -1,5 +1,5 @@
-// Usage: npm i mermaid@11.4.1 playwright (or use a preinstalled Playwright) && node docs/tools/check_mermaid.js $(grep -rl "```mermaid" docs)
-// Mermaid is loaded from ./node_modules next to this script or set MERMAID_JS to the path of mermaid.min.js.
+// Usage: MERMAID_JS=<path to mermaid@11.4.1 dist/mermaid.min.js> NODE_PATH=$(npm root -g) node docs/tools/check_mermaid.js <markdown files...>
+// Requires Playwright (preinstalled or npm i playwright). Renders each mermaid block in headless Chromium; exits 1 on any failure.
 // Renders every ```mermaid block in the given markdown files with Mermaid in headless Chromium.
 const { chromium } = require('playwright');
 const fs = require('fs');
