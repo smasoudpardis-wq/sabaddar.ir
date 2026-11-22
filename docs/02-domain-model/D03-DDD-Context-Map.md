@@ -494,7 +494,7 @@ classDiagram
 
 | Aggregate | مرز | Scope داده |
 |---|---|---|
-| **GlobalCustomer** (← VerifiedContact، BaleAccountLink) | هویت و کانال‌ها | **Global**: RLS خاص بدون `tenant_id`؛ فقط نقش DB ماژول CID به آن دسترسی دارد `[DEC D-31]` |
+| **GlobalCustomer** (← VerifiedContact، BaleAccountLink) | هویت و کانال‌ها | **Global**: RLS خاص بدون `tenant_id`؛ فقط نقش DB ماژول CID به آن دسترسی دارد `[DEC D-31]` — **اصلاح در D05 (D-36):** در MVP با GRANT به `rc_app` و `rc_worker`؛ نقش جدا P1 |
 | **TenantCustomerMembership** (← ConsentRecord) | عضویت و رضایت در یک Tenant | Tenant-scoped |
 | **OtpChallenge** | یک‌بارمصرف | Global، TTL |
 | **CustomerQrCredential** | `jti` مصرف‌شده | Global، TTL (Redis + DB) |

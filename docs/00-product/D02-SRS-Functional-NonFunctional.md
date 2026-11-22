@@ -147,6 +147,7 @@ open_questions: [OQ-05, OQ-08, OQ-09, SQ-01..SQ-06]
 | `reports.view` | گزارش‌ها | Tenant/Branch | — |
 | `audit.view` | مشاهده ممیزی | Tenant | — |
 | `integrations.manage` | کلید API، PSP، Webhook | Tenant | — |
+| `data.export` | Export داده (TEN-005، RPT-003)؛ شماره کامل مشتری فقط همراه `customers.pii.view` | Tenant | — (ممیزی + Alert DET-08 در D06) |
 | `platform.support.jit` | دسترسی پشتیبانی زمان‌دار | Platform → Tenant | **بله**، با رضایت Tenant (IAM-008) |
 
 ---
