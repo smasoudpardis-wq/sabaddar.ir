@@ -25,6 +25,7 @@ builder.Services.AddSingleton<ITenantSetupStep, RetailCloud.Inventory.Infrastruc
 builder.Services.AddSingleton<ITenantSetupStep, RetailCloud.Accounting.Infrastructure.ChartOfAccountsSetupStep>();
 builder.Services.AddSingleton<ITenantSetupStep, RetailCloud.Accounting.Infrastructure.FiscalPeriodsSetupStep>();
 builder.Services.AddSingleton<IUserAdministration, PostgresUserAdministration>();
+builder.Services.AddSingleton<IBranchAdministration, PostgresBranchAdministration>();
 builder.Services.AddSingleton<IScopeLookup, BranchScopeLookup>();
 builder.Services.AddSingleton<IScopeLookup, RegisterScopeLookup>();
 builder.Services.AddSingleton<IScopeLookup, RetailCloud.Inventory.Infrastructure.WarehouseScopeLookup>();
@@ -164,6 +165,49 @@ v1.MapGet("/branches", async (RequestContext ctx, IUnitOfWork uow, IEnumerable<I
             return reached;
         }, ct)))
     .RequireTenantMember();
+
+// createBranch / createRegister (TEN-002, US-012): codes unique per tenant / per branch; the branch gets register R1
+// now and its warehouse from platform.branch-created (Inventory, via Workers).
+v1.MapPost("/branches", async (BranchCreate body, RequestContext ctx, IUnitOfWork uow, IBranchAdministration branches, HttpContext http, CancellationToken ct) =>
+    {
+        Dictionary<string, string[]> errors = BranchRules.Validate(body.Code, body.Name ?? "");
+        if (errors.Count > 0)
+        {
+            return Problems.Validation(http, errors);
+        }
+
+        try
+        {
+            BranchView b = await uow.ExecuteAsync(ctx, (s, c) => branches.CreateBranchAsync(s, body.Code!, body.Name!, c), ct);
+            return Results.Created($"/api/v1/branches/{b.Id}", b);
+        }
+        catch (DuplicateCodeException)
+        {
+            return Problems.Create(http, StatusCodes.Status409Conflict, "duplicate-code", "This code is already used");
+        }
+    })
+    .RequirePermission(Permissions.TenantSettingsManage);
+
+v1.MapPost("/branches/{branchId:guid}/registers", async (Guid branchId, RegisterCreate body, RequestContext ctx, IUnitOfWork uow,
+        IBranchAdministration branches, HttpContext http, CancellationToken ct) =>
+    {
+        Dictionary<string, string[]> errors = BranchRules.Validate(body.Code, null);
+        if (errors.Count > 0)
+        {
+            return Problems.Validation(http, errors);
+        }
+
+        try
+        {
+            RegisterView? r = await uow.ExecuteAsync(ctx, (s, c) => branches.CreateRegisterAsync(s, branchId, body.Code!, c), ct);
+            return r is null ? Problems.NotFound(http) : Results.Created($"/api/v1/branches/{branchId}/registers/{r.Id}", r);
+        }
+        catch (DuplicateCodeException)
+        {
+            return Problems.Create(http, StatusCodes.Status409Conflict, "duplicate-code", "This code is already used");
+        }
+    })
+    .RequirePermission(Permissions.TenantSettingsManage);
 
 // listRoles: the system roles with their stable ids and permissions (custom roles: later story).
 v1.MapGet("/roles", () => Results.Ok(RoleCatalog.Roles.Select(r => new
@@ -335,6 +379,10 @@ v1.MapDelete("/users/{userId:guid}/role-assignments/{assignmentId:guid}", async 
 await app.RunAsync();
 
 internal sealed record SelectTenant(Guid TenantId);
+
+internal sealed record BranchCreate(string? Code, string? Name);
+
+internal sealed record RegisterCreate(string? Code);
 
 internal sealed record RoleAssignmentInput(Guid RoleId, ScopeType ScopeType, Guid? ScopeId);
 

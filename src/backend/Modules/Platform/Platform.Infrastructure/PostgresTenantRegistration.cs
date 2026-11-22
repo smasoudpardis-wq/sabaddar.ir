@@ -93,3 +93,60 @@ public sealed class RegisterScopeLookup : IScopeLookup
         return await cmd.ExecuteScalarAsync(cancellationToken) as Guid?;
     }
 }
+
+/// <summary>TEN-002 (US-012).</summary>
+public sealed class PostgresBranchAdministration(IOutbox outbox) : IBranchAdministration
+{
+    public async Task<BranchView> CreateBranchAsync(IUnitOfWorkScope scope, string code, string name, CancellationToken cancellationToken)
+    {
+        var s = (PostgresUnitOfWorkScope)scope;
+        Guid branchId = Guid.CreateVersion7(), registerId = Guid.CreateVersion7();
+        await Insert(s, "INSERT INTO platform.branch (tenant_id, id, code, name) VALUES (core.current_tenant(), $1, $2, $3)",
+            cancellationToken, branchId, code, name.Trim());
+        await Insert(s, "INSERT INTO platform.register (tenant_id, id, branch_id, code) VALUES (core.current_tenant(), $1, $2, 'R1')",
+            cancellationToken, registerId, branchId);
+        await outbox.AddAsync(scope, "Platform", BranchRules.BranchCreated, 1, branchId,
+            new { branchId, code, name = name.Trim(), firstRegisterId = registerId }, causationId: null, cancellationToken);
+        return new BranchView(branchId, code, name.Trim(), "Active");
+    }
+
+    public async Task<RegisterView?> CreateRegisterAsync(IUnitOfWorkScope scope, Guid branchId, string code, CancellationToken cancellationToken)
+    {
+        var s = (PostgresUnitOfWorkScope)scope;
+        await using (NpgsqlCommand exists = s.Command("SELECT EXISTS (SELECT 1 FROM platform.branch WHERE id = $1)"))
+        {
+            exists.Parameters.Add(new NpgsqlParameter { Value = branchId });
+            if (!(bool)(await exists.ExecuteScalarAsync(cancellationToken))!)
+            {
+                return null;
+            }
+        }
+
+        Guid id = Guid.CreateVersion7();
+        await Insert(s, "INSERT INTO platform.register (tenant_id, id, branch_id, code) VALUES (core.current_tenant(), $1, $2, $3)",
+            cancellationToken, id, branchId, code);
+        return new RegisterView(id, branchId, code);
+    }
+
+    /// <summary>Unique violations become <see cref="DuplicateCodeException"/> without aborting the transaction.</summary>
+    private static async Task Insert(PostgresUnitOfWorkScope s, string sql, CancellationToken ct, params object[] args)
+    {
+        await s.Transaction.SaveAsync("code", ct);
+        try
+        {
+            await using NpgsqlCommand cmd = s.Command(sql);
+            foreach (object a in args)
+            {
+                cmd.Parameters.Add(new NpgsqlParameter { Value = a });
+            }
+
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+        catch (PostgresException e) when (e.SqlState == PostgresErrorCodes.UniqueViolation)
+        {
+            await s.Transaction.RollbackAsync("code", ct);
+            throw new DuplicateCodeException();
+        }
+    }
+}
+

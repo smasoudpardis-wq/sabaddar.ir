@@ -130,7 +130,12 @@ try {
   const keys = await redis.keys('rc:bff:*');
   const values = await Promise.all(keys.map((k) => redis.get(k)));
   await redis.quit();
-  const plain = values.some((v) => /eyJ|refresh|accessToken/.test(v ?? '')) || keys.some((k) => k.includes(sidAfter));
+  // Every value must be the sealed format, and the decoded ciphertext must not contain token field names.
+  // (Do not grep the base64 text for "eyJ": random ciphertext contains it by chance now and then.)
+  const sealed = /^v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+  const plain = values.some((v) => !sealed.test(v ?? '')
+      || /accessToken|refreshToken|"exp"/.test(Buffer.from((v ?? '').split('.')[2] ?? '', 'base64url').toString('latin1')))
+    || keys.some((k) => k.includes(sidAfter));
   check('E21', 'Valkey holds only encrypted values under hashed keys', keys.length > 0 && !plain, `${keys.length} keys`);
 
   // I01–I06 US-025: the owner invites a cashier for one branch; the cashier joins through the link (IAM-001, IAM-006)
@@ -167,6 +172,22 @@ try {
   await page.goto(`${BFF}/users`);
   await page.getByTestId('users').filter({ hasText: 'صندوق‌دار' }).waitFor();
   check('I06', 'the owner sees the new cashier with role and branch', (await page.getByTestId('users').textContent()).includes('صندوق‌دار (مرکزی)'));
+  await page.goto(BFF);
+  await page.getByTestId('logout').waitFor();
+
+  // B01–B02 US-012: the owner adds a branch from the panel; duplicates are refused
+  await page.goto(`${BFF}/branches`);
+  await page.getByTestId('branches').waitFor();
+  await page.fill('input[name=code]', 'B2');
+  await page.fill('input[name=name]', 'شعبه شمال');
+  await page.getByTestId('branch-submit').click();
+  await page.getByTestId('branches').filter({ hasText: 'شعبه شمال' }).waitFor();
+  check('B01', 'owner creates a branch from the panel', true);
+  await page.fill('input[name=code]', 'B2');
+  await page.fill('input[name=name]', 'تکراری');
+  await page.getByTestId('branch-submit').click();
+  await page.getByTestId('branch-error').waitFor();
+  check('B02', 'duplicate branch code is refused with a clear message', (await page.getByTestId('branch-error').textContent()).includes('قبلاً'));
   await page.goto(BFF);
   await page.getByTestId('logout').waitFor();
 

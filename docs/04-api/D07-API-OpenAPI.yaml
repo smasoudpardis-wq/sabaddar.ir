@@ -292,6 +292,8 @@ paths:
       tags:
       - Tenant
       summary: ایجاد شعبه
+      description: 'Creates register R1 in the same transaction; the branch''s sellable warehouse W-<code> follows from platform.branch-created
+        (Inventory). code: ^[A-Z0-9][A-Z0-9-]{0,9}$, unique per tenant (409 duplicate-code).'
       security: *id001
       requestBody:
         required: true
@@ -12503,3 +12505,6 @@ x-error-catalog:
   last-owner:
     status: 409
     meaning: A tenant must keep at least one TenantOwner
+  duplicate-code:
+    status: 409
+    meaning: Branch code (per tenant) or register code (per branch) already used

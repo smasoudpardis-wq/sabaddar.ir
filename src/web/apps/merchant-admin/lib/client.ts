@@ -21,6 +21,7 @@ export const MESSAGES: Record<string, string> = {
   'duplicate-assignment': 'این کاربر همین نقش را در همین محدوده دارد.',
   'last-owner': 'فروشگاه باید دست‌کم یک مالک داشته باشد.',
   'tenant-not-selected': 'ابتدا فروشگاه را انتخاب کنید.',
+  'duplicate-code': 'این کد قبلاً استفاده شده است.',
 };
 
 export const ROLE_LABELS: Record<string, string> = {

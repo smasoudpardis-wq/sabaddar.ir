@@ -505,6 +505,7 @@ ERROR_CATALOG = {
     "forbidden": (403, "The caller's roles do not grant the permission at this scope (IAM-006, D06 §6.1)"),
     "duplicate-assignment": (409, "The user already has this role at this scope"),
     "last-owner": (409, "A tenant must keep at least one TenantOwner"),
+    "duplicate-code": (409, "Branch code (per tenant) or register code (per branch) already used"),
 }
 
 # ----------------------------------------------------------------------------- operations
@@ -632,7 +633,9 @@ op("patch", "/tenants/me", "updateMyTenant", "Tenant", "به‌روزرسانی 
    body="TenantUpdate", resp="Tenant", reqs=["TEN-001", "BR-040", "BR-052"], audited=True, conflict=True)
 op("get", "/branches", "listBranches", "Tenant", "فهرست شعب مجاز کاربر", resp="Branch", list_of=True, reqs=["TEN-002"])
 op("post", "/branches", "createBranch", "Tenant", "ایجاد شعبه", perm="tenant.settings.manage", scope="Tenant",
-   body="BranchCreate", resp="Branch", resp_code="201", reqs=["TEN-002"], audited=True, conflict=True)
+   body="BranchCreate", resp="Branch", resp_code="201", reqs=["TEN-002"], audited=True, conflict=True,
+   desc="Creates register R1 in the same transaction; the branch's sellable warehouse W-<code> follows from "
+        "platform.branch-created (Inventory). code: ^[A-Z0-9][A-Z0-9-]{0,9}$, unique per tenant (409 duplicate-code).")
 op("post", "/branches/{branchId}/registers", "createRegister", "Tenant", "ایجاد صندوق", perm="tenant.settings.manage",
    scope="Tenant", body="RegisterCreate", resp="Register", resp_code="201", reqs=["TEN-002"], audited=True, conflict=True)
 op("post", "/branches/{branchId}/pairing-codes", "createPairingCode", "Tenant", "صدور کد جفت‌سازی دستگاه (۱۰ دقیقه)",

@@ -672,6 +672,7 @@ Handle(FinalizeSale cmd):                                   // خارج از ت�
 | ID | eventType | تولیدکننده | مصرف‌کنندگان | Payload کلیدی |
 |---|---|---|---|---|
 | DE-PLT-001 | `platform.tenant-registered` v1 | Platform | IdentityAccess (عضویت TenantOwner)، Inventory (انبار W1)، Accounting (شجره حساب، نگاشت نقش‌ها، ۱۲ دوره سال جاری) — US-011 | tenantId، ownerUserId، legalName، industryCode، timeZone، pricingMode، firstBranchId، firstRegisterId، registeredAt |
+| DE-PLT-002 | `platform.branch-created` v1 | Platform | Inventory (انبار W-&lt;code&gt;) — US-012 | branchId، code، name، firstRegisterId |
 | DE-SAL-001 | `sales.sale-finalized` v1 | Sales | TaxCompliance، Notifications (از طریق ReceiptDeliveryRequested)، Reporting، CustomerIdentity (آمار عضویت) | saleId، invoiceNo، branchId، registerId، cashierId، tenantCustomerId?، pricingMode، lines[{variantId, qty, unit, unitPrice, discount, net, taxCode, taxRate, tax, lineTotal, costAtSale, productTaxId}]، tenders[{method, amount, ref?}]، totals، buyerTaxInfo (enc)?، finalizedAt، receiptTemplateVersion |
 | DE-SAL-002 | `sales.sale-cancelled` v1 | Sales | Reporting | saleId، reason |
 | DE-SAL-003 | `sales.sale-returned` v1 | Sales | TaxCompliance، Notifications، Reporting، Payments (RefundRequested) | returnId، saleId، lines[{lineNo, qty, net, tax, lineTotal, costAtSale}]، refundTotal، refundMethod، reason |
