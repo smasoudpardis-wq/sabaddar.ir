@@ -8,8 +8,8 @@
 | D01 Vision / PRD / MVP | [00-product/D01-Vision-PRD-MVP.md](00-product/D01-Vision-PRD-MVP.md) | Draft 0.1 |
 | D02 SRS | [00-product/D02-SRS-Functional-NonFunctional.md](00-product/D02-SRS-Functional-NonFunctional.md) | Draft 0.1 |
 | D03 DDD Context Map | [02-domain-model/D03-DDD-Context-Map.md](02-domain-model/D03-DDD-Context-Map.md) | Draft 0.1 |
-| D04 Architecture C4 + ADRs | `01-architecture/D04-Architecture-C4.md` | بعدی |
-| D05 Database ERD & Migrations | `05-data/D05-Database-ERD-and-Migrations.md` | برنامه‌ریزی‌شده |
+| D04 Architecture C4 + ADRs | [01-architecture/D04-Architecture-C4.md](01-architecture/D04-Architecture-C4.md) · [ADRها](08-decisions-adr/README.md) | Draft 0.1 |
+| D05 Database ERD & Migrations | `05-data/D05-Database-ERD-and-Migrations.md` | بعدی |
 | D06 Security Threat Model | `03-security/D06-Security-Threat-Model.md` | برنامه‌ریزی‌شده |
 | D07 OpenAPI | `04-api/D07-API-OpenAPI.yaml` | برنامه‌ریزی‌شده |
 | D08 Flows | `02-domain-model/D08-Flows-BPMN-Sequence.md` | برنامه‌ریزی‌شده |
