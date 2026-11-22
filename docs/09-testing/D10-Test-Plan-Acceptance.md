@@ -206,7 +206,7 @@ python3 docs/09-testing/tools/build_test_catalog.py
 | O-13 | `credit_account.outstanding ≠ Σ(sign × amount)` دفتر معین؛ یا Σ مانده‌ها ≠ مانده حساب کنترل دریافتنی در دفترکل |
 | O-14 | `audit.verify_chain()` غیر NULL برای هر Tenant |
 
-این Oracleها همان Jobهای PM-09 در Production هستند. **یک کد، دو کاربرد** `[DEC D-75]`.
+این Oracleها همان Jobهای PM-09 در Production هستند. **یک کد، دو کاربرد** `[DEC D-75]`. **وضعیت:** O-2، O-3، O-4، O-5، O-12، O-13 و O-14 در [`docs/05-data/sql/91_oracles.sql`](../05-data/sql/91_oracles.sql) پیاده و تست شده‌اند (`oracles_test.sql`: کشف ناهنجاری‌های عمدی، بدون مثبت کاذب). O-1، O-6 تا O-11 به Log تست یا ماژول‌های پیاده‌نشده در DDL نمونه وابسته‌اند و با Sliceها پیاده می‌شوند.
 
 ---
 

@@ -27,4 +27,22 @@ UNION ALL
 SELECT 'cid-global-exposed', c.relname || ' -> ' || r.rolname
 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 CROSS JOIN (VALUES ('rc_reporting'),('rc_tax_signer')) AS r(rolname)
-WHERE n.nspname = 'cid' AND c.relkind = 'r' AND has_table_privilege(r.rolname, c.oid, 'SELECT');
+WHERE n.nspname = 'cid' AND c.relkind = 'r' AND has_table_privilege(r.rolname, c.oid, 'SELECT')
+UNION ALL
+-- (5) The only non-superuser BYPASSRLS role is rc_tenant_directory, and it may read nothing except platform.tenant(id,status).
+SELECT 'unexpected-bypassrls', rolname FROM pg_roles
+WHERE rolbypassrls AND NOT rolsuper AND rolname <> 'rc_tenant_directory'
+UNION ALL
+SELECT 'tenant-directory-overprivileged', n.nspname || '.' || c.relname
+FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind IN ('r','p') AND n.nspname NOT IN ('pg_catalog','information_schema')
+  AND pg_has_role('rc_tenant_directory', 'rc_tenant_directory', 'USAGE')
+  AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rc_tenant_directory')
+  AND has_table_privilege('rc_tenant_directory', c.oid, 'SELECT,INSERT,UPDATE,DELETE')
+UNION ALL
+SELECT 'tenant-directory-overprivileged', 'platform.tenant column ' || a.attname
+FROM pg_attribute a
+WHERE EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rc_tenant_directory')
+  AND a.attrelid = 'platform.tenant'::regclass AND a.attnum > 0 AND NOT a.attisdropped
+  AND a.attname NOT IN ('id','status')
+  AND has_column_privilege('rc_tenant_directory', 'platform.tenant'::regclass, a.attname, 'SELECT');;

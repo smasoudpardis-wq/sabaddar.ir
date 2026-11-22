@@ -9,6 +9,8 @@ for f in 00_bootstrap_superuser.sql 01_core.sql 10_platform.sql 20_merch.sql 30_
   PGOPTIONS="-c client_min_messages=warning" psql -v ON_ERROR_STOP=1 -q -d $DB -f "$f"
 done
 psql -v ON_ERROR_STOP=1 -q -d $DB -f tests/tests.sql
+PGOPTIONS="-c client_min_messages=warning" psql -v ON_ERROR_STOP=1 -q -d $DB -f 91_oracles.sql
+psql -v ON_ERROR_STOP=1 -q -d $DB -f tests/oracles_test.sql
 echo "--- fitness (must be empty) ---"
 OUT=$(psql -v ON_ERROR_STOP=1 -At -d $DB -f 90_fitness.sql)
 if [ -n "$OUT" ]; then echo "$OUT"; echo "FITNESS FAILED"; exit 1; fi
