@@ -26,6 +26,9 @@ builder.Services.AddSingleton<ITenantSetupStep, RetailCloud.Accounting.Infrastru
 builder.Services.AddSingleton<ITenantSetupStep, RetailCloud.Accounting.Infrastructure.FiscalPeriodsSetupStep>();
 builder.Services.AddSingleton<IUserAdministration, PostgresUserAdministration>();
 builder.Services.AddSingleton<IBranchAdministration, PostgresBranchAdministration>();
+builder.Services.AddSingleton<PostgresTerminals>();
+builder.Services.AddSingleton<ITerminalAdministration>(sp => sp.GetRequiredService<PostgresTerminals>());
+builder.Services.AddSingleton<ITerminalDirectory>(sp => sp.GetRequiredService<PostgresTerminals>());
 builder.Services.AddSingleton<IScopeLookup, BranchScopeLookup>();
 builder.Services.AddSingleton<IScopeLookup, RegisterScopeLookup>();
 builder.Services.AddSingleton<IScopeLookup, RetailCloud.Inventory.Infrastructure.WarehouseScopeLookup>();
@@ -58,6 +61,7 @@ v1.MapGet("/me", (RequestContext ctx) => Results.Ok(new
         scopeId = p.Value == GrantReach.Tenant ? null : a.ScopeId,
     })).Distinct(),
     mfaSatisfied = ctx.MfaSatisfied,
+    terminal = ctx.Terminal is { } t ? new { id = t.TerminalId, branchId = t.BranchId } : null,
     mfaFreshUntil = ctx.MfaSatisfied ? ctx.AuthTime + MfaPolicy.SensitiveFreshness : null,
 })).AllowAnyAuthenticated();
 
@@ -209,6 +213,56 @@ v1.MapPost("/branches/{branchId:guid}/registers", async (Guid branchId, Register
     })
     .RequirePermission(Permissions.TenantSettingsManage);
 
+// ---------------- US-013: POS terminals (TEN-002.1, ABAC-04)
+v1.MapPost("/branches/{branchId:guid}/pairing-codes", async (Guid branchId, RequestContext ctx, IUnitOfWork uow, ITerminalAdministration terminals,
+        HttpContext http, CancellationToken ct) =>
+    {
+        if (!AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.TerminalsManage, new ScopeRef(ScopeType.Branch, branchId, branchId)))
+        {
+            return Forbidden(http);
+        }
+
+        PairingCodeView? code = await uow.ExecuteAsync(ctx, (s, c) => terminals.IssueCodeAsync(s, branchId, ctx.User!.Value, c), ct);
+        return code is null ? Problems.NotFound(http) : Results.Created($"/api/v1/branches/{branchId}/pairing-codes", code);
+    })
+    .RequirePermission(Permissions.TerminalsManage);
+
+v1.MapPost("/terminals/pair", async (PairTerminal body, RequestContext ctx, IUnitOfWork uow, ITerminalAdministration terminals,
+        HttpContext http, CancellationToken ct) =>
+    {
+        string? code = PairingCodes.Normalize(body.PairingCode);
+        if (string.IsNullOrWhiteSpace(body.DeviceName) || body.DeviceName.Trim().Length > 100)
+        {
+            return Problems.Validation(http, new Dictionary<string, string[]> { ["deviceName"] = ["length-1-100"] });
+        }
+
+        TerminalView? terminal = code is null ? null
+            : await uow.ExecuteAsync(ctx, (s, c) => terminals.PairAsync(s, code, body.DeviceName, ctx.User!.Value, c), ct);
+        return terminal is null ? Problems.NotFound(http) : Results.Created($"/api/v1/terminals/{terminal.Id}", terminal);
+    })
+    .RequireTenantMember()
+    .RequireRateLimiting(RateLimits.Pairing);
+
+v1.MapGet("/terminals", async (RequestContext ctx, IUnitOfWork uow, ITerminalAdministration terminals, CancellationToken ct) =>
+        Results.Ok((await uow.ExecuteAsync(ctx, (s, c) => terminals.ListAsync(s, c), ct))
+            .Where(t => AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.TerminalsManage, new ScopeRef(ScopeType.Branch, t.BranchId, t.BranchId)))))
+    .RequirePermission(Permissions.TerminalsManage);
+
+v1.MapDelete("/terminals/{terminalId:guid}", async (Guid terminalId, RequestContext ctx, IUnitOfWork uow, ITerminalAdministration terminals,
+        HttpContext http, CancellationToken ct) =>
+        await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            TerminalView? t = await terminals.GetAsync(s, terminalId, c);
+            if (t is null || !AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.TerminalsManage, new ScopeRef(ScopeType.Branch, t.BranchId, t.BranchId)))
+            {
+                return Problems.NotFound(http); // outside the caller's branches looks like "does not exist"
+            }
+
+            await terminals.RevokeAsync(s, terminalId, ctx.User!.Value, c);
+            return Results.NoContent();
+        }, ct))
+    .RequirePermission(Permissions.TerminalsManage);
+
 // listRoles: the system roles with their stable ids and permissions (custom roles: later story).
 v1.MapGet("/roles", () => Results.Ok(RoleCatalog.Roles.Select(r => new
     {
@@ -309,7 +363,8 @@ v1.MapPost("/invitations/{token}/accept", async (string token, RequestContext ct
         return Results.Ok(new { tenantId = accepted.TenantId, tenantName = accepted.TenantName, roles = accepted.RoleAssignments.Select(a => a.Role).Distinct() });
     })
     .WithMetadata(new AllowUnprovisionedUserAttribute())
-    .AllowAnyAuthenticated();
+    .AllowAnyAuthenticated()
+    .RequireRateLimiting(RateLimits.Invitation);
 
 // addRoleAssignment / removeRoleAssignment: the caller must be able to grant (or would be able to grant) that role there.
 v1.MapPost("/users/{userId:guid}/role-assignments", async (Guid userId, RoleAssignmentInput input, RequestContext ctx, IUnitOfWork uow,
@@ -379,6 +434,8 @@ v1.MapDelete("/users/{userId:guid}/role-assignments/{assignmentId:guid}", async 
 await app.RunAsync();
 
 internal sealed record SelectTenant(Guid TenantId);
+
+internal sealed record PairTerminal(string? PairingCode, string? DeviceName, string? UserAgent);
 
 internal sealed record BranchCreate(string? Code, string? Name);
 

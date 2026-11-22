@@ -36,6 +36,9 @@ public sealed class RequestContext : ITenantContext
 
     public bool MfaSatisfied => Acr == MfaPolicy.MfaAcr;
 
+    /// <summary>The registered POS device the request comes from (X-RC-Device), if Active in the active tenant.</summary>
+    public TerminalInfo? Terminal { get; internal set; }
+
     TenantId ITenantContext.TenantId =>
         ActiveTenant ?? throw new InvalidOperationException("No active tenant for this request.");
 

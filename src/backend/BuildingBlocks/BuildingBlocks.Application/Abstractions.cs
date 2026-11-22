@@ -154,3 +154,12 @@ public interface IScopeLookup
     /// <summary>The branch the object belongs to (for a branch: itself), or null if unknown in this tenant.</summary>
     Task<Guid?> BranchOfAsync(IUnitOfWorkScope scope, Guid id, CancellationToken cancellationToken);
 }
+
+/// <summary>A registered POS device recognised from its device secret (TEN-002.1, ABAC-04).</summary>
+public sealed record TerminalInfo(Guid TerminalId, Guid BranchId);
+
+/// <summary>Resolves the X-RC-Device secret to an Active terminal of the tenant, or null (unknown, revoked, other tenant).</summary>
+public interface ITerminalDirectory
+{
+    Task<TerminalInfo?> FindActiveAsync(TenantId tenant, string deviceSecret, CancellationToken cancellationToken);
+}

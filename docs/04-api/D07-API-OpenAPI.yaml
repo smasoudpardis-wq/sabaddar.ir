@@ -391,6 +391,7 @@ paths:
       tags:
       - Tenant
       summary: صدور کد جفت‌سازی دستگاه (۱۰ دقیقه)
+      description: 8 characters of the Crockford alphabet, single use, 10 minutes; only its SHA-256 is stored.
       security: *id001
       parameters:
       - name: branchId
@@ -420,7 +421,7 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
-      x-permission: tenant.settings.manage
+      x-permission: terminals.manage
       x-scope: Branch
       x-idempotent: false
       x-requirements:
@@ -432,6 +433,9 @@ paths:
       tags:
       - Tenant
       summary: جفت‌سازی دستگاه با کد
+      description: Run on the device by a signed-in member of the active tenant. Returns deviceSecret once; the BFF keeps
+        it in an HttpOnly cookie and sends it as X-RC-Device, from which the API recognises the terminal (ABAC-04). Unknown,
+        used and expired codes all answer 404.
       security: *id001
       requestBody:
         required: true
@@ -470,6 +474,45 @@ paths:
       - TEN-002.1
       x-audited: true
       x-rate-limit-class: pairing
+  /terminals:
+    get:
+      operationId: listTerminals
+      tags:
+      - Tenant
+      summary: دستگاه‌های شعب در محدوده کاربر
+      security: *id001
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - items
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Terminal'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: terminals.manage
+      x-scope: Branch
+      x-idempotent: false
+      x-requirements:
+      - TEN-002.1
   /terminals/{terminalId}:
     delete:
       operationId: revokeTerminal
@@ -501,7 +544,7 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
-      x-permission: tenant.settings.manage
+      x-permission: terminals.manage
       x-scope: Branch
       x-idempotent: false
       x-requirements:
@@ -9701,6 +9744,20 @@ components:
           - string
           - 'null'
           format: date-time
+        terminal:
+          type: object
+          additionalProperties: false
+          properties:
+            id:
+              type: string
+              format: uuid
+            branchId:
+              type: string
+              format: uuid
+          required:
+          - id
+          - branchId
+          description: The registered POS device of this request (X-RC-Device), US-013.
       required:
       - userId
       - displayName
@@ -12085,6 +12142,9 @@ components:
           enum:
           - Active
           - Revoked
+        deviceSecret:
+          type: string
+          description: Only in the pairTerminal response; kept by the BFF, never by page scripts
       required:
       - id
       - branchId

@@ -1,3 +1,4 @@
+import { cookies } from 'next/headers';
 import { NextRequest, NextResponse } from 'next/server';
 import * as client from 'openid-client';
 import { config, cookieNames } from './config';
@@ -71,6 +72,9 @@ export async function callApi(session: Session, method: string, path: string, bo
   }
   const headers: Record<string, string> = { ...extraHeaders, authorization: `Bearer ${token}` };
   if (session.activeTenantId) headers['x-rc-tenant'] = session.activeTenantId;
+  // ABAC-04: a paired POS device carries its secret in an HttpOnly cookie that outlives user sessions (US-013).
+  const device = (await cookies()).get(cookieNames().device)?.value;
+  if (device) headers['x-rc-device'] = device;
   if (body !== undefined) headers['content-type'] = 'application/json';
   try {
     return await fetch(new URL(path, config.apiUrl()), { method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store' });

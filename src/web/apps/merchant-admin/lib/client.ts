@@ -22,6 +22,7 @@ export const MESSAGES: Record<string, string> = {
   'last-owner': 'فروشگاه باید دست‌کم یک مالک داشته باشد.',
   'tenant-not-selected': 'ابتدا فروشگاه را انتخاب کنید.',
   'duplicate-code': 'این کد قبلاً استفاده شده است.',
+  'rate-limited': 'تلاش‌های زیاد. چند دقیقه بعد دوباره امتحان کنید.',
 };
 
 export const ROLE_LABELS: Record<string, string> = {

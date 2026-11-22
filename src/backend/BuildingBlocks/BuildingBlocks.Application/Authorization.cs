@@ -39,10 +39,11 @@ public static class Permissions
 
     public const string TenantSettingsManage = "tenant.settings.manage";
     public const string UsersManage = "iam.users.manage";
+    public const string TerminalsManage = "terminals.manage";
 
     public static readonly IReadOnlyList<string> All =
     [
-        "tenant.settings.manage", "iam.users.manage", "catalog.product.manage", "catalog.price.manage",
+        "tenant.settings.manage", "terminals.manage", "iam.users.manage", "catalog.product.manage", "catalog.price.manage",
         "inventory.receipt.create", "inventory.adjust", "inventory.transfer", "inventory.count", "pos.sell",
         "pos.discount.apply", "pos.sale.cancel", "sales.return.create", "payments.refund", "sales.credit.sell",
         "credit.account.manage", "receivables.collect", "receivables.writeoff", "shift.manage", "shift.supervise",
@@ -67,7 +68,7 @@ public static class RoleCatalog
             .ToDictionary(p => p, _ => T),
         ["BranchManager"] = new()
         {
-            ["iam.users.manage"] = A, ["catalog.product.manage"] = T, ["catalog.price.manage"] = A, ["inventory.receipt.create"] = A,
+            ["terminals.manage"] = A, ["iam.users.manage"] = A, ["catalog.product.manage"] = T, ["catalog.price.manage"] = A, ["inventory.receipt.create"] = A,
             ["inventory.adjust"] = A, ["inventory.transfer"] = A, ["inventory.count"] = A, ["pos.sell"] = A, ["pos.discount.apply"] = A,
             ["pos.sale.cancel"] = A, ["sales.return.create"] = A, ["payments.refund"] = A, ["sales.credit.sell"] = A,
             ["receivables.collect"] = A, ["shift.manage"] = A, ["shift.supervise"] = A, ["accounting.read"] = A,

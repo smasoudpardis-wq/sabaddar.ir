@@ -25,7 +25,7 @@ spec.loader.exec_module(bl)
 
 VELOCITY = int(sys.argv[1]) if len(sys.argv) > 1 else 40
 START = dt.date(2026, 11, 22)
-DONE = {"US-001", "US-002", "SP-07", "SP-01", "US-003", "US-021", "US-022", "US-006", "US-005", "US-011", "US-025", "US-012"}  # D12 §0.1
+DONE = {"US-001", "US-002", "SP-07", "SP-01", "US-003", "US-021", "US-022", "US-006", "US-005", "US-011", "US-025", "US-012", "US-013"}  # D12 §0.1
 EARLIEST = {                                   # external critical path (D12 §4.2), in sprints
     "SP-04": 3,    # X-01 Moadian sandbox/docs requested now; assume available after Gate A (~4 weeks)
     "SP-03": 6,    # X-02 PSP contracts + sandbox (week 12)

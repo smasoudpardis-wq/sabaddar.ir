@@ -191,6 +191,30 @@ try {
   await page.goto(BFF);
   await page.getByTestId('logout').waitFor();
 
+  // T01–T04 US-013: issue a pairing code, pair this browser as a terminal, the API recognises it, revoke it
+  await page.goto(`${BFF}/terminals`);
+  await page.getByTestId('this-device').waitFor();
+  check('T01', 'a fresh browser is not a terminal', (await page.getByTestId('this-device').textContent()).includes('نیست'));
+  await page.getByTestId('issue-code').click();
+  const pairingCode = (await page.getByTestId('pairing-code').textContent()).trim();
+  await page.fill('input[name=pairingCode]', pairingCode);
+  await page.fill('input[name=deviceName]', 'صندوق-آزمایشی');
+  await page.getByTestId('pair-submit').click();
+  await page.getByTestId('this-device').filter({ hasText: 'ثبت‌شده است' }).waitFor();
+  const dev = (await ctx.cookies(BFF)).find((c) => c.name === 'rc_dev');
+  const visible = await page.evaluate(() => document.cookie.includes('rc_dev'));
+  check('T02', 'paired: the API recognises this browser; the device secret is an HttpOnly cookie', !!dev && dev.httpOnly && !visible);
+  await page.fill('input[name=pairingCode]', pairingCode);
+  await page.fill('input[name=deviceName]', 'دوباره');
+  await page.getByTestId('pair-submit').click();
+  await page.getByTestId('terminal-error').waitFor();
+  check('T03', 'a pairing code works only once', true);
+  await page.getByTestId('revoke-صندوق-آزمایشی').click();
+  await page.getByTestId('this-device').filter({ hasText: 'نیست' }).waitFor();
+  check('T04', 'after revocation the device is no longer a terminal (AT-003)', true);
+  await page.goto(BFF);
+  await page.getByTestId('logout').waitFor();
+
   // E22–E23 logout
   const oldSid = (await ctx.cookies(BFF)).find((c) => c.name === 'rc_sid').value;
   await page.getByTestId('logout').click();

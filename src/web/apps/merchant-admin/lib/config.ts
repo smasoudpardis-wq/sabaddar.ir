@@ -18,5 +18,5 @@ export const config = {
 
 export const cookieNames = () =>
   config.secureCookies()
-    ? { session: '__Host-rc_sid', csrf: '__Host-rc_csrf', pending: '__Host-rc_auth' }
-    : { session: 'rc_sid', csrf: 'rc_csrf', pending: 'rc_auth' };
+    ? { session: '__Host-rc_sid', csrf: '__Host-rc_csrf', pending: '__Host-rc_auth', device: '__Host-rc_dev' }
+    : { session: 'rc_sid', csrf: 'rc_csrf', pending: 'rc_auth', device: 'rc_dev' };

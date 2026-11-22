@@ -76,3 +76,18 @@ public sealed class DefaultDenyFilter : IEndpointFilter
             : await next(context);
     }
 }
+
+/// <summary>ABAC-04 / D-46: POS operations only from an Active registered terminal of the resource's branch.</summary>
+public sealed class RequireTerminalFilter : IEndpointFilter
+{
+    public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(next);
+        RequestContext ctx = context.HttpContext.RequestServices.GetRequiredService<RequestContext>();
+        return ctx.Terminal is null
+            ? Problems.Create(context.HttpContext, StatusCodes.Status403Forbidden, "terminal-not-registered", "This device is not a registered terminal")
+            : await next(context);
+    }
+}
+

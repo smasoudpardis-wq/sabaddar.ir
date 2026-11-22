@@ -240,6 +240,7 @@ Decide(user, action, resource, context):
 | مجوز | Owner | Admin | BranchMgr | Cashier | WhClerk | Purchasing | Accountant | Auditor | Analyst |
 |---|---|---|---|---|---|---|---|---|---|
 | `tenant.settings.manage` | ✓ | ✓ | — | — | — | — | — | — | — |
+| `terminals.manage` | ✓ | ✓ | B | — | — | — | — | — | — |
 | `iam.users.manage` | ✓ | ✓ | B | — | — | — | — | — | — |
 | `catalog.product.manage` | ✓ | ✓ | ✓ | — | ✓ | ✓ | — | — | — |
 | `catalog.price.manage` | ✓ | ✓ | B | — | — | — | — | — | — |

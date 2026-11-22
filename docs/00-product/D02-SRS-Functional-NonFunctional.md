@@ -119,6 +119,7 @@ open_questions: [OQ-05, OQ-08, OQ-09, SQ-01..SQ-06]
 | مجوز | شرح | Scope | نیاز به Approval؟ |
 |---|---|---|---|
 | `tenant.settings.manage` | تنظیمات Tenant، مالیات، شعب | Tenant | — |
+| `terminals.manage` | صدور کد جفت‌سازی و ابطال دستگاه POS (TEN-002.1؛ افزوده در US-013 چون مدیر شعبه کد صادر می‌کند) | Tenant/Branch | — |
 | `iam.users.manage` | دعوت، غیرفعال‌سازی، تخصیص نقش | Tenant/Branch | — |
 | `catalog.product.manage` | تعریف و ویرایش کالا | Tenant | — |
 | `catalog.price.manage` | تغییر قیمت | Tenant/Branch | **بله** اگر تغییر گروهی یا بیش از آستانه (BR-041) |

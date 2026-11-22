@@ -45,7 +45,7 @@
   "operationId": "createPairingCode",
   "method": "POST",
   "path": "/branches/{branchId}/pairing-codes",
-  "permission": "tenant.settings.manage"
+  "permission": "terminals.manage"
  },
  {
   "operationId": "pairTerminal",
@@ -54,10 +54,16 @@
   "permission": "tenant.member"
  },
  {
+  "operationId": "listTerminals",
+  "method": "GET",
+  "path": "/terminals",
+  "permission": "terminals.manage"
+ },
+ {
   "operationId": "revokeTerminal",
   "method": "DELETE",
   "path": "/terminals/{terminalId}",
-  "permission": "tenant.settings.manage"
+  "permission": "terminals.manage"
  },
  {
   "operationId": "createExport",

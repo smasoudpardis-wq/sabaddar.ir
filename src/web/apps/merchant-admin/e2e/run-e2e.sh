@@ -37,6 +37,8 @@ DELETE FROM iam.role_assignment WHERE user_id IN (SELECT id FROM iam.merchant_us
 DELETE FROM iam.tenant_membership WHERE user_id IN (SELECT id FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$CASHIER_SUB');
 DELETE FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$CASHIER_SUB';
 DELETE FROM inv.warehouse WHERE tenant_id IN ('$T1','$T2','$TF');
+DELETE FROM platform.terminal WHERE tenant_id IN ('$T1','$T2','$TF');
+DELETE FROM platform.pairing_code WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM platform.register WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM platform.branch WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM platform.tenant WHERE id IN ('$T1','$T2','$TF');

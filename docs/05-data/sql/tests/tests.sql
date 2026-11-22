@@ -371,6 +371,18 @@ SELECT t.ok('T95 outbox_due_tenants lists only tenant ids with due messages', AR
 SELECT set_config('app.tenant_id', :A, false);
 SELECT t.ok('T96 with the tenant context the worker sees that tenant''s message', (SELECT count(*) FROM core.outbox) = 1);
 DELETE FROM core.outbox;
+-- US-013 terminals
+SET ROLE rc_app;
+SELECT set_config('app.tenant_id', :A, false);
+INSERT INTO platform.terminal (tenant_id, id, branch_id, device_name, secret_hash, paired_by)
+  VALUES (:A, 'f0000000-0000-0000-0000-000000000001', 'a0000000-0000-0000-0000-000000000001', 'صندوق ۱', sha256('dev-secret'), 'e0000000-0000-0000-0000-000000000001');
+UPDATE platform.terminal SET status = 'Revoked', revoked_at = now() WHERE id = 'f0000000-0000-0000-0000-000000000001';
+SELECT t.expect_error('T102 a revoked terminal cannot be re-activated', 'RC011',
+  $$UPDATE platform.terminal SET status = 'Active', revoked_at = NULL WHERE id = 'f0000000-0000-0000-0000-000000000001'$$);
+SELECT t.expect_error('T103 a terminal cannot be attached to a branch of another tenant (composite FK)', '23503',
+  format($$INSERT INTO platform.terminal (tenant_id, id, branch_id, device_name, secret_hash, paired_by) VALUES (%L, gen_random_uuid(), 'b0000000-0000-0000-0000-000000000001', 'x', sha256('y'), gen_random_uuid())$$, :A));
+SELECT set_config('app.tenant_id', :B, false);
+SELECT t.ok('T104 terminals are invisible to other tenants (RLS)', (SELECT count(*) FROM platform.terminal) = 0);
 RESET ROLE;
 DELETE FROM core.idempotency_record;  -- test rows were left InProgress on purpose; oracle O-4 would flag them
 

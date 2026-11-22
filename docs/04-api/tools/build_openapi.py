@@ -138,7 +138,8 @@ schema("RegisterCreate", code="str")
 schema("Register", id="uuid", branchId="uuid", code="str")
 schema("PairingCode", code="str", branchId="uuid", expiresAt="dt")
 schema("TerminalPairRequest", pairingCode="str", deviceName="str", **{"userAgent?": "str"})
-schema("Terminal", id="uuid", branchId="uuid", deviceName="str", pairedAt="dt", status=("enum", ["Active", "Revoked"]))
+schema("Terminal", id="uuid", branchId="uuid", deviceName="str", pairedAt="dt", status=("enum", ["Active", "Revoked"]),
+       **{"deviceSecret?": ("desc", "str", "Only in the pairTerminal response; kept by the BFF, never by page scripts")})
 schema("ExportCreate", categories=[("enum", ["Products", "Customers", "Sales", "Inventory", "Journals", "Receivables", "TaxInvoices"])],
        **{"from?": "dt", "to?": "dt", "includeFullPhone?": "bool"})
 schema("ExportJob", id="uuid", status=("enum", ["Queued", "Running", "Completed", "Failed"]), downloadUrl="str?",
@@ -146,7 +147,8 @@ schema("ExportJob", id="uuid", status=("enum", ["Queued", "Running", "Completed"
 schema("Me", userId="uuid", displayName="str", activeTenantId="uuid?",
        memberships=[{"tenantId": "uuid", "tenantName": "str", "roles": ["str"], "mfaRequired": "bool"}],
        permissions=[{"permission": "str", "scopeType": ("enum", ["Tenant", "Branch", "Warehouse", "Register"]), "scopeId": "uuid?"}],
-       mfaSatisfied="bool", mfaFreshUntil="dt?")
+       mfaSatisfied="bool", mfaFreshUntil="dt?",
+       **{"terminal?": {"_desc": "The registered POS device of this request (X-RC-Device), US-013.", "id": "uuid", "branchId": "uuid"}})
 schema("ActiveTenantSelect", tenantId="uuid")
 schema("InvitationCreate", **{"email?": "str", "mobile?": "str"}, displayName="str",
        roleAssignments=["#RoleAssignmentInput"])
@@ -639,10 +641,16 @@ op("post", "/branches", "createBranch", "Tenant", "ایجاد شعبه", perm="t
 op("post", "/branches/{branchId}/registers", "createRegister", "Tenant", "ایجاد صندوق", perm="tenant.settings.manage",
    scope="Tenant", body="RegisterCreate", resp="Register", resp_code="201", reqs=["TEN-002"], audited=True, conflict=True)
 op("post", "/branches/{branchId}/pairing-codes", "createPairingCode", "Tenant", "صدور کد جفت‌سازی دستگاه (۱۰ دقیقه)",
-   perm="tenant.settings.manage", scope="Branch", resp="PairingCode", resp_code="201", reqs=["TEN-002.1"], audited=True)
+   perm="terminals.manage", scope="Branch", resp="PairingCode", resp_code="201", reqs=["TEN-002.1"], audited=True,
+   desc="8 characters of the Crockford alphabet, single use, 10 minutes; only its SHA-256 is stored.")
 op("post", "/terminals/pair", "pairTerminal", "Tenant", "جفت‌سازی دستگاه با کد", body="TerminalPairRequest", resp="Terminal",
-   resp_code="201", reqs=["TEN-002.1"], audited=True, conflict=True, rate="pairing")
-op("delete", "/terminals/{terminalId}", "revokeTerminal", "Tenant", "ابطال دستگاه", perm="tenant.settings.manage", scope="Branch",
+   resp_code="201", reqs=["TEN-002.1"], audited=True, conflict=True, rate="pairing",
+   desc="Run on the device by a signed-in member of the active tenant. Returns deviceSecret once; the BFF keeps it in an "
+        "HttpOnly cookie and sends it as X-RC-Device, from which the API recognises the terminal (ABAC-04). Unknown, "
+        "used and expired codes all answer 404.")
+op("get", "/terminals", "listTerminals", "Tenant", "دستگاه‌های شعب در محدوده کاربر", perm="terminals.manage", scope="Branch",
+   resp="Terminal", list_of=True, reqs=["TEN-002.1"])
+op("delete", "/terminals/{terminalId}", "revokeTerminal", "Tenant", "ابطال دستگاه", perm="terminals.manage", scope="Branch",
    no_content=True, reqs=["TEN-002.1"], audited=True)
 op("post", "/exports", "createExport", "Tenant", "Export ناهمگام داده", perm="data.export", scope="Tenant", body="ExportCreate",
    resp="ExportJob", resp_code="202", reqs=["TEN-005", "RPT-003"], audited=True,

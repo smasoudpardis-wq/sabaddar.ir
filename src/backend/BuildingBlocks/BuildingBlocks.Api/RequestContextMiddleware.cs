@@ -14,6 +14,7 @@ namespace RetailCloud.BuildingBlocks.Api;
 public sealed class RequestContextMiddleware(RequestDelegate next)
 {
     public const string TenantHeader = "X-RC-Tenant";
+    public const string DeviceHeader = "X-RC-Device";
     private static readonly TimeSpan MembershipCacheTtl = TimeSpan.FromSeconds(30); // IAM-009: revocation visible ≤ 60 s
 
     /// <summary>Makes membership/role changes visible to the next request of that user on this instance.</summary>
@@ -96,6 +97,13 @@ public sealed class RequestContextMiddleware(RequestDelegate next)
 
             context.ActiveTenant = membership.TenantId;
             context.ActiveMembership = membership;
+
+            // ABAC-04: recognise a paired POS device; unknown or revoked secrets are simply not a terminal.
+            if (http.Request.Headers.TryGetValue(DeviceHeader, out var device) && device.ToString() is { Length: >= 32 and <= 64 } secret
+                && http.RequestServices.GetService<ITerminalDirectory>() is { } terminals)
+            {
+                context.Terminal = await terminals.FindActiveAsync(membership.TenantId, secret, http.RequestAborted);
+            }
         }
 
         await next(http);
