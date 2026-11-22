@@ -134,17 +134,7 @@ CREATE TABLE sales.sale_tender (
 );
 CALL core.enable_tenant_rls('sales.sale_tender');
 
-CREATE TABLE sales.idempotency_record (
-  tenant_id    uuid NOT NULL,
-  key          text NOT NULL CHECK (length(key) BETWEEN 16 AND 64),
-  operation    text NOT NULL,
-  payload_hash bytea NOT NULL,
-  status       text NOT NULL CHECK (status IN ('InProgress','Completed')),
-  response     jsonb,
-  created_at   timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (tenant_id, key)
-);
-CALL core.enable_tenant_rls('sales.idempotency_record');
+-- Idempotency records live in core.idempotency_record (shared by every module, US-006).
 
 CREATE TABLE sales.outbox (
   tenant_id     uuid NOT NULL,

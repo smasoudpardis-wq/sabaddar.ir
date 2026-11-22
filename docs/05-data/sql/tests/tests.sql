@@ -321,6 +321,22 @@ SELECT t.expect_error('T84 a membership cannot be written for another tenant', '
   format($$INSERT INTO iam.tenant_membership (tenant_id, user_id) VALUES (%L, 'e0000000-0000-0000-0000-000000000002')$$, :B));
 SELECT t.expect_error('T86 an unknown role is rejected', '23514',
   $$UPDATE iam.tenant_membership SET roles = '{SuperUser}' WHERE user_id = 'e0000000-0000-0000-0000-000000000001'$$);
+-- US-006 idempotency registry (core)
+SELECT set_config('app.tenant_id', :A, false);
+INSERT INTO core.idempotency_record (tenant_id, key, operation, payload_hash, status)
+  VALUES (:A, 'key-0000000000000001', 'test', decode(repeat('ab', 32), 'hex'), 'InProgress');
+SELECT set_config('app.tenant_id', :B, false);
+SELECT t.ok('T87 the same key is independent per tenant and invisible to other tenants',
+  (SELECT count(*) FROM core.idempotency_record) = 0);
+INSERT INTO core.idempotency_record (tenant_id, key, operation, payload_hash, status)
+  VALUES (:B, 'key-0000000000000001', 'test', decode(repeat('cd', 32), 'hex'), 'InProgress');
+SELECT t.expect_error('T88 a malformed key is rejected', '23514',
+  format($$INSERT INTO core.idempotency_record (tenant_id, key, operation, payload_hash, status) VALUES (%L, 'short', 'test', decode(repeat('ab', 32), 'hex'), 'InProgress')$$, :B));
+SELECT t.expect_error('T89 Completed needs a 2xx response status (only successes are stored, D-34)', '23514',
+  $$UPDATE core.idempotency_record SET status = 'Completed', response_status = 409, completed_at = now()$$);
+SELECT t.expect_error('T90 the application cannot delete idempotency records (retention, D-14; purge is the worker''s)', '42501',
+  $$DELETE FROM core.idempotency_record$$);
 RESET ROLE;
+DELETE FROM core.idempotency_record;  -- test rows were left InProgress on purpose; oracle O-4 would flag them
 
 \echo '== ALL CHECKS PASSED'

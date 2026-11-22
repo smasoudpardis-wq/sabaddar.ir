@@ -41,6 +41,9 @@ BEGIN
       FROM sales.sale WHERE invoice_no IS NOT NULL GROUP BY branch_id, fiscal_year, invoice_no HAVING count(*) > 1;
     RETURN QUERY SELECT 'O-4', t, format('journal source %s/%s/%s count=%s', source_type, source_id, purpose, count(*))
       FROM acc.journal_entry WHERE source_type IS NOT NULL GROUP BY source_type, source_id, purpose HAVING count(*) > 1;
+    -- O-4 an idempotency record is InProgress only inside its own transaction; a committed one is a bug (US-006)
+    RETURN QUERY SELECT 'O-4', t, format('idempotency key %s committed InProgress', key)
+      FROM core.idempotency_record WHERE status = 'InProgress';
 
     -- O-5 posted journals balanced with >= 2 lines
     RETURN QUERY SELECT 'O-5', t, format('journal=%s dr=%s cr=%s lines=%s', e.id, sum(l.debit), sum(l.credit), count(l.*))

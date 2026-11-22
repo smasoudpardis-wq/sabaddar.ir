@@ -7620,8 +7620,9 @@ components:
       name: Idempotency-Key
       in: header
       required: true
-      description: Client-generated unique key (UUID/ULID), 16–64 chars. Same key + same payload replays the stored success;
-        same key + different payload -> 409 idempotency-key-reused (BR-030/031, D-34).
+      description: 'Client-generated unique key (UUID/ULID), 16–64 chars. Same key + same payload replays the stored success
+        (same status, identical body, header Idempotent-Replayed: true); same key + different payload or path -> 409 idempotency-key-reused;
+        a duplicate still running after 5 s -> 409 in-progress with Retry-After (BR-030/031, D-34).'
       schema:
         type: string
         minLength: 16
@@ -12303,3 +12304,12 @@ x-error-catalog:
   tenant-not-selected:
     status: 403
     meaning: Tenant-scoped operation without an active tenant (BR-001)
+  idempotency-key-required:
+    status: 400
+    meaning: Missing or malformed Idempotency-Key on an operation of BR-030
+  validation:
+    status: 400
+    meaning: Malformed request body or parameters; context.errors[]
+  internal:
+    status: 500
+    meaning: Unexpected error; details only in logs, correlate with traceId (SEC-T-016)

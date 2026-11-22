@@ -49,3 +49,39 @@ public interface IUserDirectory
 
     Task<IReadOnlyList<MembershipInfo>> ActiveMembershipsAsync(UserId user, CancellationToken cancellationToken);
 }
+
+/// <summary>
+/// Idempotency registry (BR-030/031, D03 §6.3). Used inside the unit of work of the command itself, so the record and
+/// the business change commit or roll back together; only successes are completed (D-34).
+/// </summary>
+public interface IIdempotencyStore
+{
+    /// <summary>
+    /// Inserts an InProgress record for (tenant, key). If a concurrent transaction holds the same key, waits for it
+    /// (bounded): then replays its committed response, or claims the key if it rolled back.
+    /// </summary>
+    Task<IdempotencyClaim> ClaimAsync(IUnitOfWorkScope scope, string key, string operation, byte[] payloadHash,
+        CancellationToken cancellationToken);
+
+    Task CompleteAsync(IUnitOfWorkScope scope, string key, int responseStatus, string responseJson, CancellationToken cancellationToken);
+}
+
+/// <summary>Outcome of <see cref="IIdempotencyStore.ClaimAsync"/>.</summary>
+public abstract record IdempotencyClaim
+{
+    private IdempotencyClaim()
+    {
+    }
+
+    /// <summary>First use of the key: run the command, then complete.</summary>
+    public sealed record Claimed : IdempotencyClaim;
+
+    /// <summary>Same key and same payload already succeeded: return this response unchanged.</summary>
+    public sealed record Replay(int Status, string ResponseJson) : IdempotencyClaim;
+
+    /// <summary>Same key with another payload or operation: 409 idempotency-key-reused.</summary>
+    public sealed record Reused : IdempotencyClaim;
+
+    /// <summary>A concurrent request with the key did not finish within the wait: 409 in-progress.</summary>
+    public sealed record Busy : IdempotencyClaim;
+}

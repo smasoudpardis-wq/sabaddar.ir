@@ -194,7 +194,7 @@ python3 docs/09-testing/tools/build_test_catalog.py
 | O-1 | ردیف‌هایی که در پاسخ یا Export Tenant X آمده‌اند ولی `tenant_id ≠ X` دارند (مقایسه Log تست با DB) |
 | O-2 | `stock_balance` که `on_hand ≠ Σ stock_movement.qty_base` به ازای (warehouse، variant) |
 | O-3 | `stock_balance` با `allow_negative = false AND on_hand - reserved < 0` |
-| O-4 | `(tenant, source_type, source_id, purpose)` تکراری در `acc.journal_entry`؛ Sale با بیش از یک `invoice_no`؛ `sales.idempotency_record` با یک کلید و دو پاسخ متفاوت |
+| O-4 | `(tenant, source_type, source_id, purpose)` تکراری در `acc.journal_entry`؛ Sale با بیش از یک `invoice_no`؛ `core.idempotency_record` با وضعیت `InProgress` پس از Commit (کلید و پاسخ یکتا با PK تضمین شده است) |
 | O-5 | `journal_entry` Posted با `Σ debit ≠ Σ credit` یا کمتر از ۲ سطر |
 | O-6 | `journal_entry` Posted که `posted_at` آن پس از بسته شدن دوره‌اش است (Backdate غیرمجاز) |
 | O-7 | Payment آنلاین Confirmed بدون نتیجه Verify موفق با مبلغ برابر |

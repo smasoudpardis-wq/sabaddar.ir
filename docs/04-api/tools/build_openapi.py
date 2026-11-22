@@ -431,8 +431,9 @@ schema("CatalogSuggestion", id="uuid", gtin14="str", fields={"name?": "str", "br
 PARAMS = {
     "IdempotencyKey": {"name": "Idempotency-Key", "in": "header", "required": True,
                        "description": "Client-generated unique key (UUID/ULID), 16–64 chars. Same key + same payload "
-                                      "replays the stored success; same key + different payload -> 409 "
-                                      "idempotency-key-reused (BR-030/031, D-34).",
+                                      "replays the stored success (same status, identical body, header Idempotent-Replayed: true); "
+                                      "same key + different payload or path -> 409 idempotency-key-reused; a duplicate still "
+                                      "running after 5 s -> 409 in-progress with Retry-After (BR-030/031, D-34).",
                        "schema": {"type": "string", "minLength": 16, "maxLength": 64}},
     "Cursor": {"name": "cursor", "in": "query", "required": False, "schema": {"type": "string"}},
     "Limit": {"name": "limit", "in": "query", "required": False,
@@ -492,6 +493,9 @@ ERROR_CATALOG = {
     "invalid-token": (401, "Token lacks required claims"),
     "user-not-provisioned": (403, "Valid identity but no active RetailCloud user (IAM-001, IAM-009)"),
     "tenant-not-selected": (403, "Tenant-scoped operation without an active tenant (BR-001)"),
+    "idempotency-key-required": (400, "Missing or malformed Idempotency-Key on an operation of BR-030"),
+    "validation": (400, "Malformed request body or parameters; context.errors[]"),
+    "internal": (500, "Unexpected error; details only in logs, correlate with traceId (SEC-T-016)"),
 }
 
 # ----------------------------------------------------------------------------- operations

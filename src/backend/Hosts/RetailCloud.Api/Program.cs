@@ -15,6 +15,7 @@ builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
 builder.Services.AddSingleton<IUnitOfWork, PostgresUnitOfWork>();
 builder.Services.AddSingleton<IUserDirectory, PostgresUserDirectory>();
 builder.Services.AddSingleton<ITenantProfileQuery, PostgresTenantProfileQuery>();
+builder.Services.AddSingleton<IIdempotencyStore, PostgresIdempotencyStore>();
 builder.Services.AddRetailCloudApi(builder.Configuration);
 
 var app = builder.Build();

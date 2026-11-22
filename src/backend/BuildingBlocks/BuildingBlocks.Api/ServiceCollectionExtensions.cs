@@ -47,7 +47,7 @@ public static class ServiceCollectionExtensions
         services.AddMemoryCache();
         services.AddScoped<RequestContext>();
         services.AddSingleton(TimeProvider.System);
-        services.AddProblemDetails();
+        services.AddProblemDetails(o => o.CustomizeProblemDetails = ProblemDefaults.Customize);
         return services;
     }
 

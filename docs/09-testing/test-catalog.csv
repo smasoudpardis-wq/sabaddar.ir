@@ -271,3 +271,7 @@ T83,D05,no user context returns nothing,P0,T,"DB-Integration (automated, passing
 T84,D05,a membership cannot be written for another tenant,P0,T,"DB-Integration (automated, passing)",E,,automated
 T85,D05,my_memberships returns the roles of each membership (US-022 decides MFA from them),P0,T,"DB-Integration (automated, passing)",E,,automated
 T86,D05,an unknown role is rejected,P0,T,"DB-Integration (automated, passing)",E,,automated
+T87,D05,the same key is independent per tenant and invisible to other tenants,P0,T,"DB-Integration (automated, passing)",E,,automated
+T88,D05,a malformed key is rejected,P0,T,"DB-Integration (automated, passing)",E,,automated
+T89,D05,"Completed needs a 2xx response status (only successes are stored, D-34)",P0,T,"DB-Integration (automated, passing)",E,,automated
+T90,D05,"the application cannot delete idempotency records (retention, D-14; purge is the worker",P0,T,"DB-Integration (automated, passing)",E,,automated
