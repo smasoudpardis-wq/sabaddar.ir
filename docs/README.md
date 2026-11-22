@@ -11,8 +11,8 @@
 | D04 Architecture C4 + ADRs | [01-architecture/D04-Architecture-C4.md](01-architecture/D04-Architecture-C4.md) · [ADRها](08-decisions-adr/README.md) | Draft 0.1 |
 | D05 Database ERD & Migrations | [05-data/D05-Database-ERD-and-Migrations.md](05-data/D05-Database-ERD-and-Migrations.md) · [SQL + tests](05-data/sql/) | Draft 0.1 — SQL tested (52/52) |
 | D06 Security Threat Model | [03-security/D06-Security-Threat-Model.md](03-security/D06-Security-Threat-Model.md) | Draft 0.1 |
-| D07 OpenAPI | `04-api/D07-API-OpenAPI.yaml` | بعدی (پس از بازبینی D01–D06) |
-| D08 Flows | `02-domain-model/D08-Flows-BPMN-Sequence.md` | برنامه‌ریزی‌شده |
+| D07 OpenAPI | [04-api/D07-API-OpenAPI.yaml](04-api/D07-API-OpenAPI.yaml) · [راهنما](04-api/README.md) | Draft 0.1 — valid 3.1، lint 0 خطا، contract check PASS |
+| D08 Flows | `02-domain-model/D08-Flows-BPMN-Sequence.md` | بعدی |
 | D09 UX Wireframes | `06-ux/D09-UX-Wireframe-Spec.md` | برنامه‌ریزی‌شده |
 | D10 Test Plan | `09-testing/D10-Test-Plan-Acceptance.md` | برنامه‌ریزی‌شده |
 | D11 DevOps Runbook | `07-operations/D11-DevOps-Runbook-SLO.md` | برنامه‌ریزی‌شده |
