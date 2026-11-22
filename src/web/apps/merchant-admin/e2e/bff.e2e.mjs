@@ -83,7 +83,8 @@ try {
 
   // E15 switch
   await page.getByTestId(`select-${T1}`).click();
-  await page.waitForFunction(() => document.querySelector('[data-testid="active-tenant"]')?.textContent?.includes('فروشگاه الف'));
+  // locator wait, not waitForFunction: the strict CSP (no 'unsafe-eval') correctly blocks Playwright's eval-based polling
+  await page.getByTestId('active-tenant').filter({ hasText: 'فروشگاه الف' }).waitFor();
   check('E15', 'switching store changes the tenant context', true);
 
   // E16 logout
