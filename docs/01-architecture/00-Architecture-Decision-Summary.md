@@ -141,6 +141,7 @@ Contracts  ◄── referenced by other modules (only this!)
 | 12 | Reporting | Supporting | `rpt` | — (Read Models) | Projectionهای گزارشی (قابل بازسازی؛ هیچ داده اصلی) | بله | — | RPT-001 |
 | 13 | AuditCompliance | Generic | `audit` | AuditRecord (append-only, hash-chained) | ممیزی امنیتی و کسب‌وکار، Retention، Export | بله + Platform | — | AUD-001,002، TEN-005 |
 | 14 | **TaxCompliance** (جدید — A-04) | Supporting | `tax` | TaxInvoiceSubmission, TaxProfile | پروفایل مالیاتی Tenant (شناسه ملی/کد اقتصادی، شناسه حافظه مالیاتی)، صورتحساب الکترونیکی ارسالی، وضعیت و پاسخ سامانه، ابطال/اصلاحیه | بله | `TaxInvoiceAccepted`, `TaxInvoiceRejected` | §13، INT-002 |
+| 15 | **Receivables** (جدید — D-25) | Core | `ar` | CustomerCreditAccount, ReceivableLedger, Collection | حساب اعتباری مشتری در Tenant، دفتر معین دریافتنی، تخصیص دریافت‌ها، سنی مطالبات | بله | `CreditCharged`, `CollectionRecorded` | D02 §5.15 |
 
 **زیرساخت مشترک (Context نیست):** `BuildingBlocks` شامل `OutboxMessage`، `InboxMessage`، `IdempotencyRecord` (هر ماژول جدول خودش را در Schema خودش دارد؛ Relay مشترک)، `TenantContext`، `Money`، `Clock`.
 
@@ -176,6 +177,9 @@ flowchart TB
   MER -- "Price/Product snapshot port (sync)" --> SAL
   SAL -- "Stock port, same tx (Customer/Supplier)" --> INV
   SAL -- "Posting port, same tx" --> ACC
+  AR["Receivables"]
+  SAL -- "Credit check + charge, same tx" --> AR
+  AR -- "Posting port, same tx" --> ACC
   INV -- "COGS amount, same tx" --> ACC
   PAY -- "PaymentConfirmation query (sync)" --> SAL
   CID -- "ACL: resolve token → TenantCustomerId" --> SAL
