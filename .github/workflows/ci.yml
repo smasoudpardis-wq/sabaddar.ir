@@ -33,6 +33,7 @@ jobs:
         run: |
           python3 docs/09-testing/tools/build_test_catalog.py
           python3 docs/00-product/tools/build_backlog.py
+          python3 docs/00-product/tools/plan_sprints.py 40
           python3 docs/07-operations/alerts/check_rules.py
           python3 docs/tools/build_oq_register.py
           git diff --exit-code docs/

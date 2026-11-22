@@ -17,6 +17,7 @@
 | D10 Test Plan | [09-testing/D10-Test-Plan-Acceptance.md](09-testing/D10-Test-Plan-Acceptance.md) · [کاتالوگ ۲۶۵ تست](09-testing/test-catalog.csv) | Draft 0.1 |
 | D11 DevOps Runbook | [07-operations/D11-DevOps-Runbook-SLO.md](07-operations/D11-DevOps-Runbook-SLO.md) · [Alert rules](07-operations/alerts/retailcloud-rules.yaml) | Draft 0.1 |
 | D12 Backlog & Roadmap | [00-product/D12-Implementation-Backlog-Roadmap.md](00-product/D12-Implementation-Backlog-Roadmap.md) · [CSV](00-product/D12-backlog.csv) · [Stories](00-product/D12-backlog-table.md) | Draft 0.1 |
+| **D13 برنامه توسعه تا اپلیکیشن کامل** | [00-product/D13-Delivery-Plan-to-GA.md](00-product/D13-Delivery-Plan-to-GA.md) · [برنامه Sprint](00-product/D13-sprint-plan.md) | Draft 0.1 |
 | **Gap Analysis و آمادگی پیاده‌سازی** | [01-architecture/Gap-Analysis-Readiness.md](01-architecture/Gap-Analysis-Readiness.md) | Draft 0.1 — برای تصمیم Gate A |
 
 قرارداد برچسب‌ها: `[REQ]` الزام · `[ASM]` فرض · `[DEC]` تصمیم پیشنهادی · `[REC]` توصیه · `[OQ]` پرسش باز.
@@ -29,6 +30,7 @@
 | `04-api/tools/check_contract.py` + Redocly | OpenAPI 3.1 و سازگاری با D02 و D06 |
 | `09-testing/tools/build_test_catalog.py` | کاتالوگ تست و ارجاع‌های بی‌تعریف |
 | `00-product/tools/build_backlog.py` | پوشش نیازمندی‌ها، وابستگی‌ها و تست‌های Backlog |
+| `00-product/tools/plan_sprints.py` | زمان‌بندی Sprint با وابستگی، Velocity و قیدهای بیرونی |
 | `07-operations/alerts/check_rules.py` | Alertها و Runbookها |
 | `tools/check_mermaid.js` | Render همه نمودارها |
 | `tools/build_oq_register.py` | ثبت یکپارچه پرسش‌های باز |
