@@ -39,7 +39,8 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     }
 
     public static string Token(string subject, string issuer = Issuer, string audience = Audience,
-        DateTime? expires = null, SecurityKey? key = null, string? acr = null, DateTimeOffset? authTime = null)
+        DateTime? expires = null, SecurityKey? key = null, string? acr = null, DateTimeOffset? authTime = null,
+        IReadOnlyDictionary<string, object>? extraClaims = null)
     {
         DateTime exp = expires ?? DateTime.UtcNow.AddMinutes(10);
         var claims = new Dictionary<string, object> { ["sub"] = subject, ["azp"] = "rc-bff-merchant" };
@@ -51,6 +52,11 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
         if (authTime is not null)
         {
             claims["auth_time"] = authTime.Value.ToUnixTimeSeconds();
+        }
+
+        foreach (KeyValuePair<string, object> c in extraClaims ?? new Dictionary<string, object>())
+        {
+            claims[c.Key] = c.Value;
         }
 
         return new JsonWebTokenHandler().CreateToken(new SecurityTokenDescriptor

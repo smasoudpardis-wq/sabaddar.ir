@@ -61,15 +61,15 @@ async function freshAccessToken(session: Session): Promise<string> {
 }
 
 /** Calls RetailCloud.Api with the session's token and the server-held active tenant (BR-001). */
-export async function callApi(session: Session, method: string, path: string, body?: unknown, tokenOverride?: string): Promise<Response> {
+export async function callApi(session: Session, method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<Response> {
   let token: string;
   try {
-    token = tokenOverride ?? (await freshAccessToken(session));
+    token = await freshAccessToken(session);
   } catch (e) {
     if (e instanceof SessionExpired) return problemResponse(401, 'invalid-token', 'Session expired');
     throw e;
   }
-  const headers: Record<string, string> = { authorization: `Bearer ${token}` };
+  const headers: Record<string, string> = { ...extraHeaders, authorization: `Bearer ${token}` };
   if (session.activeTenantId) headers['x-rc-tenant'] = session.activeTenantId;
   if (body !== undefined) headers['content-type'] = 'application/json';
   try {
@@ -90,6 +90,9 @@ export async function relay(r: Response): Promise<NextResponse> {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Idempotency-Key format of D07 (16–64 of A–Z a–z 0–9 _ -). */
+export const isIdempotencyKey = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z0-9_-]{16,64}$/.test(v);
+
 export const isUuid = (v: unknown): v is string => typeof v === 'string' && UUID.test(v);
 
 /** Only same-app absolute paths (no scheme, no '//' host) — prevents open redirects after login. */

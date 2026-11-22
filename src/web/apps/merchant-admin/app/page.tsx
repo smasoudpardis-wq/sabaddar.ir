@@ -1,5 +1,6 @@
 'use client';
 import { useCallback, useEffect, useState } from 'react';
+import { Onboarding } from './onboarding';
 
 type Membership = { tenantId: string; tenantName: string; roles: string[]; mfaRequired: boolean };
 type Me = { displayName: string; memberships: Membership[]; activeTenantId: string | null; mfaSatisfied: boolean };
@@ -21,14 +22,18 @@ const stepUp = (tenantId?: string) => {
 };
 
 export default function Home() {
-  const [me, setMe] = useState<Me | null | 'anonymous'>(null);
+  const [me, setMe] = useState<Me | null | 'anonymous' | 'new-user'>(null);
   const [tenant, setTenant] = useState<Tenant | null>(null);
   const [error, setError] = useState<string>('');
 
   const load = useCallback(async () => {
     const r = await fetch('/bff/me', { cache: 'no-store' });
     if (r.status === 401) return setMe('anonymous');
-    if (!r.ok) return setError(await codeOf(r));
+    if (!r.ok) {
+      const code = await codeOf(r);
+      if (code === 'user-not-provisioned') return setMe('new-user'); // first login: sign-up wizard (UC-10)
+      return setError(code);
+    }
     const data: Me = await r.json();
     setMe(data);
     if (data.activeTenantId) {
@@ -40,7 +45,10 @@ export default function Home() {
     }
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('onboarding') === 'resume') return setMe('new-user');
+    void load();
+  }, [load]);
 
   async function select(tenantId: string) {
     setError('');
@@ -60,6 +68,7 @@ export default function Home() {
   }
 
   if (me === null) return <p>در حال بارگذاری…</p>;
+  if (me === 'new-user') return <Onboarding />;
   if (me === 'anonymous')
     return (
       <section>
@@ -72,6 +81,7 @@ export default function Home() {
       <h1 data-testid="welcome">خوش آمدید، {me.displayName}</h1>
       <p data-testid="mfa-state">{me.mfaSatisfied ? 'ورود دومرحله‌ای: تأییدشده' : 'ورود با رمز عبور'}</p>
       <h2>فروشگاه‌های من</h2>
+      {me.memberships.length === 0 && <button onClick={() => setMe('new-user')} data-testid="new-business">ثبت کسب‌وکار جدید</button>}
       <ul>
         {me.memberships.map((m) => (
           <li key={m.tenantId}>

@@ -18,6 +18,11 @@ for c in $(curl -sf -H "$AUTH" "$KC/admin/realms/merchant/users/$SUB/credentials
   curl -sf -X DELETE -H "$AUTH" "$KC/admin/realms/merchant/users/$SUB/credentials/$c"
 done
 curl -sf -X DELETE -H "$AUTH" "$KC/admin/realms/merchant/users/$SUB/sessions" 2>/dev/null || true
+# newowner@spike.test signs up from scratch (UC-10): no TOTP, no RetailCloud user.
+NEW_SUB=$(curl -sf -H "$AUTH" "$KC/admin/realms/merchant/users?username=newowner@spike.test&exact=true" | python3 -c 'import json,sys;print(json.load(sys.stdin)[0]["id"])')
+for c in $(curl -sf -H "$AUTH" "$KC/admin/realms/merchant/users/$NEW_SUB/credentials" | python3 -c 'import json,sys;print(" ".join(c["id"] for c in json.load(sys.stdin) if c["type"]=="otp"))'); do
+  curl -sf -X DELETE -H "$AUTH" "$KC/admin/realms/merchant/users/$NEW_SUB/credentials/$c"
+done
 
 # 2. Seed: the owner is TenantOwner of store A (MFA required, IAM-003), Cashier of store B (no MFA), and a foreign store.
 T1=0194f000-0000-7000-8000-0000000000a1; T2=0194f000-0000-7000-8000-0000000000a2; TF=0194f000-0000-7000-8000-0000000000af
@@ -26,6 +31,8 @@ psql -v ON_ERROR_STOP=1 -q -d "$DB" <<SQL
 DELETE FROM iam.tenant_membership WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM iam.merchant_user WHERE id = '$U' OR (idp_issuer = '$ISSUER' AND idp_subject = '$SUB');
 DELETE FROM platform.tenant WHERE id IN ('$T1','$T2','$TF');
+DELETE FROM iam.tenant_membership WHERE user_id IN (SELECT id FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$NEW_SUB');
+DELETE FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$NEW_SUB';
 INSERT INTO platform.tenant (id, legal_name, industry_code) VALUES
   ('$T1','فروشگاه الف','supermarket'), ('$T2','فروشگاه ب','supermarket'), ('$TF','فروشگاه غریبه','supermarket');
 INSERT INTO iam.merchant_user (id, idp_issuer, idp_subject, display_name) VALUES ('$U','$ISSUER','$SUB','مالک آزمایشی');
@@ -51,15 +58,18 @@ for i in \$(seq 1 40); do curl -s --max-time 1 -o /dev/null http://127.0.0.1:300
 exec "$LOGS/start-bff.sh"
 SH
 chmod +x "$LOGS/start-bff.sh" "$LOGS/restart-bff.sh"
-cleanup() { kill -- -"${API_PID:-0}" 2>/dev/null || true; [ -f "$LOGS/bff.pid" ] && kill -- -"$(cat "$LOGS/bff.pid")" 2>/dev/null || true; }
+WORKER_PG=$(printf '%s' "$RC_TEST_PG" | sed 's/Username=rc_app_test;Password=rc_app_test/Username=rc_worker_test;Password=rc_worker_test/')
+cleanup() { kill -- -"${API_PID:-0}" 2>/dev/null || true; kill -- -"${WORKERS_PID:-0}" 2>/dev/null || true; [ -f "$LOGS/bff.pid" ] && kill -- -"$(cat "$LOGS/bff.pid")" 2>/dev/null || true; }
 trap cleanup EXIT
 ( cd "$BACKEND" && exec setsid env ASPNETCORE_URLS=http://127.0.0.1:5080 ASPNETCORE_ENVIRONMENT=Development \
   Auth__Merchant__Authority="$ISSUER" Auth__Merchant__RequireHttpsMetadata=false ConnectionStrings__Main="$RC_TEST_PG" \
   dotnet run --no-launch-profile --project Hosts/RetailCloud.Api >"$LOGS/api.log" 2>&1 ) & API_PID=$!
+( cd "$BACKEND" && exec setsid env DOTNET_ENVIRONMENT=Development ConnectionStrings__Main="$WORKER_PG" \
+  dotnet run --no-launch-profile --project Hosts/RetailCloud.Workers >"$LOGS/workers.log" 2>&1 ) & WORKERS_PID=$!
 "$LOGS/start-bff.sh" || { echo "BFF did not start"; tail -30 "$LOGS/bff.log"; exit 1; }
 for i in $(seq 1 180); do curl -sf http://127.0.0.1:5080/health >/dev/null && break; sleep 1; done
 curl -sf http://127.0.0.1:5080/health >/dev/null || { echo "API did not start"; tail -30 "$LOGS/api.log"; exit 1; }
 
 # 4. Browser checks.
 T1=$T1 T2=$T2 TF=$TF APP_DIR="$APP" RESTART_BFF="$LOGS/restart-bff.sh" node "$HERE/bff.e2e.mjs" \
-  || { echo "--- api.log"; tail -30 "$LOGS/api.log"; echo "--- bff.log"; tail -30 "$LOGS/bff.log"; exit 1; }
+  || { echo "--- api.log"; tail -30 "$LOGS/api.log"; echo "--- workers.log"; tail -30 "$LOGS/workers.log"; echo "--- bff.log"; tail -30 "$LOGS/bff.log"; exit 1; }

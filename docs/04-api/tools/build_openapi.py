@@ -127,6 +127,7 @@ schema("Tenant", id="uuid", legalName="str", industryCode="str", timeZone="str",
        pricingMode=("enum", ["TaxExclusive", "TaxInclusive"]),
        status=("enum", ["Trial", "Active", "Suspended", "Closed"]), version="int",
        **{"plan?": ("desc", "str", "From Subscription (US-014); absent until then"), "trialEndsAt?": "dt?"})
+schema("TenantSetup", complete="bool", steps=[{"name": ("enum", ["branch-and-register", "warehouse", "chart-of-accounts", "fiscal-periods"]), "complete": "bool"}])
 schema("TenantUpdate", expectedVersion="int", **{"legalName?": "str", "timeZone?": "str",
                                                   "pricingMode?": ("enum", ["TaxExclusive", "TaxInclusive"]),
                                                   "returnWindowDays?": "int", "negativeStockPolicy?": ("enum", ["Forbid", "AllowWithWarning"])})
@@ -610,9 +611,14 @@ def ex(summary, value):
 # ---------------- Platform & tenant
 tag("Tenant", "ثبت‌نام، تنظیمات، شعب، صندوق و دستگاه (TEN)")
 op("post", "/tenants", "registerTenant", "Tenant", "ثبت‌نام کسب‌وکار (Owner باید MFA فعال کرده باشد)", body="TenantRegistration",
-   resp="Tenant", resp_code="201", reqs=["TEN-001", "TEN-001.1"], audited=True, conflict=True,
+   resp="Tenant", resp_code="201", reqs=["TEN-001", "TEN-001.1"], audited=True, conflict=True, idem=True,
+   desc="Callable by a valid identity that is not yet a RetailCloud user (self-service sign-up, UC-10); requires acr=mfa "
+        "(403 mfa-required). The tenant id is derived from the caller identity and the Idempotency-Key, so a retry or "
+        "double submit returns the same tenant. Branch B1 and register R1 are created synchronously; owner membership, "
+        "warehouse W1, chart of accounts and fiscal periods follow from platform.tenant-registered (poll getTenantSetup).",
    examples={"supermarket": ex("سوپرمارکت", {"legalName": "فروشگاه نمونه", "industryCode": "supermarket",
                                              "firstBranchName": "شعبه مرکزی"})})
+op("get", "/tenants/me/setup", "getTenantSetup", "Tenant", "پیشرفت راه‌اندازی خودکار Tenant (ویزارد UC-10)", resp="TenantSetup", reqs=["TEN-001.1"])
 op("get", "/tenants/me", "getMyTenant", "Tenant", "Tenant فعال", resp="Tenant", reqs=["TEN-001"])
 op("patch", "/tenants/me", "updateMyTenant", "Tenant", "به‌روزرسانی تنظیمات", perm="tenant.settings.manage", scope="Tenant",
    body="TenantUpdate", resp="Tenant", reqs=["TEN-001", "BR-040", "BR-052"], audited=True, conflict=True)

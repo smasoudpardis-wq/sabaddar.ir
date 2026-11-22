@@ -220,6 +220,21 @@
       "requiredActions": [
         "webauthn-register"
       ]
+    },
+    {
+      "username": "newowner@spike.test",
+      "email": "newowner@spike.test",
+      "emailVerified": true,
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Spike-Passw0rd-1",
+          "temporary": false
+        }
+      ],
+      "firstName": "مالک",
+      "lastName": "تازه"
     }
   ],
   "authenticationFlows": [

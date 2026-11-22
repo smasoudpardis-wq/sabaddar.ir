@@ -11,6 +11,14 @@ public sealed class RequestContext : ITenantContext
 {
     public UserId? User { get; internal set; }
 
+    /// <summary>Token issuer and subject (the IdP identity), set even before the user is provisioned.</summary>
+    public string? Issuer { get; internal set; }
+
+    public string? Subject { get; internal set; }
+
+    /// <summary>Token <c>name</c> claim (display name proposal for self-service sign-up).</summary>
+    public string? TokenName { get; internal set; }
+
     public string DisplayName { get; internal set; } = string.Empty;
 
     public IReadOnlyList<MembershipInfo> Memberships { get; internal set; } = [];

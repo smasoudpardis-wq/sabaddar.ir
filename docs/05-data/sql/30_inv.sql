@@ -81,4 +81,5 @@ GRANT SELECT, INSERT ON inv.posted_source TO rc_app;
 -- receive privileges on partitions directly (checked by 90_fitness.sql).
 GRANT SELECT, INSERT ON inv.stock_movement TO rc_app;
 GRANT SELECT ON inv.warehouse, inv.stock_balance, inv.stock_movement TO rc_worker, rc_reporting;
+GRANT INSERT ON inv.warehouse TO rc_worker;   -- tenant provisioning consumer (US-011)
 RESET ROLE;

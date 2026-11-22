@@ -16,6 +16,19 @@ CREATE TABLE acc.account (
 );
 CALL core.enable_tenant_rls('acc.account');
 
+-- Account roles (D-30, D-59): posting rules reference roles; each tenant maps a role to one of its accounts.
+CREATE TABLE acc.account_role (
+  tenant_id  uuid NOT NULL,
+  role       text NOT NULL CHECK (role IN ('SalesRevenue','OutputVat','Inventory','COGS','CashOnHand','Bank',
+               'GatewayInTransit','CardInTransit','TradeReceivables','CustomerAdvances','TradePayables','InputVat',
+               'InventoryShrinkage','InventoryOverage','CashShortage','CashOverage','BadDebtExpense',
+               'InventoryCostAdjustment','OpeningBalanceEquity','BankFees')),
+  account_id uuid NOT NULL,
+  PRIMARY KEY (tenant_id, role),
+  FOREIGN KEY (tenant_id, account_id) REFERENCES acc.account (tenant_id, id)
+);
+CALL core.enable_tenant_rls('acc.account_role');
+
 CREATE TABLE acc.fiscal_period (
   tenant_id   uuid NOT NULL,
   id          uuid NOT NULL,
@@ -158,4 +171,6 @@ GRANT USAGE ON SCHEMA acc TO rc_app, rc_worker, rc_reporting;
 GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA acc TO rc_app;
 GRANT DELETE ON acc.journal_entry, acc.journal_line TO rc_app;   -- drafts only (guarded)
 GRANT SELECT ON ALL TABLES IN SCHEMA acc TO rc_worker, rc_reporting;
+-- Tenant provisioning consumer (US-011): default chart, role mapping and fiscal periods.
+GRANT INSERT ON acc.account, acc.account_role, acc.fiscal_period TO rc_worker;
 RESET ROLE;

@@ -46,12 +46,21 @@ public sealed class OutboxTests
         }
     }
 
+    // Only this class's tenants: other test assemblies (registration E2E) relay their own events in parallel.
+    private static readonly ConcurrentDictionary<Guid, byte> Mine = new();
+
     private static OutboxRelay Relay(OutboxRelayOptions? o = null, params IIntegrationEventConsumer[] consumers) =>
-        new(Worker, consumers, NullLogger<OutboxRelay>.Instance, o);
+        new(Worker, consumers, NullLogger<OutboxRelay>.Instance, new OutboxRelayOptions
+        {
+            BatchSize = o?.BatchSize ?? 100,
+            MaxAttempts = o?.MaxAttempts ?? 10,
+            Tenants = new HashSet<Guid>(Mine.Keys),
+        });
 
     private static async Task<TenantId> NewTenant()
     {
         var t = new TenantId(Guid.CreateVersion7());
+        Mine[t.Value] = 0;
         await App.ExecuteAsync(new FixedTenantContext(t), async (s, ct) =>
         {
             await using NpgsqlCommand c = ((PostgresUnitOfWorkScope)s).Command("INSERT INTO platform.tenant (id, legal_name, industry_code) VALUES ($1, 'outbox', 'general')");

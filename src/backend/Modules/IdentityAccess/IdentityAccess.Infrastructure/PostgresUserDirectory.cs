@@ -22,6 +22,24 @@ public sealed class PostgresUserDirectory(IUnitOfWork unitOfWork) : IUserDirecto
             return await r.ReadAsync(ct) ? (new UserId(r.GetGuid(0)), r.GetString(1)) : null;
         }, cancellationToken);
 
+    public Task<(UserId Id, string DisplayName)?> EnsureUserAsync(string issuer, string subject, string displayName,
+        CancellationToken cancellationToken) =>
+        unitOfWork.ExecuteWithoutTenantAsync<(UserId, string)?>(null, async (s, ct) =>
+        {
+            // Insert-or-read in one statement; concurrent first logins converge on the same row (UNIQUE issuer+subject).
+            await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)s).Command(
+                "WITH ins AS (INSERT INTO iam.merchant_user (id, idp_issuer, idp_subject, display_name) VALUES ($1, $2, $3, $4) " +
+                "ON CONFLICT (idp_issuer, idp_subject) DO NOTHING RETURNING id, display_name, status) " +
+                "SELECT id, display_name, status FROM ins UNION ALL " +
+                "SELECT id, display_name, status FROM iam.merchant_user WHERE idp_issuer = $2 AND idp_subject = $3 LIMIT 1");
+            cmd.Parameters.Add(new NpgsqlParameter { Value = Guid.CreateVersion7() });
+            cmd.Parameters.Add(new NpgsqlParameter { Value = issuer });
+            cmd.Parameters.Add(new NpgsqlParameter { Value = subject });
+            cmd.Parameters.Add(new NpgsqlParameter { Value = displayName });
+            await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct);
+            return await r.ReadAsync(ct) && r.GetString(2) == "Active" ? (new UserId(r.GetGuid(0)), r.GetString(1)) : null;
+        }, cancellationToken);
+
     public Task<IReadOnlyList<MembershipInfo>> ActiveMembershipsAsync(UserId user, CancellationToken cancellationToken) =>
         unitOfWork.ExecuteWithoutTenantAsync<IReadOnlyList<MembershipInfo>>(user, async (s, ct) =>
         {

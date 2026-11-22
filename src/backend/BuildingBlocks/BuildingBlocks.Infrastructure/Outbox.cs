@@ -54,6 +54,12 @@ public sealed class OutboxRelayOptions
     public int MaxAttempts { get; init; } = 10;
 
     public TimeSpan MaxBackoff { get; init; } = TimeSpan.FromMinutes(15);
+
+    /// <summary>
+    /// Restrict the relay to these tenants (null = all). For operations — re-driving one tenant from the runbook —
+    /// and for test isolation. Production Workers run with null.
+    /// </summary>
+    public IReadOnlySet<Guid>? Tenants { get; init; }
 }
 
 /// <summary>
@@ -95,7 +101,7 @@ public sealed partial class OutboxRelay(
         }, cancellationToken);
 
         int total = 0;
-        foreach (Guid tenant in tenants)
+        foreach (Guid tenant in tenants.Where(t => _options.Tenants is null || _options.Tenants.Contains(t)))
         {
             total += await RelayTenantAsync(new TenantId(tenant), cancellationToken);
         }

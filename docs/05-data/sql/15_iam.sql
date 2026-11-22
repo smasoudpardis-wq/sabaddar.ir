@@ -32,6 +32,7 @@ GRANT USAGE ON SCHEMA iam TO rc_app, rc_worker;
 GRANT SELECT, INSERT, UPDATE ON iam.merchant_user TO rc_app;
 GRANT SELECT, INSERT, UPDATE ON iam.tenant_membership TO rc_app;
 GRANT SELECT ON iam.merchant_user, iam.tenant_membership TO rc_worker;
+GRANT INSERT ON iam.tenant_membership TO rc_worker;   -- owner membership on platform.tenant-registered (US-011)
 RESET ROLE;
 
 -- Before a tenant is selected, the API must know which tenants the authenticated user belongs to (IAM-001, BR-001).

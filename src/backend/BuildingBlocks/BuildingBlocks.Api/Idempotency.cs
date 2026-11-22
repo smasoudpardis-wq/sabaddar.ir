@@ -55,13 +55,37 @@ public static partial class Idempotency
         where TBody : class
     {
         ArgumentNullException.ThrowIfNull(routes);
-        return routes.MapPost(pattern, (Delegate)((HttpContext http) => ExecuteAsync(http, operation, handler)))
+        return routes.MapPost(pattern, (Delegate)((HttpContext http) => ExecuteAsync(http, operation, handler, deriveTenant: false)))
             .AddEndpointFilter<RequireActiveTenantFilter>()
             .Accepts<TBody>("application/json");
     }
 
-    private static async Task<IResult> ExecuteAsync<TBody>(HttpContext http, string operation,
+    /// <summary>
+    /// For commands that CREATE a tenant (registerTenant): there is no active tenant yet, so the new tenant's id is
+    /// derived from the caller's identity and the key (<see cref="DerivedTenantId"/>). A retry lands on the same
+    /// tenant and replays; a double submit can never create two tenants. The handler reads the id from
+    /// <c>scope.TenantId</c>.
+    /// </summary>
+    public static RouteHandlerBuilder MapIdempotentCreateTenant<TBody>(this IEndpointRouteBuilder routes, string pattern, string operation,
         Func<TBody, IUnitOfWorkScope, HttpContext, CancellationToken, Task<CommandResult>> handler)
+        where TBody : class
+    {
+        ArgumentNullException.ThrowIfNull(routes);
+        return routes.MapPost(pattern, (Delegate)((HttpContext http) => ExecuteAsync(http, operation, handler, deriveTenant: true)))
+            .Accepts<TBody>("application/json");
+    }
+
+    /// <summary>UUID (version 8, RFC 9562) from SHA-256(issuer, subject, key): stable per caller and key, unguessable.</summary>
+    public static Guid DerivedTenantId(string issuer, string subject, string key)
+    {
+        byte[] h = SHA256.HashData(Encoding.UTF8.GetBytes($"rc-tenant-registration\n{issuer}\n{subject}\n{key}"));
+        h[6] = (byte)((h[6] & 0x0F) | 0x80); // version 8
+        h[8] = (byte)((h[8] & 0x3F) | 0x80); // RFC 9562 variant
+        return new Guid(h.AsSpan(0, 16), bigEndian: true);
+    }
+
+    private static async Task<IResult> ExecuteAsync<TBody>(HttpContext http, string operation,
+        Func<TBody, IUnitOfWorkScope, HttpContext, CancellationToken, Task<CommandResult>> handler, bool deriveTenant)
         where TBody : class
     {
         string? key = http.Request.Headers[Header];
@@ -99,9 +123,12 @@ public static partial class Idempotency
         IUnitOfWork uow = http.RequestServices.GetRequiredService<IUnitOfWork>();
         IIdempotencyStore store = http.RequestServices.GetRequiredService<IIdempotencyStore>();
 
+        ITenantContext tenant = deriveTenant
+            ? new FixedTenantContext(new RetailCloud.BuildingBlocks.Domain.TenantId(DerivedTenantId(ctx.Issuer!, ctx.Subject!, key)), ctx.User)
+            : ctx;
         try
         {
-            return await uow.ExecuteAsync(ctx, async (scope, ct) =>
+            return await uow.ExecuteAsync(tenant, async (scope, ct) =>
             {
                 switch (await store.ClaimAsync(scope, key, operation, hash, ct))
                 {

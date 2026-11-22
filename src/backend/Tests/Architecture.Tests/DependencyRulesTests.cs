@@ -18,12 +18,16 @@ public class DependencyRulesTests
     [
         typeof(RetailCloud.IdentityAccess.Application.IdentityAccessModule).Assembly,
         typeof(RetailCloud.Platform.Application.ITenantProfileQuery).Assembly,
+        typeof(RetailCloud.Inventory.Application.InventoryModule).Assembly,
+        typeof(RetailCloud.Accounting.Application.ChartOfAccountsTemplate).Assembly,
     ];
 
     private static readonly Assembly[] ModuleInfrastructures =
     [
         typeof(RetailCloud.IdentityAccess.Infrastructure.PostgresUserDirectory).Assembly,
         typeof(RetailCloud.Platform.Infrastructure.PostgresTenantProfileQuery).Assembly,
+        typeof(RetailCloud.Inventory.Infrastructure.DefaultWarehouseConsumer).Assembly,
+        typeof(RetailCloud.Accounting.Infrastructure.TenantAccountingSetupConsumer).Assembly,
     ];
 
     private static readonly string[] InfrastructureNamespaces =

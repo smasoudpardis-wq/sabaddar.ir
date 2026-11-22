@@ -83,7 +83,13 @@ paths:
       tags:
       - Tenant
       summary: ثبت‌نام کسب‌وکار (Owner باید MFA فعال کرده باشد)
+      description: Callable by a valid identity that is not yet a RetailCloud user (self-service sign-up, UC-10); requires
+        acr=mfa (403 mfa-required). The tenant id is derived from the caller identity and the Idempotency-Key, so a retry
+        or double submit returns the same tenant. Branch B1 and register R1 are created synchronously; owner membership, warehouse
+        W1, chart of accounts and fiscal periods follow from platform.tenant-registered (poll getTenantSetup).
       security: *id001
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -123,11 +129,46 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
       x-permission: tenant.member
-      x-idempotent: false
+      x-idempotent: true
       x-requirements:
       - TEN-001
       - TEN-001.1
       x-audited: true
+  /tenants/me/setup:
+    get:
+      operationId: getTenantSetup
+      tags:
+      - Tenant
+      summary: پیشرفت راه‌اندازی خودکار Tenant (ویزارد UC-10)
+      security: *id001
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantSetup'
+          headers:
+            ETag:
+              schema:
+                type: string
+              description: Weak ETag of version
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: tenant.member
+      x-idempotent: false
+      x-requirements:
+      - TEN-001.1
   /tenants/me:
     get:
       operationId: getMyTenant
@@ -11788,6 +11829,33 @@ components:
       - legalName
       - industryCode
       - firstBranchName
+    TenantSetup:
+      type: object
+      additionalProperties: false
+      properties:
+        complete:
+          type: boolean
+        steps:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              name:
+                type: string
+                enum:
+                - branch-and-register
+                - warehouse
+                - chart-of-accounts
+                - fiscal-periods
+              complete:
+                type: boolean
+            required:
+            - name
+            - complete
+      required:
+      - complete
+      - steps
     TenantUpdate:
       type: object
       additionalProperties: false

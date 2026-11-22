@@ -144,6 +144,36 @@ try {
   const evil = await fetch(`${BFF}/auth/login?returnTo=//evil.example/x`, { redirect: 'manual' });
   const pendingCookie = evil.headers.get('set-cookie') ?? '';
   check('E24', 'returnTo outside the app is ignored (no open redirect)', evil.status === 307 && !/evil/.test(evil.headers.get('location') ?? '') && pendingCookie.includes('rc_auth='));
+  // N01–N05 UC-10 self-service sign-up of a brand-new identity (US-011): wizard → MFA enrolment → Workers provision
+  const nctx = await browser.newContext();
+  const np = await nctx.newPage();
+  await np.goto(BFF);
+  await np.getByTestId('login').click();
+  await np.fill('#username', 'newowner@spike.test');
+  await np.fill('#password', 'Spike-Passw0rd-1');
+  await np.click('#kc-login');
+  await np.waitForURL(`${BFF}/`);
+  await np.getByTestId('onboarding-form').waitFor();
+  check('N01', 'first login of an unknown identity shows the sign-up wizard', true);
+  await np.fill('input[name=legalName]', 'سوپرمارکت آزمایشی');
+  await np.getByTestId('onboarding-submit').click();
+  await np.locator('#mode-manual').waitFor();
+  check('N02', 'creating a business requires MFA: the owner is sent to TOTP enrolment', new URL(np.url()).searchParams.get('execution') === 'CONFIGURE_TOTP');
+  await np.click('#mode-manual');
+  const nsecret = (await np.locator('#kc-totp-secret-key').textContent()).trim();
+  await np.fill('#totp', totp(nsecret));
+  await np.fill('#userLabel', 'e2e');
+  await np.click('#saveTOTPBtn');
+  await np.getByTestId('onboarding-ready').waitFor({ timeout: 45000 });
+  const done = await np.locator('li').allTextContents();
+  check('N03', 'after MFA the same draft is resubmitted and the Workers provision every step',
+    ['شعبه و صندوق اول', 'انبار اول', 'شجره حساب‌ها', 'دوره‌های مالی سال جاری'].every((x) => done.some((d) => d.includes('✓') && d.includes(x))), done.join(' | '));
+  await np.getByTestId('go-home').click();
+  await np.getByTestId('active-tenant').filter({ hasText: 'سوپرمارکت آزمایشی' }).waitFor();
+  check('N04', 'the new owner lands in the new store as TenantOwner with MFA', (await np.getByTestId('mfa-state').textContent()).includes('تأییدشده'));
+  const draftLeft = await np.evaluate(() => sessionStorage.getItem('rc.onboarding.draft'));
+  check('N05', 'the wizard draft is cleared once the store is ready', draftLeft === null);
+  await nctx.close();
 } catch (e) {
   check('E99', 'unexpected error', false, String(e));
 } finally {

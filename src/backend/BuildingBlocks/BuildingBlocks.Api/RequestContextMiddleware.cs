@@ -32,7 +32,22 @@ public sealed class RequestContextMiddleware(RequestDelegate next)
             return;
         }
 
+        context.Issuer = issuer;
+        context.Subject = subject;
+        context.TokenName = http.User.FindFirst("name")?.Value;
+        context.Acr = http.User.FindFirst("acr")?.Value;
+        context.AuthTime = long.TryParse(http.User.FindFirst("auth_time")?.Value, System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture, out long authTime)
+            ? DateTimeOffset.FromUnixTimeSeconds(authTime)
+            : null;
+
         var user = await directory.FindActiveUserAsync(issuer, subject, http.RequestAborted);
+        if (user is null && http.GetEndpoint()?.Metadata.GetMetadata<AllowUnprovisionedUserAttribute>() is not null)
+        {
+            await next(http); // self-service sign-up: the handler provisions the user (UC-10)
+            return;
+        }
+
         if (user is null)
         {
             await Problems.WriteAsync(http, Problems.Create(http, StatusCodes.Status403Forbidden, "user-not-provisioned",
@@ -42,20 +57,17 @@ public sealed class RequestContextMiddleware(RequestDelegate next)
 
         IReadOnlyList<MembershipInfo> memberships = await cache.GetOrCreateAsync(
             $"memberships:{user.Value.Id.Value}",
-            e =>
+            async e =>
             {
-                e.AbsoluteExpirationRelativeToNow = MembershipCacheTtl;
-                return directory.ActiveMembershipsAsync(user.Value.Id, http.RequestAborted);
+                IReadOnlyList<MembershipInfo> loaded = await directory.ActiveMembershipsAsync(user.Value.Id, http.RequestAborted);
+                // An empty list is typical right after sign-up, while the owner membership is being provisioned (US-011).
+                e.AbsoluteExpirationRelativeToNow = loaded.Count == 0 ? TimeSpan.FromSeconds(1) : MembershipCacheTtl;
+                return loaded;
             }) ?? [];
 
         context.User = user.Value.Id;
         context.DisplayName = user.Value.DisplayName;
         context.Memberships = memberships;
-        context.Acr = http.User.FindFirst("acr")?.Value;
-        context.AuthTime = long.TryParse(http.User.FindFirst("auth_time")?.Value, System.Globalization.NumberStyles.None,
-            System.Globalization.CultureInfo.InvariantCulture, out long authTime)
-            ? DateTimeOffset.FromUnixTimeSeconds(authTime)
-            : null;
 
         if (http.Request.Headers.TryGetValue(TenantHeader, out var raw))
         {
@@ -96,3 +108,11 @@ public sealed class RequireActiveTenantFilter : IEndpointFilter
             : await next(context);
     }
 }
+
+/// <summary>
+/// Marks the one endpoint a valid identity may call before it is a RetailCloud user: tenant registration (UC-10).
+/// Every other endpoint answers <c>403 user-not-provisioned</c>.
+/// </summary>
+[AttributeUsage(AttributeTargets.Method | AttributeTargets.Class)]
+public sealed class AllowUnprovisionedUserAttribute : Attribute;
+

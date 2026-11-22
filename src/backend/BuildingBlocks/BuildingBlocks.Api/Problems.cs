@@ -17,5 +17,16 @@ public static class Problems
     /// <summary>404 for "does not exist" and "belongs to another tenant" alike (BR-003, D-48).</summary>
     public static IResult NotFound(HttpContext http) => Create(http, StatusCodes.Status404NotFound, "not-found", "Not found");
 
+    /// <summary>400 validation with per-field error codes (context.errors).</summary>
+    public static IResult Validation(HttpContext http, IDictionary<string, string[]> errors) =>
+        Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: "Validation failed",
+            type: "https://errors.retailcloud.example/validation",
+            extensions: new Dictionary<string, object?>
+            {
+                ["code"] = "validation",
+                ["errors"] = errors,
+                ["traceId"] = Activity.Current?.TraceId.ToString() ?? http.TraceIdentifier,
+            });
+
     public static async Task WriteAsync(HttpContext http, IResult result) => await result.ExecuteAsync(http);
 }

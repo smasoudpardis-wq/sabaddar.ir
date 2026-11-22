@@ -48,6 +48,23 @@ public interface IUserDirectory
     Task<(UserId Id, string DisplayName)?> FindActiveUserAsync(string issuer, string subject, CancellationToken cancellationToken);
 
     Task<IReadOnlyList<MembershipInfo>> ActiveMembershipsAsync(UserId user, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Self-service sign-up (UC-10): returns the active user for (issuer, subject), creating it on first use. A
+    /// Disabled/Invited user is not reactivated: returns null.
+    /// </summary>
+    Task<(UserId Id, string DisplayName)?> EnsureUserAsync(string issuer, string subject, string displayName, CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// One provisioning step of a new tenant (TEN-001.1), owned by the module that performs it. The API composes the
+/// steps into the setup status the onboarding wizard polls.
+/// </summary>
+public interface ITenantSetupStep
+{
+    string Name { get; }
+
+    Task<bool> IsCompleteAsync(IUnitOfWorkScope scope, CancellationToken cancellationToken);
 }
 
 /// <summary>
