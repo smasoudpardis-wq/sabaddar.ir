@@ -78,11 +78,15 @@ WORKER_PG=$(printf '%s' "$RC_TEST_PG" | sed 's/Username=rc_app_test;Password=rc_
 free_ports() { for p in 3000 5080; do pid=$( (command -v fuser >/dev/null && fuser -n tcp "$p" 2>/dev/null) || true); [ -n "$pid" ] && kill $pid 2>/dev/null || true; done; }
 cleanup() { kill -- -"${API_PID:-0}" 2>/dev/null || true; kill -- -"${WORKERS_PID:-0}" 2>/dev/null || true; free_ports; [ -f "$LOGS/bff.pid" ] && kill -- -"$(cat "$LOGS/bff.pid")" 2>/dev/null || true; }
 trap cleanup EXIT
+# Build once, sequentially: two concurrent `dotnet run` builds race on the shared BuildingBlocks outputs
+# (CI saw "deps.json is being used by another process" and the Workers never started).
+( cd "$BACKEND" && dotnet build Hosts/RetailCloud.Api -v q -nologo >"$LOGS/build.log" 2>&1 && dotnet build Hosts/RetailCloud.Workers -v q -nologo >>"$LOGS/build.log" 2>&1 ) \
+  || { echo "backend build failed"; tail -30 "$LOGS/build.log"; exit 1; }
 ( cd "$BACKEND" && exec setsid env ASPNETCORE_URLS=http://127.0.0.1:5080 ASPNETCORE_ENVIRONMENT=Development \
   Auth__Merchant__Authority="$ISSUER" Auth__Merchant__RequireHttpsMetadata=false ConnectionStrings__Main="$RC_TEST_PG" \
-  dotnet run --no-launch-profile --project Hosts/RetailCloud.Api >"$LOGS/api.log" 2>&1 ) & API_PID=$!
+  dotnet run --no-build --no-launch-profile --project Hosts/RetailCloud.Api >"$LOGS/api.log" 2>&1 ) & API_PID=$!
 ( cd "$BACKEND" && exec setsid env DOTNET_ENVIRONMENT=Development ConnectionStrings__Main="$WORKER_PG" \
-  dotnet run --no-launch-profile --project Hosts/RetailCloud.Workers >"$LOGS/workers.log" 2>&1 ) & WORKERS_PID=$!
+  dotnet run --no-build --no-launch-profile --project Hosts/RetailCloud.Workers >"$LOGS/workers.log" 2>&1 ) & WORKERS_PID=$!
 "$LOGS/start-bff.sh" || { echo "BFF did not start"; tail -30 "$LOGS/bff.log"; exit 1; }
 for i in $(seq 1 180); do curl -sf http://127.0.0.1:5080/health >/dev/null && break; sleep 1; done
 curl -sf http://127.0.0.1:5080/health >/dev/null || { echo "API did not start"; tail -30 "$LOGS/api.log"; exit 1; }
