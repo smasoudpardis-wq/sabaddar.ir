@@ -66,6 +66,8 @@ SH
 cat > "$LOGS/restart-bff.sh" <<SH
 #!/usr/bin/env bash
 kill -- -\$(cat "$LOGS/bff.pid") 2>/dev/null || true
+# next-server can leave its process group: also kill whatever still listens on :3000 and wait until the port is free
+if command -v fuser >/dev/null; then fuser -k -n tcp 3000 >/dev/null 2>&1 || true; else pkill -f 'next-server' || true; fi
 for i in \$(seq 1 40); do curl -s --max-time 1 -o /dev/null http://127.0.0.1:3000/ || break; sleep 0.25; done
 exec "$LOGS/start-bff.sh"
 SH
