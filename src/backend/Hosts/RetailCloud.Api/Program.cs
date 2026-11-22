@@ -138,6 +138,33 @@ async Task<ScopeRef?> ResolveScope(IUnitOfWorkScope s, IEnumerable<IScopeLookup>
 
 IResult Forbidden(HttpContext http) => Problems.Create(http, StatusCodes.Status403Forbidden, "forbidden", "Your role does not allow this operation");
 
+// listBranches (D07, TEN-002): the branches the caller's assignments reach (all of them for tenant-wide roles).
+v1.MapGet("/branches", async (RequestContext ctx, IUnitOfWork uow, IEnumerable<IScopeLookup> lookups, CancellationToken ct) =>
+        Results.Ok(await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            await using var cmd = ((PostgresUnitOfWorkScope)s).Command("SELECT id, code, name, status FROM platform.branch ORDER BY code");
+            await using var r = await cmd.ExecuteReaderAsync(c);
+            var all = new List<(Guid Id, string Code, string Name, string Status)>();
+            while (await r.ReadAsync(c))
+            {
+                all.Add((r.GetGuid(0), r.GetString(1), r.GetString(2), r.GetString(3)));
+            }
+
+            await r.DisposeAsync();
+            var reached = new List<object>();
+            foreach (var b in all)
+            {
+                var scope = new ScopeRef(ScopeType.Branch, b.Id, b.Id);
+                if (ctx.ActiveMembership!.Assignments.Any(a => AccessPolicy.Covers(a, scope)))
+                {
+                    reached.Add(new { id = b.Id, code = b.Code, name = b.Name, status = b.Status });
+                }
+            }
+
+            return reached;
+        }, ct)))
+    .RequireTenantMember();
+
 // listRoles: the system roles with their stable ids and permissions (custom roles: later story).
 v1.MapGet("/roles", () => Results.Ok(RoleCatalog.Roles.Select(r => new
     {

@@ -133,6 +133,43 @@ try {
   const plain = values.some((v) => /eyJ|refresh|accessToken/.test(v ?? '')) || keys.some((k) => k.includes(sidAfter));
   check('E21', 'Valkey holds only encrypted values under hashed keys', keys.length > 0 && !plain, `${keys.length} keys`);
 
+  // I01–I06 US-025: the owner invites a cashier for one branch; the cashier joins through the link (IAM-001, IAM-006)
+  await page.goto(`${BFF}/users`);
+  await page.getByTestId('users').waitFor();
+  check('I01', 'owner sees the users page', (await page.getByTestId('users').textContent()).includes('مالک آزمایشی'));
+  await page.fill('input[name=displayName]', 'صندوق‌دار آزمایشی');
+  await page.locator('select[name=roleId]').selectOption({ label: 'صندوق‌دار' });
+  await page.locator('select[name=branchId]').selectOption({ label: 'شعبه مرکزی' });
+  await page.getByTestId('invite-submit').click();
+  const link = (await page.getByTestId('invite-link').textContent()).trim();
+  check('I02', 'invitation link created for Cashier @ branch', /\/invite\/[A-Za-z0-9_-]{43}$/.test(link), link.replace(/[A-Za-z0-9_-]{43}$/, '…'));
+  await shot(page, '5-invite');
+
+  const cctx = await browser.newContext();
+  const cp = await cctx.newPage();
+  await cp.goto(link);
+  await cp.getByTestId('invite-login').click();
+  await cp.fill('#username', 'cashier@spike.test');
+  await cp.fill('#password', 'Spike-Passw0rd-1');
+  await cp.click('#kc-login');
+  await cp.getByTestId('invite-accept').click();
+  await cp.waitForURL(`${BFF}/`);
+  await cp.getByTestId('active-tenant').filter({ hasText: 'فروشگاه الف' }).waitFor();
+  check('I03', 'invitee signs in, accepts and lands in the store (Cashier: password only)',
+    (await cp.getByTestId('mfa-state').textContent()).includes('رمز عبور'));
+  const cashierUsers = await cp.evaluate(async () => { const r = await fetch('/bff/users'); return { s: r.status, b: await r.json() }; });
+  check('I04', 'the cashier cannot open user administration (403 forbidden, SEC-T-012)', cashierUsers.s === 403 && cashierUsers.b.code === 'forbidden', `${cashierUsers.s} ${cashierUsers.b.code}`);
+  await cp.goto(link);
+  await cp.getByTestId('invite-accept').click();
+  await cp.getByTestId('invite-error').waitFor();
+  check('I05', 'the link is single use', (await cp.getByTestId('invite-error').textContent()).includes('معتبر نیست'));
+  await cctx.close();
+  await page.goto(`${BFF}/users`);
+  await page.getByTestId('users').filter({ hasText: 'صندوق‌دار' }).waitFor();
+  check('I06', 'the owner sees the new cashier with role and branch', (await page.getByTestId('users').textContent()).includes('صندوق‌دار (مرکزی)'));
+  await page.goto(BFF);
+  await page.getByTestId('logout').waitFor();
+
   // E22–E23 logout
   const oldSid = (await ctx.cookies(BFF)).find((c) => c.name === 'rc_sid').value;
   await page.getByTestId('logout').click();

@@ -18,6 +18,7 @@ for c in $(curl -sf -H "$AUTH" "$KC/admin/realms/merchant/users/$SUB/credentials
   curl -sf -X DELETE -H "$AUTH" "$KC/admin/realms/merchant/users/$SUB/credentials/$c"
 done
 curl -sf -X DELETE -H "$AUTH" "$KC/admin/realms/merchant/users/$SUB/sessions" 2>/dev/null || true
+CASHIER_SUB=$(curl -sf -H "$AUTH" "$KC/admin/realms/merchant/users?username=cashier@spike.test&exact=true" | python3 -c 'import json,sys;print(json.load(sys.stdin)[0]["id"])')
 # newowner@spike.test signs up from scratch (UC-10): no TOTP, no RetailCloud user.
 NEW_SUB=$(curl -sf -H "$AUTH" "$KC/admin/realms/merchant/users?username=newowner@spike.test&exact=true" | python3 -c 'import json,sys;print(json.load(sys.stdin)[0]["id"])')
 for c in $(curl -sf -H "$AUTH" "$KC/admin/realms/merchant/users/$NEW_SUB/credentials" | python3 -c 'import json,sys;print(" ".join(c["id"] for c in json.load(sys.stdin) if c["type"]=="otp"))'); do
@@ -31,12 +32,19 @@ psql -v ON_ERROR_STOP=1 -q -d "$DB" <<SQL
 DELETE FROM iam.role_assignment WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM iam.tenant_membership WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM iam.merchant_user WHERE id = '$U' OR (idp_issuer = '$ISSUER' AND idp_subject = '$SUB');
+DELETE FROM iam.invitation WHERE tenant_id IN ('$T1','$T2','$TF');
+DELETE FROM iam.role_assignment WHERE user_id IN (SELECT id FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$CASHIER_SUB');
+DELETE FROM iam.tenant_membership WHERE user_id IN (SELECT id FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$CASHIER_SUB');
+DELETE FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$CASHIER_SUB';
+DELETE FROM platform.register WHERE tenant_id IN ('$T1','$T2','$TF');
+DELETE FROM platform.branch WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM platform.tenant WHERE id IN ('$T1','$T2','$TF');
 DELETE FROM iam.role_assignment WHERE user_id IN (SELECT id FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$NEW_SUB');
 DELETE FROM iam.tenant_membership WHERE user_id IN (SELECT id FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$NEW_SUB');
 DELETE FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$NEW_SUB';
 INSERT INTO platform.tenant (id, legal_name, industry_code) VALUES
   ('$T1','فروشگاه الف','supermarket'), ('$T2','فروشگاه ب','supermarket'), ('$TF','فروشگاه غریبه','supermarket');
+INSERT INTO platform.branch (tenant_id, id, code, name) VALUES ('$T1', gen_random_uuid(), 'B1', 'مرکزی');
 INSERT INTO iam.merchant_user (id, idp_issuer, idp_subject, display_name) VALUES ('$U','$ISSUER','$SUB','مالک آزمایشی');
 INSERT INTO iam.tenant_membership (tenant_id, user_id) VALUES ('$T1','$U'), ('$T2','$U');
 INSERT INTO iam.role_assignment (tenant_id, id, user_id, role, scope_type) VALUES
@@ -63,7 +71,9 @@ exec "$LOGS/start-bff.sh"
 SH
 chmod +x "$LOGS/start-bff.sh" "$LOGS/restart-bff.sh"
 WORKER_PG=$(printf '%s' "$RC_TEST_PG" | sed 's/Username=rc_app_test;Password=rc_app_test/Username=rc_worker_test;Password=rc_worker_test/')
-cleanup() { kill -- -"${API_PID:-0}" 2>/dev/null || true; kill -- -"${WORKERS_PID:-0}" 2>/dev/null || true; [ -f "$LOGS/bff.pid" ] && kill -- -"$(cat "$LOGS/bff.pid")" 2>/dev/null || true; }
+# next-server can outlive its process group after a restart; free the ports too so the next run starts clean.
+free_ports() { for p in 3000 5080; do pid=$( (command -v fuser >/dev/null && fuser -n tcp "$p" 2>/dev/null) || true); [ -n "$pid" ] && kill $pid 2>/dev/null || true; done; }
+cleanup() { kill -- -"${API_PID:-0}" 2>/dev/null || true; kill -- -"${WORKERS_PID:-0}" 2>/dev/null || true; free_ports; [ -f "$LOGS/bff.pid" ] && kill -- -"$(cat "$LOGS/bff.pid")" 2>/dev/null || true; }
 trap cleanup EXIT
 ( cd "$BACKEND" && exec setsid env ASPNETCORE_URLS=http://127.0.0.1:5080 ASPNETCORE_ENVIRONMENT=Development \
   Auth__Merchant__Authority="$ISSUER" Auth__Merchant__RequireHttpsMetadata=false ConnectionStrings__Main="$RC_TEST_PG" \

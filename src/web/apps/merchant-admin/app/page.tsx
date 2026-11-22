@@ -94,6 +94,7 @@ export default function Home() {
       </ul>
       {tenant && <p data-testid="active-tenant">فروشگاه فعال: {tenant.legalName}</p>}
       {error && <p role="alert" data-testid="error">{MESSAGES[error] ?? error}</p>}
+      {tenant && <p><a href="/users" data-testid="users-link">کاربران و دعوت همکار</a></p>}
       <button onClick={() => void logout()} data-testid="logout" style={{ minHeight: 44 }}>خروج</button>
     </section>
   );
