@@ -34,6 +34,16 @@ python3 docs/00-product/tools/build_backlog.py   # تولید CSV و جدول + 
 
 ---
 
+## 0.1 پیشرفت پیاده‌سازی
+
+| Sprint | آیتم | وضعیت | شاهد |
+|---|---|---|---|
+| 1 | US-001 Monorepo، Pipeline، Architecture Tests | ✅ Done | `src/backend`، `.github/workflows/ci.yml` (موقت؛ D-80 و AQ-04)، ۶ تست معماری (با اثبات شکست روی تخلف عمدی) |
+| 1 | US-002 BuildingBlocks: Money، Quantity، TaxRate، Ids، Result، Clock (+ Gtin، PublicCustomerCode) | ✅ Done | ۳۹ تست Unit و Property (FsCheck، تا ۲٬۰۰۰ مورد تصادفی به ازای هر Property) |
+| 1 | SP-07 EF Core + Npgsql با تراکنش مشترک و RLS | ✅ Done — تأیید شد | ۷ تست Integration؛ D04 §5.3 |
+| 1 | US-007 محیط Dev (Compose) | 🟡 بخشی | `src/backend/dev/compose.yaml` (نحو معتبر؛ اجرا نشده). Mirrorها و Staging منتظر زیرساخت‌اند (X-07) |
+| 1 | SP-01 Keycloak / SP-04 مؤدیان | ⏳ باز | SP-04 به دسترسی Sandbox وابسته است (X-01) |
+
 ## 1. رویکرد تحویل
 
 - **Vertical Slice:** هر Story از UI تا DB، با Migration، تست، OpenAPI، Policy امنیتی و Metric تحویل می‌شود (DoD، §6).

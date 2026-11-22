@@ -1,0 +1,98 @@
+using System.Reflection;
+using NetArchTest.Rules;
+using RetailCloud.BuildingBlocks.Application;
+using RetailCloud.BuildingBlocks.Domain;
+using RetailCloud.BuildingBlocks.Infrastructure;
+
+namespace RetailCloud.Architecture.Tests;
+
+/// <summary>D04 §5.2 dependency rules R1–R9 as executable tests (NFR-MNT-001). New modules add their assemblies here.</summary>
+public class DependencyRulesTests
+{
+    private static readonly Assembly Domain = typeof(Money).Assembly;
+    private static readonly Assembly Application = typeof(IUnitOfWork).Assembly;
+    private static readonly Assembly Infrastructure = typeof(PostgresUnitOfWork).Assembly;
+
+    private static readonly string[] InfrastructureNamespaces =
+    [
+        "Microsoft.EntityFrameworkCore", "Npgsql", "Microsoft.AspNetCore", "System.Net.Http", "System.Data",
+    ];
+
+    private static void AssertSuccess(TestResult result, string rule) =>
+        Assert.True(result.IsSuccessful,
+            $"{rule} violated by: {string.Join(", ", result.FailingTypeNames ?? [])}");
+
+    [Fact]
+    public void R1_domain_depends_on_nothing_infrastructural() =>
+        AssertSuccess(Types.InAssembly(Domain).ShouldNot()
+            .HaveDependencyOnAny([.. InfrastructureNamespaces, "RetailCloud.BuildingBlocks.Application", "RetailCloud.BuildingBlocks.Infrastructure"])
+            .GetResult(), "R1");
+
+    [Fact]
+    public void R2_application_does_not_depend_on_infrastructure_or_data_access() =>
+        AssertSuccess(Types.InAssembly(Application).ShouldNot()
+            .HaveDependencyOnAny([.. InfrastructureNamespaces, "RetailCloud.BuildingBlocks.Infrastructure"])
+            .GetResult(), "R2");
+
+    [Fact]
+    public void R8_application_and_domain_never_use_HttpClient() =>
+        AssertSuccess(Types.InAssemblies([Domain, Application]).ShouldNot()
+            .HaveDependencyOn("System.Net.Http").GetResult(), "R8");
+
+    [Fact]
+    public void Domain_has_no_floating_point_members_BR010()
+    {
+        var offenders = Domain.GetTypes()
+            .SelectMany(t => t.GetFields(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+                .Select(f => (t, n: f.Name, ty: f.FieldType))
+                .Concat(t.GetProperties(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+                    .Select(p => (t, n: p.Name, ty: p.PropertyType))))
+            .Where(x => x.ty == typeof(double) || x.ty == typeof(float))
+            .Select(x => $"{x.t.Name}.{x.n}")
+            .ToList();
+        Assert.Empty(offenders);
+    }
+
+    [Fact]
+    public void Domain_value_objects_are_immutable()
+    {
+        // No public setter (init-only is allowed: it cannot change after construction) and no writable instance field.
+        var offenders = Domain.GetTypes()
+            .Where(t => !t.IsEnum && !t.IsInterface && t != typeof(SystemClock) && !t.IsDefined(typeof(System.Runtime.CompilerServices.CompilerGeneratedAttribute)))
+            .SelectMany(t =>
+                t.GetProperties(BindingFlags.Instance | BindingFlags.Public)
+                    .Where(p => p.SetMethod is { IsPublic: true } set &&
+                                !set.ReturnParameter.GetRequiredCustomModifiers().Contains(typeof(System.Runtime.CompilerServices.IsExternalInit)))
+                    .Select(p => $"{t.Name}.{p.Name} (setter)")
+                    .Concat(t.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                        .Where(f => !f.IsInitOnly)
+                        .Select(f => $"{t.Name}.{f.Name} (field)")))
+            .ToList();
+        Assert.Empty(offenders);
+    }
+
+    [Fact]
+    public void R9_only_BuildingBlocks_Infrastructure_sets_tenant_context()
+    {
+        string root = FindRepoRoot();
+        var offenders = Directory.EnumerateFiles(Path.Combine(root, "src", "backend"), "*.cs", SearchOption.AllDirectories)
+            .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}Tests{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            .Where(f => !f.Contains("BuildingBlocks.Infrastructure", StringComparison.Ordinal))
+            .Where(f => File.ReadAllText(f).Contains("app.tenant_id", StringComparison.Ordinal))
+            .Select(f => Path.GetRelativePath(root, f))
+            .ToList();
+        Assert.Empty(offenders);
+    }
+
+    private static string FindRepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !Directory.Exists(Path.Combine(dir.FullName, "docs", "05-data")))
+        {
+            dir = dir.Parent;
+        }
+
+        return dir?.FullName ?? throw new InvalidOperationException("Repository root not found.");
+    }
+}

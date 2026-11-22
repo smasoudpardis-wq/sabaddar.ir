@@ -1,0 +1,3 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- R1: no dependency on EF, ASP.NET, Npgsql or HTTP -->
+</Project>

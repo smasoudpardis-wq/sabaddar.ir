@@ -1,0 +1,91 @@
+# Interim CI on GitHub Actions (repository is on GitHub). Target per D-80 is self-hosted GitLab CI with internal
+# mirrors (ADR-010); this workflow mirrors the D10 §13 stage order and is portable to .gitlab-ci.yml (AQ-04).
+name: ci
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  design-docs:
+    name: design package checks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install pyyaml==6.0.2 openapi-spec-validator==0.7.1
+      - name: OpenAPI is generated from source and valid
+        run: |
+          python3 docs/04-api/tools/build_openapi.py
+          git diff --exit-code docs/04-api/D07-API-OpenAPI.yaml
+          python3 -c "from openapi_spec_validator import validate; from openapi_spec_validator.readers import read_from_filename as r; validate(r('docs/04-api/D07-API-OpenAPI.yaml')[0])"
+          python3 docs/04-api/tools/check_contract.py
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: npx --yes @redocly/cli@1.25.11 lint docs/04-api/D07-API-OpenAPI.yaml --config docs/04-api/redocly.yaml
+      - name: Test catalog, backlog, alerts, open-question register are consistent and committed
+        run: |
+          python3 docs/09-testing/tools/build_test_catalog.py
+          python3 docs/00-product/tools/build_backlog.py
+          python3 docs/07-operations/alerts/check_rules.py
+          python3 docs/tools/build_oq_register.py
+          git diff --exit-code docs/
+      - name: Mermaid diagrams render
+        run: |
+          mkdir -p /tmp/mm && cd /tmp/mm && npm init -y >/dev/null && npm i mermaid@11.4.1 playwright@1.48.2 >/dev/null
+          npx playwright install --with-deps chromium >/dev/null
+          cd "$GITHUB_WORKSPACE"
+          MERMAID_JS=/tmp/mm/node_modules/mermaid/dist/mermaid.min.js NODE_PATH=/tmp/mm/node_modules \
+            node docs/tools/check_mermaid.js $(grep -rl '```mermaid' docs)
+
+  database:
+    name: D05 schema, RLS, oracles, fitness
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_PASSWORD: postgres }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env: { PGHOST: localhost, PGPORT: "5432", PGUSER: postgres, PGPASSWORD: postgres }
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get install -y -qq postgresql-client
+      - run: docs/05-data/sql/tests/run_all.sh
+
+  backend:
+    name: backend build and tests
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_PASSWORD: postgres }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      RC_TEST_PG: Host=localhost;Port=5432;Database=rc_it;Username=rc_app_test;Password=rc_app_test
+      DOTNET_NOLOGO: "1"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { global-json-file: src/backend/global.json }
+      - run: sudo apt-get install -y -qq postgresql-client
+      - run: src/backend/scripts/setup-test-db.sh rc_it
+      - run: dotnet build src/backend/RetailCloud.sln -c Release
+      - name: Tests (unit, property, architecture, integration — integration must not skip in CI)
+        run: |
+          dotnet test src/backend/RetailCloud.sln -c Release --no-build --logger "trx;LogFileName=results.trx" 2>&1 | tee test.log
+          ! grep -E "Skipped: [1-9]" test.log
