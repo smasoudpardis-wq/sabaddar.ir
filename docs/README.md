@@ -15,7 +15,7 @@
 | D08 Flows | [02-domain-model/D08-Flows-BPMN-Sequence.md](02-domain-model/D08-Flows-BPMN-Sequence.md) | Draft 0.1 — 22 نمودار، همه Render شده |
 | D09 UX Wireframes | [06-ux/D09-UX-Wireframe-Spec.md](06-ux/D09-UX-Wireframe-Spec.md) | Draft 0.1 |
 | D10 Test Plan | [09-testing/D10-Test-Plan-Acceptance.md](09-testing/D10-Test-Plan-Acceptance.md) · [کاتالوگ ۲۶۵ تست](09-testing/test-catalog.csv) | Draft 0.1 |
-| D11 DevOps Runbook | `07-operations/D11-DevOps-Runbook-SLO.md` | بعدی |
-| D12 Backlog & Roadmap | `00-product/D12-Implementation-Backlog-Roadmap.md` | برنامه‌ریزی‌شده |
+| D11 DevOps Runbook | [07-operations/D11-DevOps-Runbook-SLO.md](07-operations/D11-DevOps-Runbook-SLO.md) · [Alert rules](07-operations/alerts/retailcloud-rules.yaml) | Draft 0.1 |
+| D12 Backlog & Roadmap | `00-product/D12-Implementation-Backlog-Roadmap.md` | بعدی |
 
 قرارداد برچسب‌ها: `[REQ]` الزام · `[ASM]` فرض · `[DEC]` تصمیم پیشنهادی · `[REC]` توصیه · `[OQ]` پرسش باز.

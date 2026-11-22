@@ -1,0 +1,174 @@
+# RetailCloud alert rules (Prometheus rule file). D11 §4–5, §8. Severity: page = wake on-call, ticket = working hours.
+# Metric names are the contract defined in D11 §4.2; exporter metrics: postgres_exporter, redis_exporter, OpenBao telemetry.
+groups:
+  - name: rc-slo
+    rules:
+      - alert: RCFinalizeErrorBudgetBurn
+        expr: |
+          (
+            sum(rate(rc_http_server_duration_seconds_count{operation=~"finalizeSale|addSaleLine|recordTender",status_class="5xx"}[1h]))
+            / sum(rate(rc_http_server_duration_seconds_count{operation=~"finalizeSale|addSaleLine|recordTender"}[1h]))
+          ) > (14.4 * 0.001)
+          and
+          (
+            sum(rate(rc_http_server_duration_seconds_count{operation=~"finalizeSale|addSaleLine|recordTender",status_class="5xx"}[5m]))
+            / sum(rate(rc_http_server_duration_seconds_count{operation=~"finalizeSale|addSaleLine|recordTender"}[5m]))
+          ) > (14.4 * 0.001)
+        labels: {severity: page, slo: S1}
+        annotations:
+          summary: "Sales write API burning the 99.9% error budget 14x faster than allowed"
+          runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-01"
+      - alert: RCFinalizeErrorBudgetSlowBurn
+        expr: |
+          (
+            sum(rate(rc_http_server_duration_seconds_count{operation=~"finalizeSale|addSaleLine|recordTender",status_class="5xx"}[6h]))
+            / sum(rate(rc_http_server_duration_seconds_count{operation=~"finalizeSale|addSaleLine|recordTender"}[6h]))
+          ) > (6 * 0.001)
+        for: 30m
+        labels: {severity: ticket, slo: S1}
+        annotations:
+          summary: "Sales write API slow error-budget burn"
+          runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-01"
+      - alert: RCFinalizeLatencyHigh
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(rc_http_server_duration_seconds_bucket{operation="finalizeSale"}[5m]))) > 2
+        for: 10m
+        labels: {severity: page, slo: S2}
+        annotations:
+          summary: "finalizeSale p95 above 2s for 10 minutes"
+          runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-01"
+      - alert: RCOutboxLag
+        expr: max by (schema) (rc_outbox_oldest_pending_seconds) > 300
+        for: 5m
+        labels: {severity: page, slo: S5}
+        annotations:
+          summary: "Outbox {{ $labels.schema }} oldest pending message older than 5 minutes"
+          runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-02"
+
+  - name: rc-integrity
+    rules:
+      - alert: RCOracleViolation
+        expr: max by (oracle) (rc_oracle_violations) > 0
+        labels: {severity: page, slo: S8}
+        annotations:
+          summary: "Consistency oracle {{ $labels.oracle }} reports violations (Sev-1)"
+          runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-03"
+      - alert: RCRlsDenied
+        expr: sum(increase(rc_db_rls_denied_total[5m])) > 0
+        labels: {severity: page}
+        annotations:
+          summary: "Application role hit row-level security denials (DET-01)"
+          runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-05"
+      - alert: RCPartitionDefaultRows
+        expr: max by (table) (rc_partition_default_rows) > 0
+        for: 15m
+        labels: {severity: ticket}
+        annotations:
+          summary: "Rows landing in default partition of {{ $labels.table }}"
+          runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-21"
+
+  - name: rc-tax
+    rules:
+      - alert: RCTaxDeadlineAtRisk
+        expr: max by (threshold) (rc_tax_deadline_at_risk{threshold=~"80|95"}) > 0
+        labels: {severity: page, slo: S6}
+        annotations:
+          summary: "Tax invoices not finalized at {{ $labels.threshold }}% of the submission deadline"
+          runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-08"
+      - alert: RCTaxRejectedSpike
+        expr: sum(increase(rc_tax_invoices_rejected_total[1h])) > 50
+        labels: {severity: ticket}
+        annotations:
+          summary: "More than 50 tax invoices rejected in the last hour"
+          runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-08"
+      - alert: RCTaxSignRateAnomaly
+        expr: max(rc_tax_sign_rate_ratio) > 3
+        for: 10m
+        labels: {severity: page}
+        annotations:
+          summary: "A tenant's tax signing rate is >3x its hourly average (DET-05)"
+          runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-09"
+      - alert: RCTaxHashMismatch
+        expr: sum(increase(rc_tax_sign_total{result="hash_mismatch"}[5m])) > 0
+        labels: {severity: page}
+        annotations:
+          summary: "TaxSigningService refused a request with mismatching content hash (DET-06)"
+          runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-09"
+
+  - name: rc-payments-messaging
+    rules:
+      - alert: RCPaymentVerifyFailures
+        expr: sum by (gateway) (increase(rc_payment_verify_failed_total[10m])) > 20
+        labels: {severity: page}
+        annotations:
+          summary: "Gateway {{ $labels.gateway }} verify failures spiking"
+          runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-10"
+      - alert: RCOtpSurge
+        expr: sum(rate(rc_otp_sent_total[5m])) > 3 * sum(rate(rc_otp_sent_total[1h] offset 1d))
+        for: 10m
+        labels: {severity: page}
+        annotations:
+          summary: "OTP sends >3x the same hour yesterday (DET-04)"
+          runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-11"
+      - alert: RCSmsBudget
+        expr: rc_sms_spend_ratio > 0.8
+        labels: {severity: page}
+        annotations:
+          summary: "SMS spend above 80% of the daily budget"
+          runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-11"
+
+  - name: rc-platform
+    rules:
+      - alert: RCPostgresPrimaryDown
+        expr: pg_up{role="primary"} == 0
+        for: 1m
+        labels: {severity: page}
+        annotations:
+          summary: "PostgreSQL primary unreachable"
+          runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-06"
+      - alert: RCReplicaLagHigh
+        expr: max(pg_replication_lag_seconds) > 30
+        for: 5m
+        labels: {severity: ticket}
+        annotations:
+          summary: "Replica lag above 30s (reporting freshness / DR RPO)"
+          runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-06"
+      - alert: RCWalArchiveLag
+        expr: max(pg_stat_archiver_last_archive_age) > 900
+        labels: {severity: page}
+        annotations:
+          summary: "WAL archiving more than 15 minutes behind — RPO at risk"
+          runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-12"
+      - alert: RCBackupStale
+        expr: time() - max by (kind) (rc_backup_last_success_timestamp{kind=~"full|diff"}) > 36 * 3600
+        labels: {severity: page}
+        annotations:
+          summary: "No successful {{ $labels.kind }} backup in 36 hours"
+          runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-12"
+      - alert: RCRedisDown
+        expr: max(redis_up) == 0
+        for: 1m
+        labels: {severity: page}
+        annotations:
+          summary: "Redis unavailable — OTP/lookup fail closed, POS degraded"
+          runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-17"
+      - alert: RCOpenBaoSealed
+        # OpenBao keeps Vault-compatible telemetry names; verify against the deployed version.
+        expr: min(vault_core_unsealed) == 0
+        for: 1m
+        labels: {severity: page}
+        annotations:
+          summary: "OpenBao sealed — DB credential issuance and tax signing stopped"
+          runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-18"
+      - alert: RCCertExpiringSoon
+        expr: min by (name) (rc_cert_expiry_seconds) < 14 * 86400
+        labels: {severity: ticket}
+        annotations:
+          summary: "Certificate {{ $labels.name }} expires within 14 days"
+          runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-13"
+      - alert: RCMirrorStale
+        expr: time() - min by (registry) (rc_mirror_last_sync_timestamp) > 24 * 3600
+        labels: {severity: ticket}
+        annotations:
+          summary: "Mirror {{ $labels.registry }} not synced for 24h"
+          runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-20"
