@@ -8,11 +8,11 @@ import { csrfOk, currentSession, problem } from '@/lib/http';
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
-  const session = currentSession(req);
+  const session = await currentSession(req);
   if (!session) return problem(401, 'invalid-token', 'Not signed in');
   if (!csrfOk(req, session)) return problem(403, 'csrf', 'CSRF check failed');
   await client.tokenRevocation(await oidc(), session.refreshToken).catch(() => undefined);
-  destroySession(session.id);
+  await destroySession(session.id);
   const res = new NextResponse(null, { status: 204 });
   res.cookies.delete(cookieNames().session);
   res.cookies.delete(cookieNames().csrf);

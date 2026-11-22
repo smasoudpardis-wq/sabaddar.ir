@@ -1,12 +1,24 @@
 'use client';
 import { useCallback, useEffect, useState } from 'react';
 
-type Membership = { tenantId: string; tenantName: string };
-type Me = { displayName: string; memberships: Membership[]; activeTenantId: string | null };
+type Membership = { tenantId: string; tenantName: string; roles: string[]; mfaRequired: boolean };
+type Me = { displayName: string; memberships: Membership[]; activeTenantId: string | null; mfaSatisfied: boolean };
 type Tenant = { id: string; legalName: string; status: string };
 
+const MESSAGES: Record<string, string> = { // D09 §10.1
+  'mfa-not-completed': 'تأیید مرحله دوم انجام نشد.',
+  'upstream-unavailable': 'سرویس موقتاً در دسترس نیست. چند لحظه بعد دوباره تلاش کنید.',
+  'not-found': 'یافت نشد.',
+  csrf: 'نشست شما منقضی شده یا درخواست از صفحه‌ی دیگری آمده است. صفحه را دوباره باز کنید.',
+};
 const codeOf = async (r: Response) => ((await r.json().catch(() => null)) as { code?: string } | null)?.code ?? `http-${r.status}`;
 const csrf = () => document.cookie.split('; ').find((c) => c.startsWith('rc_csrf=') || c.startsWith('__Host-rc_csrf='))?.split('=')[1] ?? '';
+/** US-022: the API asked for a second factor; Keycloak handles TOTP/passkey (and enrolment if none exists). */
+const stepUp = (tenantId?: string) => {
+  const q = new URLSearchParams({ acr: 'mfa', returnTo: '/' });
+  if (tenantId) q.set('tenant', tenantId);
+  window.location.assign(`/auth/login?${q}`);
+};
 
 export default function Home() {
   const [me, setMe] = useState<Me | null | 'anonymous'>(null);
@@ -21,18 +33,24 @@ export default function Home() {
     setMe(data);
     if (data.activeTenantId) {
       const t = await fetch('/bff/tenant', { cache: 'no-store' });
-      setTenant(t.ok ? await t.json() : null);
+      if (t.ok) return setTenant(await t.json());
+      const code = await codeOf(t);
+      if (code === 'mfa-required' || code === 'step-up-required') return stepUp(data.activeTenantId);
+      setTenant(null);
     }
   }, []);
 
   useEffect(() => { void load(); }, [load]);
 
   async function select(tenantId: string) {
+    setError('');
     const r = await fetch('/bff/active-tenant', {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf() }, body: JSON.stringify({ tenantId }),
     });
-    if (r.status !== 204) return setError(await codeOf(r));
-    await load();
+    if (r.status === 204) return load();
+    const code = await codeOf(r);
+    if (code === 'mfa-required') return stepUp(tenantId);
+    setError(code);
   }
 
   async function logout() {
@@ -52,6 +70,7 @@ export default function Home() {
   return (
     <section>
       <h1 data-testid="welcome">خوش آمدید، {me.displayName}</h1>
+      <p data-testid="mfa-state">{me.mfaSatisfied ? 'ورود دومرحله‌ای: تأییدشده' : 'ورود با رمز عبور'}</p>
       <h2>فروشگاه‌های من</h2>
       <ul>
         {me.memberships.map((m) => (
@@ -59,11 +78,12 @@ export default function Home() {
             <button data-testid={`select-${m.tenantId}`} onClick={() => void select(m.tenantId)} style={{ minHeight: 44 }}>
               {m.tenantName}
             </button>
+            {m.mfaRequired && <small> (نیازمند ورود دومرحله‌ای)</small>}
           </li>
         ))}
       </ul>
       {tenant && <p data-testid="active-tenant">فروشگاه فعال: {tenant.legalName}</p>}
-      {error && <p role="alert" data-testid="error">{error}</p>}
+      {error && <p role="alert" data-testid="error">{MESSAGES[error] ?? error}</p>}
       <button onClick={() => void logout()} data-testid="logout" style={{ minHeight: 44 }}>خروج</button>
     </section>
   );

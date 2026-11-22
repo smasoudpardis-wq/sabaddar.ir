@@ -9528,10 +9528,13 @@ components:
                 type: array
                 items:
                   type: string
+              mfaRequired:
+                type: boolean
             required:
             - tenantId
             - tenantName
             - roles
+            - mfaRequired
         permissions:
           type: array
           items:
@@ -9556,7 +9559,7 @@ components:
             - permission
             - scopeType
             - scopeId
-        mfaEnrolled:
+        mfaSatisfied:
           type: boolean
         mfaFreshUntil:
           type:
@@ -9569,7 +9572,7 @@ components:
       - activeTenantId
       - memberships
       - permissions
-      - mfaEnrolled
+      - mfaSatisfied
       - mfaFreshUntil
     Membership:
       type: object

@@ -1,16 +1,18 @@
 import { randomBytes } from 'node:crypto';
 import { config } from './config';
+import { open, seal, storageKey, store } from './store';
 
-// Server-side session store (D04 §6, AUTH-07). Tokens never leave the server; the browser holds only an opaque id.
-// The in-memory store is for development/tests; production uses Redis/Valkey with the same interface (US-021 follow-up).
+// Server-side session (D04 §6, AUTH-07). Tokens never leave the server; the browser holds only an opaque id.
 export interface Session {
   id: string;
   accessToken: string;
   refreshToken: string;
   accessExpiresAt: number; // epoch seconds
   idToken?: string;
+  acr?: string;            // pwd | mfa (US-022)
   activeTenantId?: string;
   csrf: string;
+  createdAt: number;       // epoch seconds; absolute lifetime cap
   lastSeen: number;
 }
 
@@ -18,46 +20,75 @@ export interface PendingAuth {
   state: string;
   nonce: string;
   codeVerifier: string;
+  acr?: 'mfa';
+  tenantId?: string;       // select this tenant right after a step-up (US-022)
+  returnTo: string;
   createdAt: number;
 }
 
-const g = globalThis as unknown as { __rcSessions?: Map<string, Session>; __rcPending?: Map<string, PendingAuth> };
-const sessions = (g.__rcSessions ??= new Map());
-const pending = (g.__rcPending ??= new Map());
+const ABSOLUTE_LIFETIME = 12 * 3600; // = Keycloak ssoSessionMaxLifespan
+const now = () => Math.floor(Date.now() / 1000);
 
 export const randomId = (bytes = 32) => randomBytes(bytes).toString('base64url');
 
-export function createSession(s: Omit<Session, 'id' | 'csrf' | 'lastSeen'>): Session {
-  const session: Session = { ...s, id: randomId(), csrf: randomId(24), lastSeen: Math.floor(Date.now() / 1000) };
-  sessions.set(session.id, session);
+export async function saveSession(s: Session): Promise<void> {
+  const k = storageKey('s', s.id);
+  await store().set(k, seal(JSON.stringify(s), k), config.idleTimeoutSeconds);
+}
+
+export async function createSession(s: Omit<Session, 'id' | 'csrf' | 'lastSeen' | 'createdAt'>): Promise<Session> {
+  const session: Session = { ...s, id: randomId(), csrf: randomId(24), createdAt: now(), lastSeen: now() };
+  await saveSession(session);
   return session;
 }
 
-export function getSession(id: string | undefined): Session | undefined {
+/** Loads a session; idle timeout is the store TTL (sliding), the absolute lifetime is checked here. */
+export async function getSession(id: string | undefined): Promise<Session | undefined> {
   if (!id) return undefined;
-  const s = sessions.get(id);
-  if (!s) return undefined;
-  const now = Math.floor(Date.now() / 1000);
-  if (now - s.lastSeen > config.idleTimeoutSeconds) {
-    sessions.delete(id);
+  const k = storageKey('s', id);
+  const raw = await store().get(k);
+  const json = raw ? open(raw, k) : null;
+  if (!json) return undefined;
+  const s = JSON.parse(json) as Session;
+  if (s.id !== id || now() - s.createdAt > ABSOLUTE_LIFETIME) {
+    await store().del(k);
     return undefined;
   }
-  s.lastSeen = now;
+  if (now() - s.lastSeen > 60) {
+    s.lastSeen = now();
+    await saveSession(s); // slide the idle window at most once a minute
+  }
   return s;
 }
 
-export const destroySession = (id: string) => sessions.delete(id);
+export const destroySession = (id: string) => store().del(storageKey('s', id));
 
-export function savePending(p: PendingAuth): string {
+export async function savePending(p: PendingAuth): Promise<string> {
   const id = randomId();
-  pending.set(id, p);
+  const k = storageKey('p', id);
+  await store().set(k, seal(JSON.stringify(p), k), 600);
   return id;
 }
 
-export function takePending(id: string | undefined): PendingAuth | undefined {
+/** Single use: the pending login is deleted when read. */
+export async function takePending(id: string | undefined): Promise<PendingAuth | undefined> {
   if (!id) return undefined;
-  const p = pending.get(id);
-  pending.delete(id); // single use
-  if (!p || Date.now() - p.createdAt > 10 * 60 * 1000) return undefined;
-  return p;
+  const k = storageKey('p', id);
+  const raw = await store().take(k);
+  const json = raw ? open(raw, k) : null;
+  return json ? (JSON.parse(json) as PendingAuth) : undefined;
+}
+
+/**
+ * Runs fn while holding the refresh lock of a session. Keycloak rotates refresh tokens and revokes the session on reuse
+ * (SP-01 C11), so two BFF instances must never refresh the same session concurrently.
+ */
+export async function withRefreshLock<T>(sessionId: string, fn: () => Promise<T>, onBusy: () => Promise<T>): Promise<T> {
+  const k = storageKey('l', sessionId);
+  if (!(await store().lock(k, 10_000))) return onBusy();
+  try {
+    return await fn();
+  } finally {
+    await store().del(k);
+  }
 }

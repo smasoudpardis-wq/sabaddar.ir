@@ -3,5 +3,6 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
     <ProjectReference Include="../BuildingBlocks.Application/BuildingBlocks.Application.csproj" />
+    <InternalsVisibleTo Include="RetailCloud.Api.Tests" />
   </ItemGroup>
 </Project>

@@ -18,6 +18,10 @@ CREATE TABLE iam.tenant_membership (
   tenant_id uuid NOT NULL,            -- reference to platform.tenant (cross-module: no FK, D05 §3)
   user_id   uuid NOT NULL REFERENCES iam.merchant_user(id),
   status    text NOT NULL DEFAULT 'Active' CHECK (status IN ('Active','Suspended','Removed')),
+  -- Merchant roles of D02 §2 (Scopes per branch/warehouse arrive with US-025). IAM-003: TenantOwner, TenantAdmin and
+  -- Accountant require MFA; the API enforces it from the token's acr (US-022).
+  roles     text[] NOT NULL DEFAULT '{}' CHECK (roles <@ ARRAY['TenantOwner','TenantAdmin','BranchManager','Cashier',
+              'WarehouseClerk','PurchasingOfficer','Accountant','Auditor','ReadOnlyAnalyst']::text[]),
   joined_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (tenant_id, user_id)
 );
@@ -34,13 +38,13 @@ RESET ROLE;
 -- This is the only cross-tenant read the application can do, and it returns the CALLER's own active memberships only
 -- (app.user_id is set by the unit of work from the validated token, never from request input).
 GRANT USAGE ON SCHEMA iam, platform TO rc_tenant_directory;
-GRANT SELECT (tenant_id, user_id, status) ON iam.tenant_membership TO rc_tenant_directory;
+GRANT SELECT (tenant_id, user_id, status, roles) ON iam.tenant_membership TO rc_tenant_directory;
 GRANT SELECT (id, status, legal_name) ON platform.tenant TO rc_tenant_directory;
 
 CREATE OR REPLACE FUNCTION iam.my_memberships()
-RETURNS TABLE (tenant_id uuid, tenant_name text, tenant_status text)
+RETURNS TABLE (tenant_id uuid, tenant_name text, tenant_status text, roles text[])
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
-  SELECT m.tenant_id, t.legal_name, t.status
+  SELECT m.tenant_id, t.legal_name, t.status, m.roles
   FROM iam.tenant_membership m
   JOIN platform.tenant t ON t.id = m.tenant_id
   WHERE m.user_id = NULLIF(current_setting('app.user_id', true), '')::uuid

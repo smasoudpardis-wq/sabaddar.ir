@@ -297,7 +297,7 @@ INSERT INTO iam.merchant_user (id, idp_issuer, idp_subject, display_name) VALUES
   ('e0000000-0000-0000-0000-000000000001', 'https://kc/realms/merchant', 'sub-owner', 'مالک'),
   ('e0000000-0000-0000-0000-000000000002', 'https://kc/realms/merchant', 'sub-other', 'دیگری');
 SELECT set_config('app.tenant_id', :A, false);
-INSERT INTO iam.tenant_membership (tenant_id, user_id) VALUES (:A, 'e0000000-0000-0000-0000-000000000001');
+INSERT INTO iam.tenant_membership (tenant_id, user_id, roles) VALUES (:A, 'e0000000-0000-0000-0000-000000000001', '{TenantOwner}');
 SELECT set_config('app.tenant_id', :B, false);
 INSERT INTO iam.tenant_membership (tenant_id, user_id) VALUES (:B, 'e0000000-0000-0000-0000-000000000001'),
                                                          (:B, 'e0000000-0000-0000-0000-000000000002');
@@ -306,6 +306,9 @@ SELECT set_config('app.tenant_id', '', false);
 SELECT set_config('app.user_id', 'e0000000-0000-0000-0000-000000000001', false);
 SELECT t.ok('T80 my_memberships returns the caller''s active memberships across tenants (A and B)',
   (SELECT count(*) FROM iam.my_memberships()) = 2);
+SELECT t.ok('T85 my_memberships returns the roles of each membership (US-022 decides MFA from them)',
+  (SELECT roles FROM iam.my_memberships() WHERE tenant_id = :A) = '{TenantOwner}'
+  AND (SELECT roles FROM iam.my_memberships() WHERE tenant_id = :B) = '{}');
 SELECT t.ok('T81 without a tenant context the membership table itself stays hidden (RLS)',
   (SELECT count(*) FROM iam.tenant_membership) = 0);
 SELECT set_config('app.user_id', 'e0000000-0000-0000-0000-000000000002', false);
@@ -316,6 +319,8 @@ SELECT t.ok('T83 no user context returns nothing', (SELECT count(*) FROM iam.my_
 SELECT set_config('app.tenant_id', :A, false);
 SELECT t.expect_error('T84 a membership cannot be written for another tenant', '42501',
   format($$INSERT INTO iam.tenant_membership (tenant_id, user_id) VALUES (%L, 'e0000000-0000-0000-0000-000000000002')$$, :B));
+SELECT t.expect_error('T86 an unknown role is rejected', '23514',
+  $$UPDATE iam.tenant_membership SET roles = '{SuperUser}' WHERE user_id = 'e0000000-0000-0000-0000-000000000001'$$);
 RESET ROLE;
 
 \echo '== ALL CHECKS PASSED'

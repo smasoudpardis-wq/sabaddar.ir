@@ -39,8 +39,8 @@ public interface IUnitOfWorkScope
     TenantId? TenantId { get; }
 }
 
-/// <summary>A tenant the current user is an active member of.</summary>
-public sealed record MembershipInfo(TenantId TenantId, string TenantName);
+/// <summary>A tenant the current user is an active member of, with the user's roles there (D02 §2).</summary>
+public sealed record MembershipInfo(TenantId TenantId, string TenantName, IReadOnlyList<string> Roles);
 
 /// <summary>Port implemented by IdentityAccess: maps a validated IdP identity to an internal user (ADR-003).</summary>
 public interface IUserDirectory

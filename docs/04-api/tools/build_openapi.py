@@ -142,9 +142,9 @@ schema("ExportCreate", categories=[("enum", ["Products", "Customers", "Sales", "
 schema("ExportJob", id="uuid", status=("enum", ["Queued", "Running", "Completed", "Failed"]), downloadUrl="str?",
        downloadUrlExpiresAt="dt?", createdAt="dt")
 schema("Me", userId="uuid", displayName="str", activeTenantId="uuid?",
-       memberships=[{"tenantId": "uuid", "tenantName": "str", "roles": ["str"]}],
+       memberships=[{"tenantId": "uuid", "tenantName": "str", "roles": ["str"], "mfaRequired": "bool"}],
        permissions=[{"permission": "str", "scopeType": ("enum", ["Tenant", "Branch", "Warehouse", "Register"]), "scopeId": "uuid?"}],
-       mfaEnrolled="bool", mfaFreshUntil="dt?")
+       mfaSatisfied="bool", mfaFreshUntil="dt?")
 schema("ActiveTenantSelect", tenantId="uuid")
 schema("InvitationCreate", **{"email?": "str", "mobile?": "str"}, displayName="str",
        roleAssignments=["#RoleAssignmentInput"])

@@ -107,11 +107,16 @@ jobs:
         run: |
           mkdir -p /tmp/pw && cd /tmp/pw && npm init -y >/dev/null && npm i playwright@1.48.2 >/dev/null && npx playwright install --with-deps chromium >/dev/null
           cd "$GITHUB_WORKSPACE/src/backend/dev/keycloak" && KC=http://127.0.0.1:8080 NODE_PATH=/tmp/pw/node_modules node spike-sp01.js
+      - name: US-022 level-of-authentication checks (TOTP enrolment, step-up, passkey via virtual authenticator)
+        run: cd "$GITHUB_WORKSPACE/src/backend/dev/keycloak" && KC=http://127.0.0.1:8080 NODE_PATH=/tmp/pw/node_modules node mfa-checks.js
 
   web-e2e:
-    name: US-021 BFF login end-to-end (Keycloak + API + BFF + browser)
+    name: US-021/022 BFF login + MFA end-to-end (Keycloak + API + BFF + Valkey + browser)
     runs-on: ubuntu-24.04
     services:
+      valkey:
+        image: valkey/valkey:8.0
+        ports: ["6379:6379"]
       postgres:
         image: postgres:16
         env: { POSTGRES_PASSWORD: postgres }
@@ -127,6 +132,7 @@ jobs:
       DOTNET_NOLOGO: "1"
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
       NEXT_TELEMETRY_DISABLED: "1"
+      VALKEY_URL: redis://127.0.0.1:6379
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4

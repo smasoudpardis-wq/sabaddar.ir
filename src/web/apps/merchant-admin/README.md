@@ -4,8 +4,8 @@ Next.js 15 در نقش BFF (D04 §6، ADR-003). Token فقط سمت سرور م�
 
 | مسیر | کار |
 |---|---|
-| `GET /auth/login` | شروع Authorization Code + PKCE S256 با `state` و `nonce` |
-| `GET /auth/callback` | تبادل code، ساخت Session سمت سرور، Cookie `rc_sid` (Production: `__Host-rc_sid`، `Secure`) |
+| `GET /auth/login` | شروع Authorization Code + PKCE S256 با `state` و `nonce`. `?acr=mfa` مرحله دوم را می‌خواهد (US-022)؛ `?tenant=` پس از بازگشت انتخاب می‌شود؛ `?returnTo=` فقط مسیر داخلی |
+| `GET /auth/callback` | تبادل code، بررسی `acr`، ساخت **Session جدید** (قبلی حذف می‌شود)، Cookie `rc_sid` (Production: `__Host-rc_sid`، `Secure`) |
 | `POST /auth/logout` | ابطال Refresh Token در Keycloak و حذف Session (CSRF لازم) |
 | `GET /bff/me` | کاربر و عضویت‌ها از `GET /api/v1/me` |
 | `POST /bff/active-tenant` | انتخاب فروشگاه؛ فقط اگر API عضویت را تأیید کند در Session ذخیره می‌شود (CSRF لازم) |
@@ -17,6 +17,8 @@ CSRF: هر درخواست تغییردهنده باید `Origin` همین برن
 
 `KC_ISSUER`، `KC_CLIENT_ID`، `KC_CLIENT_SECRET` (در محیط واقعی از OpenBao)، `APP_URL`، `API_URL`، `COOKIE_SECURE` (پیش‌فرض `true`؛ فقط در Dev روی `http://127.0.0.1` مقدار `false`).
 
+Session: `SESSION_STORE=valkey` + `VALKEY_URL` + `SESSION_ENC_KEY` (۳۲ بایت Base64، از OpenBao) برای Staging/Production و چند Instance. بدون آن، Store در حافظه است (فقط Dev). مقدارها با AES-256-GCM رمز می‌شوند و کلیدها Hash شناسه‌اند. Refresh Token با قفل هر Session چرخانده می‌شود تا دو Instance هم‌زمان Refresh نکنند (Keycloak تکرار را با ابطال Session پاسخ می‌دهد).
+
 ## اجرا و تست
 
 ```bash
@@ -27,6 +29,5 @@ npm ci && npm run build
 NODE_PATH=/path/to/node_modules/with/playwright e2e/run-e2e.sh
 ```
 
-پیش‌نیازهای E2E در سر فایل `e2e/run-e2e.sh` آمده است (Keycloak از `src/backend/dev/keycloak`، پایگاه داده‌ی تست از `src/backend/scripts/setup-test-db.sh`). ۱۷ بررسی مرورگری: ورود واقعی، Cookie، نبودن Token در JS، فهرست عضویت، CSRF، Tenant بیگانه → 404، تعویض فروشگاه، خروج.
+پیش‌نیازهای E2E در سر فایل `e2e/run-e2e.sh` آمده است (Keycloak از `src/backend/dev/keycloak`، Valkey، پایگاه داده‌ی تست از `src/backend/scripts/setup-test-db.sh`). ۲۴ بررسی مرورگری: ورود واقعی، Cookie، نبودن Token در JS، فهرست عضویت، CSRF، Tenant بیگانه → 404، **MFA برای TenantOwner با ثبت TOTP**، چرخش Session، ماندن Session پس از Restart، رمز بودن داده در Valkey، خروج، جلوگیری از Open Redirect.
 
-**محدودیت فعلی:** Session Store در حافظه است و برای یک Instance کافی است. نسخه‌ی Valkey پیگیری بعدی است (D12 §0.1).

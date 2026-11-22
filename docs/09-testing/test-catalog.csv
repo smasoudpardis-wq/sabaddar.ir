@@ -269,3 +269,5 @@ T81,D05,without a tenant context the membership table itself stays hidden (RLS),
 T82,D05,suspended membership is not returned; other users,P0,T,"DB-Integration (automated, passing)",E,,automated
 T83,D05,no user context returns nothing,P0,T,"DB-Integration (automated, passing)",E,,automated
 T84,D05,a membership cannot be written for another tenant,P0,T,"DB-Integration (automated, passing)",E,,automated
+T85,D05,my_memberships returns the roles of each membership (US-022 decides MFA from them),P0,T,"DB-Integration (automated, passing)",E,,automated
+T86,D05,an unknown role is rejected,P0,T,"DB-Integration (automated, passing)",E,,automated

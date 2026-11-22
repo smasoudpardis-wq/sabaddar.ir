@@ -17,6 +17,17 @@ public sealed class RequestContext : ITenantContext
 
     public TenantId? ActiveTenant { get; internal set; }
 
+    /// <summary>The membership of <see cref="ActiveTenant"/> (roles included), if a tenant is active.</summary>
+    public MembershipInfo? ActiveMembership { get; internal set; }
+
+    /// <summary>Authentication Context Class of the token: <c>pwd</c> or <c>mfa</c> (Keycloak level of authentication).</summary>
+    public string? Acr { get; internal set; }
+
+    /// <summary>Time of the last interactive authentication, including a step-up (token claim <c>auth_time</c>).</summary>
+    public DateTimeOffset? AuthTime { get; internal set; }
+
+    public bool MfaSatisfied => Acr == MfaPolicy.MfaAcr;
+
     TenantId ITenantContext.TenantId =>
         ActiveTenant ?? throw new InvalidOperationException("No active tenant for this request.");
 

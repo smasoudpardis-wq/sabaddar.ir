@@ -46,6 +46,7 @@ public static class ServiceCollectionExtensions
         services.AddAuthorizationBuilder().AddPolicy(MerchantPolicy, p => p.RequireAuthenticatedUser());
         services.AddMemoryCache();
         services.AddScoped<RequestContext>();
+        services.AddSingleton(TimeProvider.System);
         services.AddProblemDetails();
         return services;
     }

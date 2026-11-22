@@ -61,3 +61,30 @@
 - (ج) شماره موبایل مشتری در یک سیستم دوم (Keycloak) تکرار نمی‌شود (حداقل‌سازی، D06 §8).
 
 جایگزینِ ردشده: Realm `customer` در Keycloak با Authenticator سفارشی. **پیامد:** Keycloak فقط دو Realm دارد (`merchant`، `platform`). Token مشتری را RetailCloud صادر می‌کند (کلید OpenBao Transit، JWKS داخلی، `iss=retailcloud-customer`، `aud=customer-api`، عمر ≤ ۱۰ دقیقه، فقط در BFF پورتال). D04، D06 و D07 به‌روز شدند.
+
+## پیاده‌سازی MFA و Step-up — US-022 (2026-11-22)
+
+**تصمیم:** نقش در هر Tenant متفاوت است (یک نفر می‌تواند در یک فروشگاه `TenantOwner` و در دیگری `Cashier` باشد)، پس Keycloak تصمیم نمی‌گیرد که چه کسی MFA لازم دارد. Keycloak فقط **سطح احراز** را در Token می‌نویسد و **API** تصمیم می‌گیرد.
+
+| جزء | رفتار |
+|---|---|
+| Keycloak (`browser-loa`) | سطح ۱ = رمز (`acr=pwd`)؛ سطح ۲ = کلید عبور (WebAuthn) اگر ثبت شده باشد، وگرنه TOTP (`acr=mfa`). کاربری که هیچ‌کدام را ندارد به ثبت TOTP هدایت می‌شود. سطح ۲ `max-age=0` دارد: هر درخواست `acr_values=mfa` مرحله دوم را دوباره می‌پرسد. Scope `acr` صریح تعریف شد (همان مشکل Scope `basic`). |
+| API (`MfaPolicy`) | اگر نقش کاربر در Tenant فعال `TenantOwner`، `TenantAdmin` یا `Accountant` باشد (IAM-003) و `acr` دقیقاً `mfa` نباشد ← `403 mfa-required`، هم هنگام انتخاب Tenant و هم در **هر** درخواست Tenant-scoped. Endpointهای حساس با `RequireRecentMfa()` علاوه بر آن `auth_time` حداکثر ۱۵ دقیقه‌ای می‌خواهند ← `403 step-up-required` با `maxAgeSeconds` (ABAC-05). |
+| BFF | با `mfa-required` یا `step-up-required` کاربر را به `/auth/login?acr=mfa&tenant=…` می‌برد؛ پس از بازگشت `acr` در ID Token بررسی می‌شود، **Session جدید** ساخته و قبلی حذف می‌شود (TM-006)، و Tenant درخواستی دوباره از API تأیید می‌گیرد. |
+
+**شواهد:**
+- `src/backend/dev/keycloak/mfa-checks.js`: ۱۰ بررسی روی Keycloak واقعی (M1–M10؛ از جمله ثبت و ورود با کلید عبور از طریق Virtual Authenticator).
+- `Tests/Api.Tests/MfaTests.cs`: ۱۰ تست؛ Mutation (حذف بررسی در هر درخواست) ۲ تست را قرمز کرد.
+- E2E مرورگری E14–E21.
+
+**رفتارهایی که API به آن‌ها تکیه دارد** (هر کدام یک بررسی دارد):
+- (M4) `auth_time` با Step-up جلو می‌رود.
+- (M5) Refresh سطح `mfa` را نگه می‌دارد.
+- (M6) ورود SSO بدون `acr_values` سطح `pwd` می‌دهد.
+
+اگر ارتقای Keycloak یکی از این‌ها را تغییر دهد، CI قرمز می‌شود.
+
+**محدودیت‌ها:**
+- WebAuthn نشانی IP را به‌عنوان RP ID نمی‌پذیرد. در Production، دامنه‌ی واقعی (`id.<domain>`) RP ID است، و دامنه پس از ثبت کلیدهای عبور نباید عوض شود (AQ-01).
+- OTP پیامکی برای صندوق‌دار و انباردار (IAM-003) جزو این Story نیست. ورود صندوق در US-031 می‌آید.
+

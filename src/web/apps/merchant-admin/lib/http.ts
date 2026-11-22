@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import * as client from 'openid-client';
 import { config, cookieNames } from './config';
-import { getSession, Session } from './session';
+import { destroySession, getSession, saveSession, Session, withRefreshLock } from './session';
 import { oidc } from './oidc';
 
 export function problem(status: number, code: string, title: string) {
@@ -9,7 +9,11 @@ export function problem(status: number, code: string, title: string) {
     { status, headers: { 'content-type': 'application/problem+json', 'cache-control': 'no-store' } });
 }
 
-export function currentSession(req: NextRequest): Session | undefined {
+const problemResponse = (status: number, code: string, title: string) =>
+  new Response(JSON.stringify({ type: `https://errors.retailcloud.example/${code}`, title, status, code }),
+    { status, headers: { 'content-type': 'application/problem+json' } });
+
+export function currentSession(req: NextRequest): Promise<Session | undefined> {
   return getSession(req.cookies.get(cookieNames().session)?.value);
 }
 
@@ -20,28 +24,59 @@ export function csrfOk(req: NextRequest, session: Session): boolean {
   return origin === expected && req.headers.get('x-csrf-token') === session.csrf;
 }
 
-/** Refreshes the access token when it expires within 60 s; Keycloak rotates the refresh token (SP-01 C10/C11). */
+class SessionExpired extends Error {}
+
+const needsRefresh = (s: Session) => s.accessExpiresAt - Math.floor(Date.now() / 1000) <= 60;
+
+/** Refreshes the access token when it expires within 60 s, under a per-session lock (refresh tokens rotate). */
 async function freshAccessToken(session: Session): Promise<string> {
-  const now = Math.floor(Date.now() / 1000);
-  if (session.accessExpiresAt - now > 60) return session.accessToken;
-  const tokens = await client.refreshTokenGrant(await oidc(), session.refreshToken);
-  session.accessToken = tokens.access_token;
-  session.refreshToken = tokens.refresh_token ?? session.refreshToken;
-  session.accessExpiresAt = now + (tokens.expires_in ?? 300);
-  return session.accessToken;
+  if (!needsRefresh(session)) return session.accessToken;
+  return withRefreshLock(session.id, async () => {
+    const latest = await getSession(session.id); // another instance may have refreshed just before us
+    if (!latest) throw new SessionExpired();
+    if (!needsRefresh(latest)) return Object.assign(session, latest).accessToken;
+    let tokens: client.TokenEndpointResponse;
+    try {
+      tokens = await client.refreshTokenGrant(await oidc(), latest.refreshToken);
+    } catch {
+      await destroySession(session.id); // revoked or expired at the IdP: the BFF session ends too
+      throw new SessionExpired();
+    }
+    Object.assign(session, latest, {
+      accessToken: tokens.access_token,
+      refreshToken: tokens.refresh_token ?? latest.refreshToken,
+      accessExpiresAt: Math.floor(Date.now() / 1000) + (tokens.expires_in ?? 300),
+    });
+    await saveSession(session);
+    return session.accessToken;
+  }, async () => {
+    for (let i = 0; i < 50; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      const s = await getSession(session.id);
+      if (!s) throw new SessionExpired();
+      if (!needsRefresh(s)) return Object.assign(session, s).accessToken;
+    }
+    throw new SessionExpired();
+  });
 }
 
 /** Calls RetailCloud.Api with the session's token and the server-held active tenant (BR-001). */
-export async function callApi(session: Session, method: string, path: string, body?: unknown): Promise<Response> {
-  const headers: Record<string, string> = { authorization: `Bearer ${await freshAccessToken(session)}` };
+export async function callApi(session: Session, method: string, path: string, body?: unknown, tokenOverride?: string): Promise<Response> {
+  let token: string;
+  try {
+    token = tokenOverride ?? (await freshAccessToken(session));
+  } catch (e) {
+    if (e instanceof SessionExpired) return problemResponse(401, 'invalid-token', 'Session expired');
+    throw e;
+  }
+  const headers: Record<string, string> = { authorization: `Bearer ${token}` };
   if (session.activeTenantId) headers['x-rc-tenant'] = session.activeTenantId;
   if (body !== undefined) headers['content-type'] = 'application/json';
   try {
     return await fetch(new URL(path, config.apiUrl()), { method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store' });
   } catch {
     // API unreachable: answer with problem+json instead of an opaque 500 (D09 §10.1 'upstream-unavailable').
-    return new Response(JSON.stringify({ type: 'https://errors.retailcloud.example/upstream-unavailable', title: 'Service temporarily unavailable', status: 502, code: 'upstream-unavailable' }),
-      { status: 502, headers: { 'content-type': 'application/problem+json' } });
+    return problemResponse(502, 'upstream-unavailable', 'Service temporarily unavailable');
   }
 }
 
@@ -53,3 +88,9 @@ export async function relay(r: Response): Promise<NextResponse> {
     headers: { 'content-type': r.headers.get('content-type') ?? 'application/json', 'cache-control': 'no-store' },
   });
 }
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const isUuid = (v: unknown): v is string => typeof v === 'string' && UUID.test(v);
+
+/** Only same-app absolute paths (no scheme, no '//' host) — prevents open redirects after login. */
+export const safeReturnTo = (v: string | null) => (v && v.startsWith('/') && !v.startsWith('//') && !v.includes('\\') ? v : '/');

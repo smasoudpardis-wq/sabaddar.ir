@@ -51,17 +51,32 @@ public sealed class RequestContextMiddleware(RequestDelegate next)
         context.User = user.Value.Id;
         context.DisplayName = user.Value.DisplayName;
         context.Memberships = memberships;
+        context.Acr = http.User.FindFirst("acr")?.Value;
+        context.AuthTime = long.TryParse(http.User.FindFirst("auth_time")?.Value, System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture, out long authTime)
+            ? DateTimeOffset.FromUnixTimeSeconds(authTime)
+            : null;
 
         if (http.Request.Headers.TryGetValue(TenantHeader, out var raw))
         {
-            if (!Guid.TryParse(raw.ToString(), out Guid requested) ||
-                memberships.All(m => m.TenantId.Value != requested))
+            MembershipInfo? membership = Guid.TryParse(raw.ToString(), out Guid requested)
+                ? memberships.FirstOrDefault(m => m.TenantId.Value == requested)
+                : null;
+            if (membership is null)
             {
                 await Problems.WriteAsync(http, Problems.NotFound(http)); // never reveal whether the tenant exists
                 return;
             }
 
-            context.ActiveTenant = new TenantId(requested);
+            // IAM-003 / US-022: a sensitive role in this tenant needs an MFA token for every tenant-scoped call.
+            if (MfaPolicy.Requires(membership) && !context.MfaSatisfied)
+            {
+                await Problems.WriteAsync(http, MfaPolicy.MfaRequired(http));
+                return;
+            }
+
+            context.ActiveTenant = membership.TenantId;
+            context.ActiveMembership = membership;
         }
 
         await next(http);

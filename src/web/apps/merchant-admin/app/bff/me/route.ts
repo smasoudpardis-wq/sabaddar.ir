@@ -4,7 +4,7 @@ import { callApi, currentSession, problem, relay } from '@/lib/http';
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
-  const session = currentSession(req);
+  const session = await currentSession(req);
   if (!session) return problem(401, 'invalid-token', 'Not signed in');
   const r = await callApi(session, 'GET', '/api/v1/me');
   if (!r.ok) return relay(r);

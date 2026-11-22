@@ -1,7 +1,20 @@
-// US-021 / AUTH-07 / SEC-T-003 browser proof. Exit code 1 on any failed check.
+// US-021 / US-022 browser proof (AUTH-02, AUTH-07, SEC-T-003, TM-006, AT-012). Exit code 1 on any failed check.
 import { createRequire } from 'node:module';
+import { execFileSync } from 'node:child_process';
+import { createHmac } from 'node:crypto';
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
+const Redis = createRequire(`${process.env.APP_DIR}/package.json`)('ioredis');
+
+/** RFC 6238 TOTP (SHA-1, 6 digits, 30 s) — Keycloak's default OTP policy. */
+function totp(base32) {
+  const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'; let bits = '';
+  for (const ch of base32.replace(/[\s=]/g, '').toUpperCase()) bits += A.indexOf(ch).toString(2).padStart(5, '0');
+  const key = Buffer.from(bits.match(/.{8}/g).map((b) => parseInt(b, 2)));
+  const ctr = Buffer.alloc(8); ctr.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 30000)));
+  const h = createHmac('sha1', key).update(ctr).digest(); const o = h[h.length - 1] & 15;
+  return String((h.readUInt32BE(o) & 0x7fffffff) % 1e6).padStart(6, '0');
+}
 
 const BFF = 'http://127.0.0.1:3000';
 const { T1, T2, TF } = process.env;
@@ -76,25 +89,61 @@ try {
   const foreign = await post('/bff/active-tenant', { tenantId: TF }, { 'x-csrf-token': token });
   check('E13', 'selecting a store the user is not a member of → 404 not-found', foreign.status === 404 && foreign.body?.code === 'not-found', `${foreign.status} ${foreign.body?.code}`);
 
-  // E14 select through the UI
+  // E14 Cashier role: no second factor needed (IAM-003 is per role)
   await page.getByTestId(`select-${T2}`).click();
   await page.getByTestId('active-tenant').waitFor();
-  check('E14', 'select store → tenant-scoped API answers with that store', (await page.getByTestId('active-tenant').textContent()).includes('فروشگاه ب'));
+  check('E14', 'select store as Cashier with password only → works', (await page.getByTestId('active-tenant').textContent()).includes('فروشگاه ب'));
 
-  // E15 switch
+  // E15–E16 TenantOwner role without MFA → the API refuses (AT-290)
+  const t1Direct = await post('/bff/active-tenant', { tenantId: T1 }, { 'x-csrf-token': token });
+  check('E15', 'select store as TenantOwner with password only → 403 mfa-required', t1Direct.status === 403 && t1Direct.body?.code === 'mfa-required', `${t1Direct.status} ${t1Direct.body?.code}`);
+  const sidBefore = (await ctx.cookies(BFF)).find((c) => c.name === 'rc_sid').value;
+
+  // E17–E19 the UI steps up through Keycloak: no TOTP yet → enrolment page → code → back with store A active
   await page.getByTestId(`select-${T1}`).click();
-  // locator wait, not waitForFunction: the strict CSP (no 'unsafe-eval') correctly blocks Playwright's eval-based polling
+  await page.waitForURL(/login-actions\/required-action|openid-connect\/auth/);
+  const authReq = new URL(page.url());
+  const enrol = page.locator('#mode-manual');
+  await enrol.waitFor();
+  check('E16', 'user without a second factor is sent to TOTP enrolment', new URL(page.url()).searchParams.get('execution') === 'CONFIGURE_TOTP' || /required-action/.test(authReq.pathname));
+  await enrol.click();
+  const secret = (await page.locator('#kc-totp-secret-key').textContent()).trim();
+  await page.fill('#totp', totp(secret));
+  await page.fill('#userLabel', 'e2e');
+  await page.click('#saveTOTPBtn');
+  await page.waitForURL(`${BFF}/`);
+  // locator waits, not waitForFunction: the strict CSP (no 'unsafe-eval') correctly blocks Playwright's eval-based polling
   await page.getByTestId('active-tenant').filter({ hasText: 'فروشگاه الف' }).waitFor();
-  check('E15', 'switching store changes the tenant context', true);
+  check('E17', 'after the second factor the TenantOwner store is active', true);
+  check('E18', 'UI and API report the MFA state', (await page.getByTestId('mfa-state').textContent()).includes('تأییدشده'));
+  const sidAfter = (await ctx.cookies(BFF)).find((c) => c.name === 'rc_sid').value;
+  const stale = await fetch(`${BFF}/bff/me`, { headers: { cookie: `rc_sid=${sidBefore}` } });
+  check('E19', 'session id rotated on step-up; the pre-MFA session is dead (TM-006)', sidAfter !== sidBefore && stale.status === 401);
 
-  // E16 logout
+  // E20–E21 Valkey: sessions survive a BFF restart; stored data is neither readable tokens nor raw ids
+  execFileSync(process.env.RESTART_BFF, { stdio: 'inherit' });
+  const afterRestart = await page.evaluate(async () => { const r = await fetch('/bff/tenant'); return { s: r.status, b: await r.json() }; });
+  check('E20', 'session survives a BFF restart (Valkey store)', afterRestart.s === 200 && afterRestart.b.legalName === 'فروشگاه الف', String(afterRestart.s));
+  const redis = new Redis(process.env.VALKEY_URL ?? 'redis://127.0.0.1:6379');
+  const keys = await redis.keys('rc:bff:*');
+  const values = await Promise.all(keys.map((k) => redis.get(k)));
+  await redis.quit();
+  const plain = values.some((v) => /eyJ|refresh|accessToken/.test(v ?? '')) || keys.some((k) => k.includes(sidAfter));
+  check('E21', 'Valkey holds only encrypted values under hashed keys', keys.length > 0 && !plain, `${keys.length} keys`);
+
+  // E22–E23 logout
   const oldSid = (await ctx.cookies(BFF)).find((c) => c.name === 'rc_sid').value;
   await page.getByTestId('logout').click();
   await page.getByTestId('login').waitFor();
   const after = await page.request.get(`${BFF}/bff/me`);
-  check('E16', 'after logout /bff/me → 401', after.status() === 401);
+  check('E22', 'after logout /bff/me → 401', after.status() === 401);
   const replay = await fetch(`${BFF}/bff/me`, { headers: { cookie: `rc_sid=${oldSid}` } });
-  check('E17', 'old session id is dead server-side', replay.status === 401);
+  check('E23', 'old session id is dead server-side', replay.status === 401);
+
+  // E24 open redirect after login is refused
+  const evil = await fetch(`${BFF}/auth/login?returnTo=//evil.example/x`, { redirect: 'manual' });
+  const pendingCookie = evil.headers.get('set-cookie') ?? '';
+  check('E24', 'returnTo outside the app is ignored (no open redirect)', evil.status === 307 && !/evil/.test(evil.headers.get('location') ?? '') && pendingCookie.includes('rc_auth='));
 } catch (e) {
   check('E99', 'unexpected error', false, String(e));
 } finally {

@@ -25,12 +25,12 @@ public sealed class PostgresUserDirectory(IUnitOfWork unitOfWork) : IUserDirecto
     public Task<IReadOnlyList<MembershipInfo>> ActiveMembershipsAsync(UserId user, CancellationToken cancellationToken) =>
         unitOfWork.ExecuteWithoutTenantAsync<IReadOnlyList<MembershipInfo>>(user, async (s, ct) =>
         {
-            await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)s).Command("SELECT tenant_id, tenant_name FROM iam.my_memberships()");
+            await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)s).Command("SELECT tenant_id, tenant_name, roles FROM iam.my_memberships()");
             await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct);
             var list = new List<MembershipInfo>();
             while (await r.ReadAsync(ct))
             {
-                list.Add(new MembershipInfo(new TenantId(r.GetGuid(0)), r.GetString(1)));
+                list.Add(new MembershipInfo(new TenantId(r.GetGuid(0)), r.GetString(1), r.GetFieldValue<string[]>(2)));
             }
 
             return list;
