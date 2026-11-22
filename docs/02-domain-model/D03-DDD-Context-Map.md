@@ -397,7 +397,7 @@ classDiagram
 | **AccountMapping** | `accountRole → accountId` به ازای Tenant (و اختیاری Branch) | Optimistic |
 | **DetailAccount** (تفصیلی) | ارجاع به مشتری، تأمین‌کننده یا شعبه | — |
 
-**تصمیم `[DEC D-30]`: Posting بر اساس نقش حساب (Account Role).** PostingRule به **نقش** اشاره می‌کند (`SalesRevenue`, `OutputVat`, `Inventory`, `COGS`, `CashOnHand`, `Bank`, `GatewayInTransit`, `TradeReceivables`, `CustomerAdvances`, `TradePayables`, `InputVat`, `InventoryShrinkage`, `InventoryOverage`, `CashShortage`, `CashOverage`, `BadDebtExpense`, `InventoryCostAdjustment`, `OpeningBalanceEquity`). Mapping نقش به حساب واقعی برای هر Tenant جداست. Sales و Inventory فقط `PostingRequest` با **مؤلفه‌های مبلغ** (`net`, `tax`, `cost`, `tender[method]`، …) می‌فرستند.
+**تصمیم `[DEC D-30]`: Posting بر اساس نقش حساب (Account Role).** PostingRule به **نقش** اشاره می‌کند (`SalesRevenue`, `OutputVat`, `Inventory`, `COGS`, `CashOnHand`, `Bank`, `GatewayInTransit`, `TradeReceivables`, `CustomerAdvances`, `TradePayables`, `InputVat`, `InventoryShrinkage`, `InventoryOverage`, `CashShortage`, `CashOverage`, `BadDebtExpense`, `InventoryCostAdjustment`, `OpeningBalanceEquity`، و `CardInTransit` (افزوده در D08، D-59)). Mapping نقش به حساب واقعی برای هر Tenant جداست. Sales و Inventory فقط `PostingRequest` با **مؤلفه‌های مبلغ** (`net`, `tax`, `cost`, `tender[method]`، …) می‌فرستند.
 
 | ID | قید | نیازمندی |
 |---|---|---|
