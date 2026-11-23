@@ -65,6 +65,7 @@ public static class ServiceCollectionExtensions
         });
         services.AddSingleton(TimeProvider.System);
         services.AddProblemDetails(o => o.CustomizeProblemDetails = ProblemDefaults.Customize);
+        services.AddExceptionHandler<EntitlementExceptionHandler>();
         services.ConfigureHttpJsonOptions(o => o.SerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter()));
         return services;
     }

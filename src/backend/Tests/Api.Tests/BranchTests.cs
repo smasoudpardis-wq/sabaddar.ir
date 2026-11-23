@@ -46,6 +46,7 @@ public sealed class BranchTests : IClassFixture<ApiFactory>, IAsyncLifetime
             return await Exec(s, ct, "INSERT INTO iam.role_assignment (tenant_id, id, user_id, role, scope_type, scope_id) VALUES ($1, $2, $3, 'BranchManager', 'Branch', $4)",
                 _tenant, Guid.CreateVersion7(), manager, _b1);
         });
+        await RetailCloud.TestSupport.TestPlans.SetAsync(_tenant, "Enterprise");   // several branches per test; caps are tested in EntitlementTests
     }
 
     public Task DisposeAsync() => Task.CompletedTask;

@@ -8,4 +8,7 @@
     <ProjectReference Include="../../Hosts/RetailCloud.Api/RetailCloud.Api.csproj" />
   </ItemGroup>
   <ItemGroup><Using Include="Xunit" /></ItemGroup>
+  <ItemGroup>
+    <Compile Include="../BuildingBlocks.Infrastructure.Tests/TestPlans.cs" Link="TestPlans.cs" />
+  </ItemGroup>
 </Project>

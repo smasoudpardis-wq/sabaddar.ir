@@ -47,6 +47,21 @@ public sealed class PostgresUserAdministration(IUnitOfWork unitOfWork, TimeProvi
         IReadOnlyList<RoleGrant> grants, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(grants);
+        // TEN-003 early check: active members plus open invitations may not exceed the plan's user cap. Accepting is
+        // still capped by the database (membership trigger), so a race here can only produce a refused acceptance.
+        await using (NpgsqlCommand seats = ((PostgresUnitOfWorkScope)scope).Command(
+                         "SELECT platform.entitlement_cap('users'), " +
+                         "(SELECT count(*) FROM iam.tenant_membership WHERE status = 'Active') + " +
+                         "(SELECT count(*) FROM iam.invitation WHERE status = 'Pending' AND expires_at > now())"))
+        await using (NpgsqlDataReader r = await seats.ExecuteReaderAsync(cancellationToken))
+        {
+            await r.ReadAsync(cancellationToken);
+            if (!r.IsDBNull(0) && r.GetInt64(1) >= r.GetInt32(0))
+            {
+                throw new EntitlementExceededException("users", r.GetInt32(0));
+            }
+        }
+
         string token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
         Guid id = Guid.CreateVersion7();
         DateTimeOffset expires = time.GetUtcNow() + InvitationLifetime;

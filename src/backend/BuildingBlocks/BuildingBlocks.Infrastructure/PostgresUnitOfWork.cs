@@ -31,6 +31,19 @@ public sealed class PostgresUnitOfWork(NpgsqlDataSource dataSource) : IUnitOfWor
         CancellationToken cancellationToken = default) =>
         RunAsync(null, user, work, cancellationToken);
 
+    private static PostgresException? EntitlementCap(Exception? ex)
+    {
+        for (; ex is not null; ex = ex.InnerException)
+        {
+            if (ex is PostgresException { SqlState: "RC030" } pg)
+            {
+                return pg;
+            }
+        }
+
+        return null;
+    }
+
     private async Task<T> RunAsync<T>(TenantId? tenantId, UserId? userId, Func<IUnitOfWorkScope, CancellationToken, Task<T>> work,
         CancellationToken cancellationToken)
     {
@@ -56,6 +69,16 @@ public sealed class PostgresUnitOfWork(NpgsqlDataSource dataSource) : IUnitOfWor
             await scope.SaveAllAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             return result;
+        }
+        catch (Exception ex) when (EntitlementCap(ex) is { } e)
+        {
+            // TEN-003 database cap (platform.enforce_entitlement, global code RC030, see 01_core.sql): message 'entitlement-exceeded:<resource>:<cap>'.
+            // EF Core wraps it in DbUpdateException, Npgsql commands raise it directly.
+            await transaction.RollbackAsync(CancellationToken.None);
+            string[] parts = e.MessageText.Split(':');
+            throw new EntitlementExceededException(parts.Length > 1 ? parts[1] : "unknown",
+                parts.Length > 2 && int.TryParse(parts[2], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int cap)
+                    ? cap : null);
         }
         catch
         {

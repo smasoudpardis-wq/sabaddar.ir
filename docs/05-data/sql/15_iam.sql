@@ -23,6 +23,9 @@ CREATE TABLE iam.tenant_membership (
 );
 CREATE INDEX ix_membership_user ON iam.tenant_membership (user_id) WHERE status = 'Active';
 CALL core.enable_tenant_rls('iam.tenant_membership');
+-- TEN-003: active members count against the plan's user cap (function in 10_platform.sql, [DEC D-97]).
+CREATE TRIGGER membership_entitlement AFTER INSERT OR UPDATE OF status ON iam.tenant_membership
+  FOR EACH ROW EXECUTE FUNCTION platform.enforce_entitlement('users');
 
 -- Role × Scope (D06 §6.1-6.2, US-025). A role is granted at Tenant scope or on one branch / warehouse / register.
 -- IAM-003 (US-022): TenantOwner, TenantAdmin and Accountant require MFA; the API decides from the token's acr.

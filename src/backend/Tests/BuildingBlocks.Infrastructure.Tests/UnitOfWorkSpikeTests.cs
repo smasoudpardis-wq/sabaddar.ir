@@ -55,6 +55,25 @@ public sealed class UnitOfWorkSpikeTests : IAsyncLifetime
         Run(t, (s, ct) => s.Context<PlatformDb>().Branches.CountAsync(ct));
 
     [DbFact]
+    public async Task Only_the_global_entitlement_code_becomes_EntitlementExceeded()
+    {
+        // RC030 is global (01_core.sql registry) and mapped centrally; RC001-RC029 are local and must reach the caller
+        // untouched (e.g. RC013 is "closed accounting period", which must never read as "plan limit reached").
+        EntitlementExceededException e = await Assert.ThrowsAsync<EntitlementExceededException>(() => Run(_a, async (s, ct) =>
+        {
+            await using var c = s.Command("DO $$ BEGIN RAISE EXCEPTION 'entitlement-exceeded:registers:4' USING ERRCODE = 'RC030'; END $$");
+            return await c.ExecuteNonQueryAsync(ct);
+        }));
+        Assert.Equal(("registers", 4), (e.Resource, e.Limit));
+        PostgresException local = await Assert.ThrowsAsync<PostgresException>(() => Run(_a, async (s, ct) =>
+        {
+            await using var c = s.Command("DO $$ BEGIN RAISE EXCEPTION 'period is Closed' USING ERRCODE = 'RC013'; END $$");
+            return await c.ExecuteNonQueryAsync(ct);
+        }));
+        Assert.Equal("RC013", local.SqlState);
+    }
+
+    [DbFact]
     public async Task Two_module_contexts_commit_in_one_transaction()
     {
         Guid branch = Guid.CreateVersion7();
@@ -158,6 +177,7 @@ public sealed class UnitOfWorkSpikeTests : IAsyncLifetime
                 c.Parameters.Add(new NpgsqlParameter { Value = t.Value });
                 return await c.ExecuteNonQueryAsync(ct);
             });
+            await RetailCloud.TestSupport.TestPlans.SetAsync(t.Value, "Enterprise");   // up to 8 branches each
         }
 
         int[] counts = await Task.WhenAll(tenants.Select(async (t, i) =>

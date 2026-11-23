@@ -128,7 +128,10 @@ schema("TenantRegistration", legalName="str", industryCode=("enum", ["supermarke
 schema("Tenant", id="uuid", legalName="str", industryCode="str", timeZone="str", baseCurrency=("enum", ["IRR"]),
        pricingMode=("enum", ["TaxExclusive", "TaxInclusive"]),
        status=("enum", ["Trial", "Active", "Suspended", "Closed"]), version="int",
-       **{"plan?": ("desc", "str", "From Subscription (US-014); absent until then"), "trialEndsAt?": "dt?"})
+       plan=("desc", "str", "Subscription plan code (TEN-003, US-014), e.g. Trial, Basic, Pro, Enterprise"),
+       trialEndsAt="dt?", entitlements="#Entitlements")
+schema("Entitlements", maxBranches=("desc", "int?", "null = unlimited"), maxRegisters=("desc", "int?", "null = unlimited"),
+       maxUsers=("desc", "int?", "null = unlimited; active members plus open invitations count"))
 schema("TenantSetup", complete="bool", steps=[{"name": ("enum", ["branch-and-register", "warehouse", "chart-of-accounts", "fiscal-periods"]), "complete": "bool"}])
 schema("TenantUpdate", expectedVersion="int", **{"legalName?": "str", "timeZone?": "str",
                                                   "pricingMode?": ("enum", ["TaxExclusive", "TaxInclusive"]),

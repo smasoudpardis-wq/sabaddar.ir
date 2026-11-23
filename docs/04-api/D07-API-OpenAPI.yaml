@@ -9226,6 +9226,32 @@ components:
       - target
       - percent
       - validFrom
+    Entitlements:
+      type: object
+      additionalProperties: false
+      properties:
+        maxBranches:
+          type:
+          - integer
+          - 'null'
+          format: int32
+          description: null = unlimited
+        maxRegisters:
+          type:
+          - integer
+          - 'null'
+          format: int32
+          description: null = unlimited
+        maxUsers:
+          type:
+          - integer
+          - 'null'
+          format: int32
+          description: null = unlimited; active members plus open invitations count
+      required:
+      - maxBranches
+      - maxRegisters
+      - maxUsers
     ExportCreate:
       type: object
       additionalProperties: false
@@ -12128,12 +12154,14 @@ components:
           format: int32
         plan:
           type: string
-          description: From Subscription (US-014); absent until then
+          description: Subscription plan code (TEN-003, US-014), e.g. Trial, Basic, Pro, Enterprise
         trialEndsAt:
           type:
           - string
           - 'null'
           format: date-time
+        entitlements:
+          $ref: '#/components/schemas/Entitlements'
       required:
       - id
       - legalName
@@ -12143,6 +12171,9 @@ components:
       - pricingMode
       - status
       - version
+      - plan
+      - trialEndsAt
+      - entitlements
     TenantCustomer:
       type: object
       additionalProperties: false

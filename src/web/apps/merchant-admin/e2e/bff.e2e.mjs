@@ -95,6 +95,8 @@ try {
   await page.getByTestId(`select-${T2}`).click();
   await page.getByTestId('active-tenant').waitFor();
   check('E14', 'select store as Cashier with password only → works', (await page.getByTestId('active-tenant').textContent()).includes('فروشگاه ب'));
+  await page.getByTestId('plan').waitFor();
+  check('L01', 'the home page shows the plan, the trial end and the caps (US-014)', /آزمایشی.*پایان دوره آزمایشی.*۲ شعبه/.test(await page.getByTestId('plan').textContent()));
 
   // E15–E16 TenantOwner role without MFA → the API refuses (AT-290)
   const t1Direct = await post('/bff/active-tenant', { tenantId: T1 }, { 'x-csrf-token': token });
@@ -188,6 +190,12 @@ try {
   await page.getByTestId('branch-submit').click();
   await page.getByTestId('branch-error').waitFor();
   check('B02', 'duplicate branch code is refused with a clear message', (await page.getByTestId('branch-error').textContent()).includes('قبلاً'));
+  // B03 US-014: store T1 is on the trial plan (2 branches): a third is refused with the D09 upgrade message
+  await page.fill('input[name=code]', 'B3');
+  await page.fill('input[name=name]', 'شعبه سوم');
+  await page.getByTestId('branch-submit').click();
+  await page.getByTestId('branch-error').filter({ hasText: 'سقف پلن' }).waitFor();
+  check('B03', 'a branch beyond the plan is refused with the upgrade message (TEN-003)', (await page.getByTestId('branch-error').textContent()).includes('(شعبه)'));
   await page.goto(BFF);
   await page.getByTestId('logout').waitFor();
 

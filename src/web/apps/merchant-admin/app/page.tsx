@@ -4,7 +4,12 @@ import { Onboarding } from './onboarding';
 
 type Membership = { tenantId: string; tenantName: string; roles: string[]; mfaRequired: boolean };
 type Me = { displayName: string; memberships: Membership[]; activeTenantId: string | null; mfaSatisfied: boolean; terminal: { id: string } | null };
-type Tenant = { id: string; legalName: string; status: string };
+type Tenant = {
+  id: string; legalName: string; status: string; plan: string; trialEndsAt: string | null;
+  entitlements: { maxBranches: number | null; maxRegisters: number | null; maxUsers: number | null };
+};
+const PLANS: Record<string, string> = { Trial: 'آزمایشی', Basic: 'پایه', Pro: 'حرفه‌ای', Enterprise: 'سازمانی' };
+const cap = (n: number | null) => (n === null ? 'نامحدود' : n.toLocaleString('fa-IR'));
 
 const MESSAGES: Record<string, string> = { // D09 §10.1
   'mfa-not-completed': 'تأیید مرحله دوم انجام نشد.',
@@ -121,6 +126,13 @@ export default function Home() {
         ))}
       </ul>
       {tenant && <p data-testid="active-tenant">فروشگاه فعال: {tenant.legalName}</p>}
+      {tenant && (
+        <p data-testid="plan">
+          پلن: {PLANS[tenant.plan] ?? tenant.plan}
+          {tenant.trialEndsAt && <> · پایان دوره آزمایشی: {new Date(tenant.trialEndsAt).toLocaleDateString('fa-IR')}</>}
+          {' '}· سقف: {cap(tenant.entitlements.maxBranches)} شعبه، {cap(tenant.entitlements.maxRegisters)} صندوق، {cap(tenant.entitlements.maxUsers)} کاربر
+        </p>
+      )}
       {error && <p role="alert" data-testid="error">{MESSAGES[error] ?? error}</p>}
       {tenant && <p><a href="/users" data-testid="users-link">کاربران و دعوت همکار</a> · <a href="/branches" data-testid="branches-link">شعب</a> · <a href="/terminals" data-testid="terminals-link">دستگاه‌ها</a> · <a href="/approvals" data-testid="approvals-link">تأییدها</a> · <a href="/audit" data-testid="audit-link">سابقه ممیزی</a></p>}
       {me.terminal && <button onClick={() => void lock()} data-testid="lock" style={{ minHeight: 44 }}>قفل صندوق</button>}

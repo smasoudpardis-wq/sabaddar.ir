@@ -3,8 +3,12 @@
 export const csrf = () =>
   document.cookie.split('; ').find((c) => c.startsWith('rc_csrf=') || c.startsWith('__Host-rc_csrf='))?.split('=')[1] ?? '';
 
-export const codeOf = async (r: Response) =>
-  ((await r.json().catch(() => null)) as { code?: string } | null)?.code ?? `http-${r.status}`;
+/** The problem code; for entitlement-exceeded (TEN-003) also the resource, e.g. `entitlement-exceeded:branches` (D09). */
+export const codeOf = async (r: Response) => {
+  const p = (await r.json().catch(() => null)) as { code?: string; resource?: string } | null;
+  if (p?.code === 'entitlement-exceeded' && p.resource) return `entitlement-exceeded:${p.resource}`;
+  return p?.code ?? `http-${r.status}`;
+};
 
 export const postJson = (url: string, body?: unknown) =>
   fetch(url, {
@@ -27,6 +31,11 @@ export const MESSAGES: Record<string, string> = {
   'pin-invalid': 'PIN اشتباه است.',
   'pin-locked': 'PIN پس از ۵ خطا قفل شد. دوباره کامل وارد شوید.',
   'pin-not-set': 'هنوز PIN تعیین نکرده‌اید.',
+  // D09 §10.1: «سقف پلن شما ({مورد}) پر شده است.» — action: upgrade the plan
+  'entitlement-exceeded': 'سقف پلن شما پر شده است. برای افزودن بیشتر، پلن را ارتقا دهید.',
+  'entitlement-exceeded:branches': 'سقف پلن شما (شعبه) پر شده است. برای افزودن بیشتر، پلن را ارتقا دهید.',
+  'entitlement-exceeded:registers': 'سقف پلن شما (صندوق) پر شده است. برای افزودن بیشتر، پلن را ارتقا دهید.',
+  'entitlement-exceeded:users': 'سقف پلن شما (کاربر) پر شده است. برای افزودن بیشتر، پلن را ارتقا دهید.',
   'reauth-required': 'برای تعیین PIN دوباره وارد شوید.',
   'session-locked': 'صندوق قفل است.',
   'approval-expired': 'مهلت این درخواست تمام شده است.',

@@ -561,6 +561,7 @@ CALL core.enable_tenant_rls('sales.sale');   -- ENABLE + FORCE + policy tenant_i
 | D-41 | DEC | `inv.posted_source` برای Idempotency سندی روی Ledger پارتیشن‌شده |
 | D-42 | DEC | زنجیره Audit با Trigger در DB (نه در Application) تا Caller نتواند seq یا hash را تعیین کند |
 | D-96 | DEC | Migration با SQL نسخه‌دار و `RetailCloud.Migrator`، نه EF Core Migrations: بخش اصلی Schema (RLS، Policy، Trigger، تابع SECURITY DEFINER، Grant) در EF مدل‌پذیر نیست و D05 آن را از قبل با `migrationBuilder.Sql` از همین فایل‌ها می‌خواست؛ EF Core برای دسترسی به داده (A-01) بدون تغییر می‌ماند. Schema حاصل در CI با DDL مرجع مقایسه می‌شود (US-004). **تأیید کارفرما 2026-11-23** |
+| D-97 | DEC | Entitlementها (TEN-003) در DB اعمال می‌شوند: Trigger از نوع AFTER روی `platform.branch`، `platform.register` و `iam.tenant_membership` با قفل Advisory به ازای Tenant و منبع (دو درخواست هم‌زمان آخرین ظرفیت را با هم نمی‌گیرند و هیچ مسیر کدی آن را دور نمی‌زند). تنها وابستگی DB بین ماژول‌ها همین OHS پلتفرم است. کد خطا `RC030` سراسری است و مرکزی به 403 نگاشت می‌شود؛ RC001–RC029 محلی‌اند (فهرست در `01_core.sql`). پلن‌ها داده سراسری `platform.plan`، نامحدود = NULL؛ Tenant بدون اشتراک هیچ ظرفیتی ندارد (Fail-closed) |
 | BQ-01 | OQ | ذخیره Snapshot قلم: JSONB یا ستون‌های صریح؟ (اثر حجم) — Default: ستون‌های صریح برای فیلدهای مالیاتی و JSONB کوچک برای بقیه |
 | BQ-02 | OQ | Partitioning اسناد حسابداری در سال اول یا بعد از رسیدن به آستانه؟ |
 | BQ-03 | OQ | آیا Restore یک Tenant منفرد (نه کل DB) الزام قراردادی است؟ اگر بله: ابزار Export و Import منطقی به ازای Tenant در P0 |

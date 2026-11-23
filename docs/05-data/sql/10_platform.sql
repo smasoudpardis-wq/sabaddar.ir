@@ -82,7 +82,110 @@ BEGIN
 END $$;
 CREATE TRIGGER terminal_no_unrevoke BEFORE UPDATE ON platform.terminal FOR EACH ROW EXECUTE FUNCTION platform.terminal_no_unrevoke();
 
+-- Plans and entitlements (TEN-003, US-014, [DEC D-97]). A plan is global reference data; NULL limit = unlimited.
+-- The numbers below are defaults pending the client's commercial decision; operators change them by migration.
+CREATE TABLE platform.plan (
+  code          text PRIMARY KEY CHECK (code ~ '^[A-Za-z]{2,30}$'),
+  name          text NOT NULL,
+  max_branches  int CHECK (max_branches > 0),
+  max_registers int CHECK (max_registers > 0),
+  max_users     int CHECK (max_users > 0),
+  trial_days    int CHECK (trial_days > 0),           -- set only on the trial plan
+  is_trial      boolean NOT NULL DEFAULT false,
+  CHECK (is_trial = (trial_days IS NOT NULL))
+);
+CREATE UNIQUE INDEX ux_plan_single_trial ON platform.plan (is_trial) WHERE is_trial;
+INSERT INTO platform.plan (code, name, max_branches, max_registers, max_users, trial_days, is_trial) VALUES
+  ('Trial',      'آزمایشی',  2,    4,    5,    14,   true),
+  ('Basic',      'پایه',     1,    2,    3,    NULL, false),
+  ('Pro',        'حرفه‌ای',   5,    15,   25,   NULL, false),
+  ('Enterprise', 'سازمانی',  NULL, NULL, NULL, NULL, false);
+
+-- One subscription per tenant, created with the tenant (trial). Changing the plan is a platform operation (billing is P1):
+-- the application roles can read it but never write it.
+CREATE TABLE platform.subscription (
+  tenant_id     uuid PRIMARY KEY REFERENCES platform.tenant(id),
+  plan_code     text NOT NULL REFERENCES platform.plan(code),
+  started_at    timestamptz NOT NULL DEFAULT now(),
+  trial_ends_at timestamptz,
+  updated_at    timestamptz NOT NULL DEFAULT now()
+);
+CALL core.enable_tenant_rls('platform.subscription');
+
+-- For the application the tenant row already passed RLS, so the context IS the new tenant; an operator inserting a
+-- tenant without a context (seeds, support) gets the context for this one insert only, then the previous value back.
+CREATE OR REPLACE FUNCTION platform.start_trial() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+DECLARE prev text := current_setting('app.tenant_id', true);
+BEGIN
+  PERFORM set_config('app.tenant_id', NEW.id::text, true);
+  INSERT INTO platform.subscription (tenant_id, plan_code, trial_ends_at)
+  SELECT NEW.id, p.code, now() + make_interval(days => p.trial_days) FROM platform.plan p WHERE p.is_trial;
+  PERFORM set_config('app.tenant_id', coalesce(prev, ''), true);
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tenant_start_trial AFTER INSERT ON platform.tenant FOR EACH ROW EXECUTE FUNCTION platform.start_trial();
+
+-- The plan's cap for one resource of the context tenant: NULL = unlimited, 0 = no subscription (fail closed).
+CREATE OR REPLACE FUNCTION platform.entitlement_cap(p_resource text) RETURNS int
+LANGUAGE sql STABLE SET search_path = pg_catalog AS $$
+  SELECT CASE WHEN s.tenant_id IS NULL THEN 0
+              ELSE CASE p_resource WHEN 'branches' THEN p.max_branches WHEN 'registers' THEN p.max_registers
+                                   WHEN 'users' THEN p.max_users END END
+  FROM (SELECT 1) one
+  LEFT JOIN platform.subscription s ON s.tenant_id = core.current_tenant()
+  LEFT JOIN platform.plan p ON p.code = s.plan_code
+$$;
+
+-- The cap is checked in the database (AFTER row triggers, so the row's own errors such as a duplicate code come
+-- first), serialised per tenant and resource, so concurrent requests cannot both take the
+-- last slot and no code path can skip it. RC030 'entitlement-exceeded:<resource>:<cap>' -> API 403 entitlement-exceeded.
+CREATE OR REPLACE FUNCTION platform.enforce_entitlement() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+DECLARE
+  resource text := TG_ARGV[0];
+  cap int;
+  used bigint;
+BEGIN
+  IF NEW.tenant_id IS DISTINCT FROM core.current_tenant() THEN
+    RETURN NEW;                                   -- not this tenant's row: RLS rejects it (42501), not the plan
+  END IF;
+  IF resource <> 'registers' THEN                -- registers have no status column (and are never updated)
+    IF NEW.status <> 'Active' THEN
+      RETURN NEW;                                 -- an inactive row takes no slot
+    END IF;
+    IF TG_OP = 'UPDATE' THEN
+      IF OLD.status = 'Active' THEN
+        RETURN NEW;                               -- already counted
+      END IF;
+    END IF;
+  END IF;
+  PERFORM pg_advisory_xact_lock(hashtextextended('rc-entitlement:' || NEW.tenant_id || ':' || resource, 0));
+  cap := platform.entitlement_cap(resource);
+  IF cap IS NULL THEN
+    RETURN NEW;
+  END IF;
+  IF resource = 'branches' THEN
+    SELECT count(*) INTO used FROM platform.branch WHERE tenant_id = NEW.tenant_id AND status = 'Active';
+  ELSIF resource = 'registers' THEN
+    SELECT count(*) INTO used FROM platform.register WHERE tenant_id = NEW.tenant_id;
+  ELSE
+    SELECT count(*) INTO used FROM iam.tenant_membership WHERE tenant_id = NEW.tenant_id AND status = 'Active';
+  END IF;
+  IF used > cap THEN                              -- AFTER trigger: the new row is already counted
+    -- the resource and cap travel in the message: drivers redact DETAIL by default
+    RAISE EXCEPTION 'entitlement-exceeded:%:%', resource, cap USING ERRCODE = 'RC030';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER branch_entitlement AFTER INSERT OR UPDATE OF status ON platform.branch
+  FOR EACH ROW EXECUTE FUNCTION platform.enforce_entitlement('branches');
+CREATE TRIGGER register_entitlement AFTER INSERT ON platform.register
+  FOR EACH ROW EXECUTE FUNCTION platform.enforce_entitlement('registers');
+
 GRANT USAGE ON SCHEMA platform TO rc_app, rc_worker, rc_reporting;
 GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA platform TO rc_app;
 GRANT SELECT ON ALL TABLES IN SCHEMA platform TO rc_worker, rc_reporting;
+REVOKE INSERT, UPDATE ON platform.plan, platform.subscription FROM rc_app;   -- read-only for the application
+GRANT EXECUTE ON FUNCTION platform.entitlement_cap(text) TO rc_app, rc_worker;
 RESET ROLE;

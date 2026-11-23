@@ -42,7 +42,9 @@ public sealed class PostgresTenantRegistration(IOutbox outbox, TimeProvider time
             registeredAt = time.GetUtcNow(),
         }, causationId: null, cancellationToken);
 
-        return new TenantProfile(tenantId, command.LegalName.Trim(), command.IndustryCode, timeZone, "IRR", pricingMode, "Trial", 1);
+        // the insert trigger started the trial subscription (TEN-003); read the profile back with it
+        return await PostgresTenantProfileQuery.ReadAsync(s, cancellationToken)
+            ?? throw new InvalidOperationException("The new tenant is not visible in its own context.");
     }
 
     private static async Task Exec(PostgresUnitOfWorkScope s, string sql, CancellationToken ct, params object[] args)

@@ -412,4 +412,57 @@ SELECT t.ok('T104 terminals are invisible to other tenants (RLS)', (SELECT count
 RESET ROLE;
 DELETE FROM core.idempotency_record;  -- test rows were left InProgress on purpose; oracle O-4 would flag them
 
+-- US-014 plans and entitlements (TEN-003, AT-004)
+\set C '''c1000000-0000-0000-0000-000000000001'''
+SET ROLE rc_app;
+SELECT set_config('app.tenant_id', :C, false);
+INSERT INTO platform.tenant (id, legal_name, industry_code) VALUES (:C, 'پلن', 'supermarket');
+SELECT t.ok('T110 a new tenant starts on the trial plan with an end date from the plan',
+  (SELECT plan_code = 'Trial' AND trial_ends_at BETWEEN now() + interval '13 days' AND now() + interval '15 days' FROM platform.subscription));
+SELECT t.expect_error('T111 the application cannot change its own plan', '42501', $$UPDATE platform.subscription SET plan_code = 'Enterprise'$$);
+SELECT t.expect_error('T111b the application cannot edit plan limits', '42501', $$UPDATE platform.plan SET max_branches = 99$$);
+RESET ROLE;
+UPDATE platform.subscription SET plan_code = 'Basic' WHERE tenant_id = :C;   -- Basic: 1 branch, 2 registers, 3 users
+SET ROLE rc_app;
+SELECT set_config('app.tenant_id', :C, false);
+INSERT INTO platform.branch (tenant_id, id, code, name) VALUES (:C, 'c2000000-0000-0000-0000-000000000001', 'B1', 'یک');
+SELECT t.expect_error('T112 a second active branch exceeds the Basic plan', 'RC030',
+  format($$INSERT INTO platform.branch (tenant_id, id, code, name) VALUES (%L, gen_random_uuid(), 'B2', 'دو')$$, :C));
+SELECT t.expect_error('T120 at the cap a duplicate code still reports the duplicate, not the plan', '23505',
+  format($$INSERT INTO platform.branch (tenant_id, id, code, name) VALUES (%L, gen_random_uuid(), 'B1', 'تکراری')$$, :C));
+INSERT INTO platform.branch (tenant_id, id, code, name, status) VALUES (:C, 'c2000000-0000-0000-0000-000000000002', 'B3', 'غیرفعال', 'Inactive');
+SELECT t.ok('T113 an inactive branch takes no slot', (SELECT count(*) FROM platform.branch) = 2);
+SELECT t.expect_error('T114 re-activating a branch at the cap is refused', 'RC030',
+  $$UPDATE platform.branch SET status = 'Active' WHERE id = 'c2000000-0000-0000-0000-000000000002'$$);
+INSERT INTO platform.register (tenant_id, id, branch_id, code) VALUES
+  (:C, gen_random_uuid(), 'c2000000-0000-0000-0000-000000000001', 'R1'), (:C, gen_random_uuid(), 'c2000000-0000-0000-0000-000000000001', 'R2');
+SELECT t.expect_error('T115 a third register exceeds the Basic plan', 'RC030',
+  format($$INSERT INTO platform.register (tenant_id, id, branch_id, code) VALUES (%L, gen_random_uuid(), 'c2000000-0000-0000-0000-000000000001', 'R3')$$, :C));
+RESET ROLE;
+INSERT INTO iam.merchant_user (id, idp_issuer, idp_subject, display_name)
+  SELECT ('c3000000-0000-0000-0000-00000000000' || i)::uuid, 'https://t', 'plan-user-' || i, 'کاربر' FROM generate_series(1, 4) i;
+SET ROLE rc_app;
+SELECT set_config('app.tenant_id', :C, false);
+INSERT INTO iam.tenant_membership (tenant_id, user_id)
+  SELECT :C, ('c3000000-0000-0000-0000-00000000000' || i)::uuid FROM generate_series(1, 3) i;
+SELECT t.expect_error('T116 a fourth active member exceeds the Basic plan', 'RC030',
+  format($$INSERT INTO iam.tenant_membership (tenant_id, user_id) VALUES (%L, 'c3000000-0000-0000-0000-000000000004')$$, :C));
+UPDATE iam.tenant_membership SET status = 'Suspended' WHERE user_id = 'c3000000-0000-0000-0000-000000000003';
+INSERT INTO iam.tenant_membership (tenant_id, user_id) VALUES (:C, 'c3000000-0000-0000-0000-000000000004');
+SELECT t.ok('T117 a suspended member frees the slot', (SELECT count(*) FROM iam.tenant_membership WHERE status = 'Active') = 3);
+RESET ROLE;
+UPDATE platform.subscription SET plan_code = 'Enterprise' WHERE tenant_id = :C;
+SET ROLE rc_app;
+SELECT set_config('app.tenant_id', :C, false);
+INSERT INTO platform.branch (tenant_id, id, code, name) SELECT :C, gen_random_uuid(), 'E' || i, 'سازمانی' FROM generate_series(1, 20) i;
+SELECT t.ok('T118 Enterprise has no caps', (SELECT count(*) FROM platform.branch WHERE status = 'Active') = 21);
+SELECT set_config('app.tenant_id', :A, false);
+SELECT t.ok('T119 a tenant sees only its own subscription (RLS)', (SELECT count(*) FROM platform.subscription WHERE tenant_id = :C) = 0);
+RESET ROLE;
+SELECT set_config('app.tenant_id', '', false);
+INSERT INTO platform.tenant (id, legal_name, industry_code) VALUES ('c1000000-0000-0000-0000-000000000002', 'عملیاتی', 'general');
+SELECT t.ok('T121 a tenant created by an operator without a context also starts its trial, and the context is restored',
+  (SELECT count(*) FROM platform.subscription WHERE tenant_id = 'c1000000-0000-0000-0000-000000000002') = 1
+  AND coalesce(current_setting('app.tenant_id', true), '') = '');
+
 \echo '== ALL CHECKS PASSED'

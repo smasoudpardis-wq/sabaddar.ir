@@ -41,4 +41,31 @@ public static class Problems
             });
 
     public static async Task WriteAsync(HttpContext http, IResult result) => await result.ExecuteAsync(http);
+
+    /// <summary>403 entitlement-exceeded (TEN-003) with the resource and the plan's limit, for the "upgrade" prompt (D09).</summary>
+    public static IResult EntitlementExceeded(HttpContext http, string resource, int? limit) =>
+        Results.Problem(statusCode: StatusCodes.Status403Forbidden, title: "Plan limit reached",
+            type: "https://errors.retailcloud.example/entitlement-exceeded",
+            extensions: new Dictionary<string, object?>
+            {
+                ["code"] = "entitlement-exceeded",
+                ["resource"] = resource,
+                ["limit"] = limit,
+                ["traceId"] = Activity.Current?.TraceId.ToString() ?? http.TraceIdentifier,
+            });
+}
+
+/// <summary>Turns <see cref="RetailCloud.BuildingBlocks.Application.EntitlementExceededException"/> from any endpoint into 403.</summary>
+public sealed class EntitlementExceptionHandler : Microsoft.AspNetCore.Diagnostics.IExceptionHandler
+{
+    public async ValueTask<bool> TryHandleAsync(HttpContext httpContext, Exception exception, CancellationToken cancellationToken)
+    {
+        if (exception is not RetailCloud.BuildingBlocks.Application.EntitlementExceededException e)
+        {
+            return false;
+        }
+
+        await Problems.WriteAsync(httpContext, Problems.EntitlementExceeded(httpContext, e.Resource, e.Limit));
+        return true;
+    }
 }
