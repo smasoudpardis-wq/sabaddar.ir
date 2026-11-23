@@ -28,5 +28,17 @@ public static class Problems
                 ["traceId"] = Activity.Current?.TraceId.ToString() ?? http.TraceIdentifier,
             });
 
+    /// <summary>403 approval-required (IAM-007): the client shows the request to a manager and retries with approvalId.</summary>
+    public static IResult ApprovalRequired(HttpContext http, Guid approvalRequestId, string condition, string? value, string? limit) =>
+        Results.Problem(statusCode: StatusCodes.Status403Forbidden, title: "A manager's approval is required",
+            type: "https://errors.retailcloud.example/approval-required",
+            extensions: new Dictionary<string, object?>
+            {
+                ["code"] = "approval-required",
+                ["approvalRequestId"] = approvalRequestId,
+                ["context"] = new { condition, value, limit },
+                ["traceId"] = Activity.Current?.TraceId.ToString() ?? http.TraceIdentifier,
+            });
+
     public static async Task WriteAsync(HttpContext http, IResult result) => await result.ExecuteAsync(http);
 }

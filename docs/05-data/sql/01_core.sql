@@ -51,7 +51,8 @@ GRANT SELECT, DELETE ON core.idempotency_record TO rc_worker;
 -- Envelope = D03 §7.1. event_type must be prefixed by the producing module (module ownership).
 CREATE TABLE core.outbox (
   tenant_id       uuid NOT NULL,
-  id              uuid NOT NULL,                       -- UUIDv7: time-ordered, = envelope eventId
+  id              uuid NOT NULL,                       -- UUIDv7 = envelope eventId (ms precision only)
+  seq             bigint GENERATED ALWAYS AS IDENTITY, -- emission order: UUIDv7s of the same millisecond are not ordered
   producer        text NOT NULL CHECK (producer ~ '^[A-Z][A-Za-z]+$'),
   event_type      text NOT NULL,
   event_version   int  NOT NULL CHECK (event_version >= 1),
@@ -69,7 +70,7 @@ CREATE TABLE core.outbox (
   CHECK (event_type LIKE lower(producer) || '.%'),
   CHECK (published_at IS NULL OR dead_at IS NULL)
 );
-CREATE INDEX ix_outbox_pending ON core.outbox (tenant_id, next_attempt_at, id) WHERE published_at IS NULL AND dead_at IS NULL;
+CREATE INDEX ix_outbox_pending ON core.outbox (tenant_id, seq) WHERE published_at IS NULL AND dead_at IS NULL;
 CALL core.enable_tenant_rls('core.outbox');
 
 -- Consumer-side dedup (D03 §7.1 rule 4): inserted in the same transaction as the handler's effects.

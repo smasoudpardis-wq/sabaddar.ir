@@ -1035,6 +1035,44 @@ paths:
       x-idempotent: false
       x-requirements:
       - IAM-006
+  /approvals:
+    get:
+      operationId: listApprovals
+      tags:
+      - Access
+      summary: 'درخواست‌های تأیید باز: قابل تأیید توسط من و درخواست‌های خودم'
+      security: *id001
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - items
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ApprovalRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: tenant.member
+      x-idempotent: false
+      x-requirements:
+      - IAM-007
   /approvals/{approvalId}:
     get:
       operationId: getApproval
@@ -8056,6 +8094,7 @@ components:
           - Approved
           - Rejected
           - Expired
+          - Consumed
         context:
           type: object
           additionalProperties: false
@@ -8072,6 +8111,22 @@ components:
         expiresAt:
           type: string
           format: date-time
+        decidedBy:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        decidedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        validUntil:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: 'Approved: usable once until then (5 minutes, D-61)'
       required:
       - id
       - action
@@ -8082,6 +8137,8 @@ components:
       - status
       - context
       - expiresAt
+      - decidedBy
+      - decidedAt
     AttachCustomer:
       type: object
       additionalProperties: false
@@ -12565,6 +12622,15 @@ x-error-catalog:
   last-owner:
     status: 409
     meaning: A tenant must keep at least one TenantOwner
+  self-approval:
+    status: 403
+    meaning: The requester cannot approve their own request (SoD-01)
+  approval-expired:
+    status: 409
+    meaning: The pending request expired (10 minutes)
+  approval-not-pending:
+    status: 409
+    meaning: The request was already decided
   duplicate-code:
     status: 409
     meaning: Branch code (per tenant) or register code (per branch) already used

@@ -23,6 +23,9 @@ export const MESSAGES: Record<string, string> = {
   'tenant-not-selected': 'ابتدا فروشگاه را انتخاب کنید.',
   'duplicate-code': 'این کد قبلاً استفاده شده است.',
   'rate-limited': 'تلاش‌های زیاد. چند دقیقه بعد دوباره امتحان کنید.',
+  'self-approval': 'درخواست خودتان را نمی‌توانید تأیید کنید.',
+  'approval-expired': 'مهلت این درخواست تمام شده است.',
+  'approval-not-pending': 'این درخواست قبلاً بررسی شده است.',
 };
 
 export const ROLE_LABELS: Record<string, string> = {

@@ -117,7 +117,7 @@ public sealed partial class OutboxRelay(
             await using (NpgsqlCommand sel = scope.Command(
                              "SELECT id, event_type, event_version, occurred_at, correlation_id, causation_id, producer, aggregate_id, payload::text, attempts " +
                              "FROM core.outbox WHERE published_at IS NULL AND dead_at IS NULL AND next_attempt_at <= now() " +
-                             "ORDER BY id FOR UPDATE SKIP LOCKED LIMIT $1"))
+                             "ORDER BY seq FOR UPDATE SKIP LOCKED LIMIT $1"))
             {
                 sel.Parameters.Add(new NpgsqlParameter { Value = _options.BatchSize });
                 await using NpgsqlDataReader r = await sel.ExecuteReaderAsync(ct);

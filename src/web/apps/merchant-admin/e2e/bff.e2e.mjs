@@ -215,6 +215,17 @@ try {
   await page.goto(BFF);
   await page.getByTestId('logout').waitFor();
 
+  // A01–A02 US-026: a cashier's discount request (seeded) waits in the owner's inbox; the owner approves remotely
+  await page.goto(`${BFF}/approvals`);
+  const pendingId = process.env.APPROVAL_ID;
+  await page.getByTestId(`approve-${pendingId}`).waitFor();
+  check('A01', 'the pending request is in the approver inbox', (await page.getByTestId('approvals').textContent()).includes('تخفیف دستی'));
+  await page.getByTestId(`approve-${pendingId}`).click();
+  await page.getByTestId(`decided-${pendingId}`).waitFor();
+  check('A02', 'the owner approves it (fresh MFA; approver ≠ requester)', (await page.getByTestId(`decided-${pendingId}`).textContent()).includes('تأیید'));
+  await page.goto(BFF);
+  await page.getByTestId('logout').waitFor();
+
   // E22–E23 logout
   const oldSid = (await ctx.cookies(BFF)).find((c) => c.name === 'rc_sid').value;
   await page.getByTestId('logout').click();

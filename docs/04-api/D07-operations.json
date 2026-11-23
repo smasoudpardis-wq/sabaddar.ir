@@ -132,6 +132,12 @@
   "permission": "iam.users.manage"
  },
  {
+  "operationId": "listApprovals",
+  "method": "GET",
+  "path": "/approvals",
+  "permission": "tenant.member"
+ },
+ {
   "operationId": "getApproval",
   "method": "GET",
   "path": "/approvals/{approvalId}",

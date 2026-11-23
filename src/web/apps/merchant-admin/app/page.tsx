@@ -94,7 +94,7 @@ export default function Home() {
       </ul>
       {tenant && <p data-testid="active-tenant">فروشگاه فعال: {tenant.legalName}</p>}
       {error && <p role="alert" data-testid="error">{MESSAGES[error] ?? error}</p>}
-      {tenant && <p><a href="/users" data-testid="users-link">کاربران و دعوت همکار</a> · <a href="/branches" data-testid="branches-link">شعب</a> · <a href="/terminals" data-testid="terminals-link">دستگاه‌ها</a></p>}
+      {tenant && <p><a href="/users" data-testid="users-link">کاربران و دعوت همکار</a> · <a href="/branches" data-testid="branches-link">شعب</a> · <a href="/terminals" data-testid="terminals-link">دستگاه‌ها</a> · <a href="/approvals" data-testid="approvals-link">تأییدها</a></p>}
       <button onClick={() => void logout()} data-testid="logout" style={{ minHeight: 44 }}>خروج</button>
     </section>
   );

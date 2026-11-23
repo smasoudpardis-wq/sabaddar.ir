@@ -26,6 +26,7 @@ builder.Services.AddSingleton<ITenantSetupStep, RetailCloud.Accounting.Infrastru
 builder.Services.AddSingleton<ITenantSetupStep, RetailCloud.Accounting.Infrastructure.FiscalPeriodsSetupStep>();
 builder.Services.AddSingleton<IUserAdministration, PostgresUserAdministration>();
 builder.Services.AddSingleton<IBranchAdministration, PostgresBranchAdministration>();
+builder.Services.AddSingleton<IApprovals, PostgresApprovals>();
 builder.Services.AddSingleton<PostgresTerminals>();
 builder.Services.AddSingleton<ITerminalAdministration>(sp => sp.GetRequiredService<PostgresTerminals>());
 builder.Services.AddSingleton<ITerminalDirectory>(sp => sp.GetRequiredService<PostgresTerminals>());
@@ -263,6 +264,69 @@ v1.MapDelete("/terminals/{terminalId:guid}", async (Guid terminalId, RequestCont
         }, ct))
     .RequirePermission(Permissions.TerminalsManage);
 
+// ---------------- US-026: on-the-spot approvals (IAM-007, D08 F-14, SoD-01, D-61)
+object ApprovalJson(ApprovalView a) => new
+{
+    id = a.Id, action = a.Action, resourceType = a.ResourceType, resourceId = a.ResourceId, reason = a.Reason,
+    requestedBy = a.RequestedBy, status = a.Status, expiresAt = a.ExpiresAt, decidedBy = a.DecidedBy, decidedAt = a.DecidedAt,
+    validUntil = a.ValidUntil, context = new { condition = a.Condition, value = a.Value, limit = a.Limit },
+};
+
+bool Involved(RequestContext ctx, ApprovalView a) =>
+    a.RequestedBy == ctx.User!.Value.Value || AccessPolicy.CanApprove(ctx.ActiveMembership!.Assignments, a.Action, a.Scope);
+
+// listApprovals: what I may approve (not my own) plus my own open requests.
+v1.MapGet("/approvals", async (RequestContext ctx, IUnitOfWork uow, IApprovals approvals, CancellationToken ct) =>
+        Results.Ok((await uow.ExecuteAsync(ctx, (s, c) => approvals.ListOpenAsync(s, c), ct)).Where(a => Involved(ctx, a)).Select(ApprovalJson)))
+    .RequireTenantMember();
+
+v1.MapGet("/approvals/{approvalId:guid}", async (Guid approvalId, RequestContext ctx, IUnitOfWork uow, IApprovals approvals, HttpContext http, CancellationToken ct) =>
+        await uow.ExecuteAsync(ctx, (s, c) => approvals.GetAsync(s, approvalId, c), ct) is { } a && Involved(ctx, a)
+            ? Results.Ok(ApprovalJson(a))
+            : Problems.NotFound(http))
+    .RequireTenantMember();
+
+// decideApproval: approver ≠ requester, uncapped permission over the scope, second factor within 15 minutes.
+// (The same-device PIN path of F-14 arrives with the terminal PIN, US-023.)
+v1.MapPost("/approvals/{approvalId:guid}/decision", async (Guid approvalId, ApprovalDecisionInput body, RequestContext ctx, IUnitOfWork uow,
+        IApprovals approvals, HttpContext http, CancellationToken ct) =>
+    {
+        if (body.Decision is not ("Approve" or "Reject") || body.Comment is { Length: > 500 })
+        {
+            return Problems.Validation(http, new Dictionary<string, string[]> { ["decision"] = ["Approve|Reject"] });
+        }
+
+        return await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            ApprovalView? a = await approvals.GetAsync(s, approvalId, c);
+            if (a is null || !Involved(ctx, a))
+            {
+                return Problems.NotFound(http);
+            }
+
+            if (a.RequestedBy == ctx.User!.Value.Value)
+            {
+                return Problems.Create(http, StatusCodes.Status403Forbidden, "self-approval", "You cannot approve your own request");
+            }
+
+            if (!AccessPolicy.CanApprove(ctx.ActiveMembership!.Assignments, a.Action, a.Scope))
+            {
+                return Forbidden(http);
+            }
+
+            return await approvals.DecideAsync(s, approvalId, ctx.User!.Value, body.Decision == "Approve", body.Comment, c) switch
+            {
+                DecisionOutcome.Decided => Results.Ok(ApprovalJson((await approvals.GetAsync(s, approvalId, c))!)),
+                DecisionOutcome.Expired => Problems.Create(http, StatusCodes.Status409Conflict, "approval-expired", "The request has expired"),
+                DecisionOutcome.NotPending => Problems.Create(http, StatusCodes.Status409Conflict, "approval-not-pending", "The request was already decided"),
+                DecisionOutcome.SelfApproval => Problems.Create(http, StatusCodes.Status403Forbidden, "self-approval", "You cannot approve your own request"),
+                _ => Problems.NotFound(http),
+            };
+        }, ct);
+    })
+    .RequireTenantMember()
+    .RequireRecentMfa();
+
 // listRoles: the system roles with their stable ids and permissions (custom roles: later story).
 v1.MapGet("/roles", () => Results.Ok(RoleCatalog.Roles.Select(r => new
     {
@@ -434,6 +498,8 @@ v1.MapDelete("/users/{userId:guid}/role-assignments/{assignmentId:guid}", async 
 await app.RunAsync();
 
 internal sealed record SelectTenant(Guid TenantId);
+
+internal sealed record ApprovalDecisionInput(string? Decision, string? Comment, string? Pin);
 
 internal sealed record PairTerminal(string? PairingCode, string? DeviceName, string? UserAgent);
 

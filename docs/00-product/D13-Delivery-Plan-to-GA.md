@@ -97,8 +97,8 @@ python3 docs/00-product/tools/plan_sprints.py 40      # Velocity را عوض ک�
 
 | Velocity (SP در Sprint) | Sprintها | پایان پایلوت MVP | Gateها (Sprint) |
 |---|---|---|---|
-| ۳۰ | ۲۵ | 2027-11-06 | B=5، C=10، D=18، E=20، F=25 |
-| **۴۰ (پایه)** | **۱۹** | **2027-08-14** | **B=5، C=8، D=15، E=16، F=19** |
+| ۳۰ | ۲۴ | 2027-10-23 | B=5، C=10، D=17، E=19، F=24 |
+| **۴۰ (پایه)** | **۱۹** | **2027-08-14** | **B=4، C=8، D=15، E=16، F=19** |
 | ۵۰ | ۱۹ | 2027-08-14 | B=4، C=7، D=14، E=16، F=19 |
 
 ### 3.1 برنامه Sprint به Sprint (Velocity ۴۰)
@@ -108,7 +108,7 @@ python3 docs/00-product/tools/plan_sprints.py 40      # Velocity را عوض ک�
 | Sprintها | بازه | تمرکز | Gate |
 |---|---|---|---|
 | 1–2 | 2026-11-22 → 2026-12-19 | ستون فقرات ✅ (BuildingBlocks، UoW و RLS، Keycloak و BFF، MFA، Idempotency، Outbox، ثبت‌نام، نقش‌ها، شعب، دستگاه‌ها — ۱۳ آیتم در Sprint 1)؛ مانده: PIN صندوق (US-023)، تأیید لحظه‌ای (US-026)، Spikeهای SP-02/06/08 (منتظر ورودی) | — |
-| 3–5 | 2026-12-20 → 2027-01-30 | Outbox ✅، Idempotency ✅، ثبت‌نام Tenant ✅، کاربران و نقش‌ها ✅، Audit، DevOps (Mirror، OpenBao، Observability)، تست امنیتی تولیدی، **SP-04 مؤدیان** | **B** (Sprint 5) |
+| 3–5 | 2026-12-20 → 2027-01-30 | Outbox ✅، Idempotency ✅، ثبت‌نام Tenant ✅، کاربران و نقش‌ها ✅، Audit، DevOps (Mirror، OpenBao، Observability)، تست امنیتی تولیدی، **SP-04 مؤدیان** | **B** (Sprint 4) |
 | 6–8 | 2027-01-31 → 2027-03-13 | **SP-03 PSP**، کاتالوگ و Resolve بارکد، Variant و قیمت، **Ledger موجودی و WAC**، **هسته حسابداری**، رسید خرید، انبارگردانی | **C** (Sprint 8) |
 | 9–15 | 2027-03-14 → 2027-06-19 | POS و شیفت، **Finalize**، پرداخت‌ها، نسیه، **مؤدیان**، برگشت، گزارش‌های مالی، هویت مشتری و پیامک | **D** (Sprint 15) |
 | 16–17 | 2027-06-20 → 2027-07-17 | پورتال مشتری، بله، Policyها، سخت‌سازی امنیت، Load Test | **E** (Sprint 16) |

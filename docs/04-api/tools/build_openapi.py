@@ -163,9 +163,10 @@ schema("User", id="uuid", displayName="str", status=("enum", ["Invited", "Active
 schema("UserUpdate", expectedVersion="int", **{"status?": ("enum", ["Active", "Disabled"]), "displayName?": "str"})
 schema("Role", id="uuid", name="str", isSystem="bool", permissions=["str"])
 schema("ApprovalRequest", id="uuid", action="str", resourceType="str", resourceId="str?", reason="str?",
-       requestedBy="uuid", status=("enum", ["Pending", "Approved", "Rejected", "Expired"]),
+       requestedBy="uuid", status=("enum", ["Pending", "Approved", "Rejected", "Expired", "Consumed"]),
        context={"_desc": "Condition that triggered approval (ABAC-02/03/06).", "condition": "str", "value?": "str", "limit?": "str"},
-       expiresAt="dt")
+       expiresAt="dt", decidedBy="uuid?", decidedAt="dt?",
+       **{"validUntil?": ("desc", "dt?", "Approved: usable once until then (5 minutes, D-61)")})
 schema("ApprovalDecision", decision=("enum", ["Approve", "Reject"]), **{"comment?": "str", "pin?": "str"})
 schema("SupportAccessRequestCreate", reason="str", durationMinutes="int")
 schema("SupportAccessRequest", id="uuid", requestedBy="str", reason="str", durationMinutes="int",
@@ -507,6 +508,9 @@ ERROR_CATALOG = {
     "forbidden": (403, "The caller's roles do not grant the permission at this scope (IAM-006, D06 §6.1)"),
     "duplicate-assignment": (409, "The user already has this role at this scope"),
     "last-owner": (409, "A tenant must keep at least one TenantOwner"),
+    "self-approval": (403, "The requester cannot approve their own request (SoD-01)"),
+    "approval-expired": (409, "The pending request expired (10 minutes)"),
+    "approval-not-pending": (409, "The request was already decided"),
     "duplicate-code": (409, "Branch code (per tenant) or register code (per branch) already used"),
 }
 
@@ -680,6 +684,8 @@ op("post", "/users/{userId}/role-assignments", "addRoleAssignment", "Access", "�
 op("delete", "/users/{userId}/role-assignments/{assignmentId}", "removeRoleAssignment", "Access", "حذف تخصیص نقش",
    perm="iam.users.manage", scope="Branch", no_content=True, reqs=["IAM-006"], audited=True)
 op("get", "/roles", "listRoles", "Access", "نقش‌های سیستمی و سفارشی", perm="iam.users.manage", scope="Tenant", resp="Role", list_of=True, reqs=["IAM-006"])
+op("get", "/approvals", "listApprovals", "Access", "درخواست‌های تأیید باز: قابل تأیید توسط من و درخواست‌های خودم", resp="ApprovalRequest",
+   list_of=True, reqs=["IAM-007"])
 op("get", "/approvals/{approvalId}", "getApproval", "Access", "وضعیت درخواست تأیید", resp="ApprovalRequest", reqs=["IAM-007"])
 op("post", "/approvals/{approvalId}/decision", "decideApproval", "Access", "تصمیم مدیر (تأییدکننده ≠ درخواست‌کننده)",
    body="ApprovalDecision", resp="ApprovalRequest", reqs=["IAM-007", "SoD-01"], audited=True, conflict=True,

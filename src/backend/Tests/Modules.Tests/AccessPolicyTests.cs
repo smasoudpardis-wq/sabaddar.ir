@@ -34,6 +34,40 @@ public sealed class AccessPolicyTests
     }
 
     [Fact]
+    public void Role_limits_are_exactly_the_capped_cells_of_D06()
+    {
+        string d06 = File.ReadAllText(Path.Combine(RepoRoot(), "docs", "03-security", "D06-Security-Threat-Model.md"));
+        int start = d06.IndexOf("### 6.2", StringComparison.Ordinal);
+        var capped = new HashSet<(string, string)>();
+        foreach (Match row in Regex.Matches(d06[start..d06.IndexOf("### 6.3", start, StringComparison.Ordinal)], @"^\| `([a-z.]+)` \|(.*)\|\s*$", RegexOptions.Multiline))
+        {
+            string[] cells = [.. row.Groups[2].Value.Split('|').Select(c => c.Trim())];
+            for (int i = 0; i < Columns.Length; i++)
+            {
+                if (cells[i].Contains("سقف", StringComparison.Ordinal) || cells[i].Contains("Approval", StringComparison.Ordinal))
+                {
+                    capped.Add((Columns[i], row.Groups[1].Value));
+                }
+            }
+        }
+
+        Assert.Equal(capped.Order(), RoleCatalog.CappedPairs.Order());
+    }
+
+    [Fact]
+    public void A_capped_role_never_approves_and_approval_needs_the_scope()
+    {
+        RoleGrant[] cashier = [G("Cashier", ScopeType.Branch, B1)], manager = [G("BranchManager", ScopeType.Branch, B1)];
+        var b1 = new ScopeRef(ScopeType.Register, R1, B1);
+        Assert.True(AccessPolicy.Allows(cashier, "pos.discount.apply", b1));        // may request (within the cap)
+        Assert.False(AccessPolicy.CanApprove(cashier, "pos.discount.apply", b1));   // never approves a discount
+        Assert.True(AccessPolicy.CanApprove(manager, "pos.discount.apply", b1));
+        Assert.False(AccessPolicy.CanApprove(manager, "pos.discount.apply", new ScopeRef(ScopeType.Register, Guid.NewGuid(), B2)));
+        Assert.False(AccessPolicy.CanApprove([G("Accountant")], "receivables.writeoff", ScopeRef.Tenant)); // "+Approval Owner"
+        Assert.True(AccessPolicy.CanApprove([G("TenantOwner")], "receivables.writeoff", ScopeRef.Tenant));
+    }
+
+    [Fact]
     public void Permission_catalog_is_the_D02_catalog_without_platform_permissions()
     {
         string d02 = File.ReadAllText(Path.Combine(RepoRoot(), "docs", "00-product", "D02-SRS-Functional-NonFunctional.md"));

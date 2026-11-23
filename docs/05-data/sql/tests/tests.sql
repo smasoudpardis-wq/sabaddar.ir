@@ -371,6 +371,23 @@ SELECT t.ok('T95 outbox_due_tenants lists only tenant ids with due messages', AR
 SELECT set_config('app.tenant_id', :A, false);
 SELECT t.ok('T96 with the tenant context the worker sees that tenant''s message', (SELECT count(*) FROM core.outbox) = 1);
 DELETE FROM core.outbox;
+-- US-026 approvals
+SET ROLE rc_app;
+SELECT set_config('app.tenant_id', :A, false);
+INSERT INTO iam.approval_request (tenant_id, id, action, resource_type, scope_type, condition, binding_hash, requested_by, expires_at)
+  VALUES (:A, 'd0000000-0000-0000-0000-000000000001', 'pos.discount.apply', 'Sale', 'Tenant', 'amount-limit', sha256('b'), 'e0000000-0000-0000-0000-000000000002', now() + interval '10 minutes');
+SELECT t.expect_error('T105 the requester can never approve their own request (SoD-01)', '23514',
+  $$UPDATE iam.approval_request SET status = 'Approved', decided_by = requested_by, decided_at = now() WHERE id = 'd0000000-0000-0000-0000-000000000001'$$);
+UPDATE iam.approval_request SET status = 'Rejected', decided_by = 'e0000000-0000-0000-0000-000000000001', decided_at = now() WHERE id = 'd0000000-0000-0000-0000-000000000001';
+SELECT t.expect_error('T106 a decided approval cannot be re-decided', 'RC012',
+  $$UPDATE iam.approval_request SET status = 'Approved' WHERE id = 'd0000000-0000-0000-0000-000000000001'$$);
+INSERT INTO iam.approval_request (tenant_id, id, action, resource_type, scope_type, condition, binding_hash, requested_by, expires_at, status, decided_by, decided_at)
+  VALUES (:A, 'd0000000-0000-0000-0000-000000000002', 'pos.discount.apply', 'Sale', 'Tenant', 'amount-limit', sha256('b'), 'e0000000-0000-0000-0000-000000000002', now() + interval '10 minutes',
+          'Approved', 'e0000000-0000-0000-0000-000000000001', now());
+SELECT t.expect_error('T107 what was approved cannot be changed afterwards (valid transition, changed binding)', 'RC012',
+  $$UPDATE iam.approval_request SET status = 'Consumed', consumed_at = now(), binding_hash = sha256('other') WHERE id = 'd0000000-0000-0000-0000-000000000002'$$);
+RESET ROLE;
+
 -- US-013 terminals
 SET ROLE rc_app;
 SELECT set_config('app.tenant_id', :A, false);

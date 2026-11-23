@@ -81,12 +81,62 @@ CREATE TABLE iam.invitation (
 );
 CALL core.enable_tenant_rls('iam.invitation');
 
+-- On-the-spot approvals (IAM-007, US-026, D08 F-14). An approval is single use, valid 5 minutes after the decision and
+-- bound to one action + resource + value (binding_hash, D-61). SoD-01: the approver is never the requester (CHECK).
+CREATE TABLE iam.approval_request (
+  tenant_id     uuid NOT NULL,
+  id            uuid NOT NULL,
+  action        text NOT NULL,                       -- the permission that needs approval, e.g. pos.discount.apply
+  resource_type text NOT NULL,
+  resource_id   text,
+  scope_type    text NOT NULL CHECK (scope_type IN ('Tenant','Branch','Warehouse','Register')),
+  scope_id      uuid,
+  scope_branch  uuid,                                -- branch of a warehouse/register scope, for approver coverage
+  condition     text NOT NULL,                       -- ABAC-02/03/06: amount-limit, return-window, outside-hours, ...
+  value         text,
+  limit_value   text,
+  reason        text CHECK (length(reason) <= 500),
+  binding_hash  bytea NOT NULL CHECK (length(binding_hash) = 32),
+  requested_by  uuid NOT NULL,
+  requested_at  timestamptz NOT NULL DEFAULT now(),
+  expires_at    timestamptz NOT NULL,                -- a pending request is decided within this window
+  status        text NOT NULL DEFAULT 'Pending' CHECK (status IN ('Pending','Approved','Rejected','Expired','Consumed')),
+  decided_by    uuid,
+  decided_at    timestamptz,
+  decision_note text CHECK (length(decision_note) <= 500),
+  consumed_at   timestamptz,
+  PRIMARY KEY (tenant_id, id),
+  CHECK ((scope_type = 'Tenant') = (scope_id IS NULL)),
+  CHECK (decided_by IS NULL OR decided_by <> requested_by),                           -- SoD-01 / DI-120
+  CHECK ((status IN ('Approved','Rejected','Consumed')) = (decided_by IS NOT NULL AND decided_at IS NOT NULL)),
+  CHECK ((status = 'Consumed') = (consumed_at IS NOT NULL))
+);
+CREATE INDEX ix_approval_pending ON iam.approval_request (tenant_id, status, expires_at) WHERE status = 'Pending';
+CALL core.enable_tenant_rls('iam.approval_request');
+
+-- Allowed transitions only: Pending -> Approved | Rejected | Expired, Approved -> Consumed | Expired. Facts are immutable.
+CREATE OR REPLACE FUNCTION iam.approval_transition() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NOT ((OLD.status = 'Pending' AND NEW.status IN ('Approved','Rejected','Expired'))
+       OR (OLD.status = 'Approved' AND NEW.status IN ('Consumed','Expired'))) THEN
+    RAISE EXCEPTION 'approval % cannot go from % to %', OLD.id, OLD.status, NEW.status USING ERRCODE = 'RC012';
+  END IF;
+  IF (NEW.action, NEW.resource_type, NEW.resource_id, NEW.binding_hash, NEW.requested_by, NEW.requested_at, NEW.scope_type, NEW.scope_id)
+     IS DISTINCT FROM (OLD.action, OLD.resource_type, OLD.resource_id, OLD.binding_hash, OLD.requested_by, OLD.requested_at, OLD.scope_type, OLD.scope_id)
+     OR (OLD.decided_by IS NOT NULL AND NEW.decided_by IS DISTINCT FROM OLD.decided_by) THEN
+    RAISE EXCEPTION 'approval facts are immutable' USING ERRCODE = 'RC012';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER approval_transition BEFORE UPDATE ON iam.approval_request FOR EACH ROW EXECUTE FUNCTION iam.approval_transition();
+
 GRANT USAGE ON SCHEMA iam TO rc_app, rc_worker;
 GRANT SELECT, INSERT, UPDATE ON iam.merchant_user TO rc_app;
 GRANT SELECT, INSERT, UPDATE ON iam.tenant_membership TO rc_app;
 GRANT SELECT, INSERT, DELETE ON iam.role_assignment TO rc_app;
 GRANT UPDATE ON iam.role_assignment TO rc_app;   -- only for the row lock in keep_last_owner; the no_role_update trigger rejects every UPDATE
 GRANT SELECT, INSERT, UPDATE ON iam.invitation TO rc_app;
+GRANT SELECT, INSERT, UPDATE ON iam.approval_request TO rc_app;
 GRANT SELECT ON iam.merchant_user, iam.tenant_membership, iam.role_assignment TO rc_worker;
 GRANT INSERT ON iam.tenant_membership, iam.role_assignment TO rc_worker;   -- owner on platform.tenant-registered (US-011)
 RESET ROLE;

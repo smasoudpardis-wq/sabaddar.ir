@@ -108,6 +108,19 @@ public static class RoleCatalog
         ["PurchasingOfficer"] = [ScopeType.Tenant, ScopeType.Branch, ScopeType.Warehouse],
     };
 
+    /// <summary>
+    /// Role × permission pairs held only under a limit (D06 §6.2 cells "سقف" / "+Approval"): beyond it the action needs
+    /// an approval (IAM-007), and such a role can never be the approver for that action.
+    /// </summary>
+    private static readonly HashSet<(string Role, string Permission)> Capped =
+    [
+        ("Cashier", "pos.discount.apply"), ("Cashier", "sales.return.create"), ("Accountant", "receivables.writeoff"),
+    ];
+
+    public static bool IsCapped(string role, string permission) => Capped.Contains((role, permission));
+
+    public static IReadOnlyCollection<(string Role, string Permission)> CappedPairs => Capped;
+
     public static IReadOnlyList<string> Roles { get; } = [.. Matrix.Keys];
 
     public static bool Exists(string role) => Matrix.ContainsKey(role);
@@ -171,6 +184,15 @@ public static class AccessPolicy
             _ => resource.Type == assignment.ScopeType && resource.Id == assignment.ScopeId,
         };
     }
+
+    /// <summary>
+    /// IAM-007 / D06 §6.1 step 7: an approver holds the action's permission over the resource scope through a role that
+    /// is NOT capped for it (a cashier cannot approve another cashier's discount). Requester ≠ approver is checked by
+    /// the caller and by the database (SoD-01).
+    /// </summary>
+    public static bool CanApprove(IEnumerable<RoleGrant> approver, string action, ScopeRef scope) =>
+        approver.Where(a => RoleCatalog.Exists(a.Role) && !RoleCatalog.IsCapped(a.Role, action))
+            .Any(a => Allows([a], action, scope));
 
     /// <summary>
     /// Anti-escalation: the grantor may assign <paramref name="role"/> at <paramref name="scope"/> only if the scope is
