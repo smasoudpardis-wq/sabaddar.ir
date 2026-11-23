@@ -28,7 +28,9 @@ builder.Services.AddSingleton<IUserAdministration, PostgresUserAdministration>()
 builder.Services.AddSingleton<IBranchAdministration, PostgresBranchAdministration>();
 builder.Services.AddSingleton<IApprovals, PostgresApprovals>();
 builder.Services.AddSingleton<IPinStore, PostgresPinStore>();
-builder.Services.AddSingleton<IAuditLog, PostgresAuditLog>();
+builder.Services.AddSingleton<PostgresAuditLog>();
+builder.Services.AddSingleton<IAuditLog>(sp => sp.GetRequiredService<PostgresAuditLog>());
+builder.Services.AddSingleton<IAuditSearch>(sp => sp.GetRequiredService<PostgresAuditLog>());
 builder.Services.AddSingleton<PostgresTerminals>();
 builder.Services.AddSingleton<ITerminalAdministration>(sp => sp.GetRequiredService<PostgresTerminals>());
 builder.Services.AddSingleton<ITerminalDirectory>(sp => sp.GetRequiredService<PostgresTerminals>());
@@ -358,6 +360,43 @@ v1.MapGet("/approvals/{approvalId:guid}", async (Guid approvalId, RequestContext
             ? Results.Ok(ApprovalJson(a))
             : Problems.NotFound(http))
     .RequireTenantMember();
+
+// listAudit (US-032, AUD-001.1): the tenant's trail, newest first, keyset-paged on seq. The cursor is opaque to clients.
+v1.MapGet("/audit", async (HttpContext http, RequestContext ctx, IUnitOfWork uow, IAuditSearch audit, DateTimeOffset? from, DateTimeOffset? to,
+        string? action, Guid? actorId, string? resourceType, string? resourceId, string? cursor, int? limit, CancellationToken ct) =>
+    {
+        var errors = new Dictionary<string, string[]>();
+        long? before = null;
+        if (cursor is not null)
+        {
+            if (AuditCursor.TryDecode(cursor, out long seq)) before = seq;
+            else errors["cursor"] = ["Invalid cursor"];
+        }
+
+        int size = limit ?? 50;
+        if (size is < 1 or > 200) errors["limit"] = ["Must be 1-200"];
+        if (from is not null && to is not null && from >= to) errors["to"] = ["Must be after 'from'"];
+        foreach ((string name, string? value) in new[] { ("action", action), ("resourceType", resourceType), ("resourceId", resourceId) })
+        {
+            if (value is { Length: 0 or > 100 }) errors[name] = ["1-100 characters"];
+        }
+
+        if (errors.Count > 0) return Problems.Validation(http, errors);
+        IReadOnlyList<AuditRecordView> rows = await uow.ExecuteAsync(ctx, (s, c) =>
+            audit.SearchAsync(s, new AuditQuery(from, to, action, actorId, resourceType, resourceId, before, size + 1), c), ct);
+        bool hasMore = rows.Count > size;
+        AuditRecordView[] items = [.. rows.Take(size)];
+        return Results.Ok(new
+        {
+            items = items.Select(r => new
+            {
+                r.Seq, r.OccurredAt, r.ActorKind, r.ActorId, r.ActorRoles, r.ImpersonatedBy, r.Action, r.ResourceType, r.ResourceId, r.Reason,
+                r.BranchId, r.TerminalId, r.ClientIp, details = System.Text.Json.JsonDocument.Parse(r.DetailsJson).RootElement,
+            }),
+            page = new { nextCursor = hasMore ? AuditCursor.Encode(items[^1].Seq) : null, hasMore },
+        });
+    })
+    .RequirePermission(Permissions.AuditView);
 
 IResult PinProblem(HttpContext http, PinCheck result, int attemptsLeft) => result switch
 {
@@ -712,3 +751,22 @@ internal sealed record InviteUser(string? DisplayName, string? Email, string? Mo
 
 /// <summary>Entry point type for WebApplicationFactory in tests.</summary>
 public partial class Program;
+
+/// <summary>Opaque keyset cursor for listAudit: base64url of "a:{seq}".</summary>
+static class AuditCursor
+{
+    public static string Encode(long seq) =>
+        Convert.ToBase64String(System.Text.Encoding.ASCII.GetBytes($"a:{seq}")).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
+    public static bool TryDecode(string cursor, out long seq)
+    {
+        seq = 0;
+        if (cursor.Length is 0 or > 40) return false;
+        string b64 = cursor.Replace('-', '+').Replace('_', '/');
+        b64 = b64.PadRight(b64.Length + ((4 - (b64.Length % 4)) % 4), '=');
+        Span<byte> bytes = stackalloc byte[32];
+        return Convert.TryFromBase64String(b64, bytes, out int n)
+            && System.Text.Encoding.ASCII.GetString(bytes[..n]) is ['a', ':', .. string digits]
+            && long.TryParse(digits, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out seq) && seq > 0;
+    }
+}

@@ -16,6 +16,8 @@ public sealed class AuditTests : IClassFixture<ApiFactory>, IAsyncLifetime
     private readonly ApiFactory _factory;
     private readonly Guid _tenant = Guid.CreateVersion7(), _b1 = Guid.CreateVersion7(), _owner = Guid.CreateVersion7();
     private readonly string _ownerSub = "aud-owner-" + Guid.NewGuid();
+    private readonly Guid _auditor = Guid.CreateVersion7(), _cashier = Guid.CreateVersion7();
+    private readonly string _auditorSub = "aud-auditor-" + Guid.NewGuid(), _cashierSub = "aud-cashier-" + Guid.NewGuid();
     private static readonly string Cs = Environment.GetEnvironmentVariable("RC_TEST_PG") ?? "Host=unused";
 
     public AuditTests(ApiFactory factory) => _factory = factory;
@@ -29,13 +31,25 @@ public sealed class AuditTests : IClassFixture<ApiFactory>, IAsyncLifetime
 
         await using var ds = NpgsqlDataSource.Create(Cs);
         var uow = new PostgresUnitOfWork(ds);
-        await uow.ExecuteWithoutTenantAsync(null, (s, ct) =>
-            Exec(s, ct, "INSERT INTO iam.merchant_user (id, idp_issuer, idp_subject, display_name) VALUES ($1, $2, $3, 'مالک')", _owner, ApiFactory.Issuer, _ownerSub));
+        await uow.ExecuteWithoutTenantAsync(null, async (s, ct) =>
+        {
+            foreach ((Guid id, string sub) in new[] { (_owner, _ownerSub), (_auditor, _auditorSub), (_cashier, _cashierSub) })
+            {
+                await Exec(s, ct, "INSERT INTO iam.merchant_user (id, idp_issuer, idp_subject, display_name) VALUES ($1, $2, $3, 'کاربر')", id, ApiFactory.Issuer, sub);
+            }
+
+            return 0;
+        });
         await uow.ExecuteAsync(new FixedTenantContext(new TenantId(_tenant)), async (s, ct) =>
         {
             await Exec(s, ct, "INSERT INTO platform.tenant (id, legal_name, industry_code) VALUES ($1, 'ممیزی', 'supermarket')", _tenant);
             await Exec(s, ct, "INSERT INTO platform.branch (tenant_id, id, code, name) VALUES ($1, $2, 'B1', 'یک')", _tenant, _b1);
             await Exec(s, ct, "INSERT INTO iam.tenant_membership (tenant_id, user_id) VALUES ($1, $2)", _tenant, _owner);
+            await Exec(s, ct, "INSERT INTO iam.tenant_membership (tenant_id, user_id) VALUES ($1, $2), ($1, $3)", _tenant, _auditor, _cashier);
+            await Exec(s, ct, "INSERT INTO iam.role_assignment (tenant_id, id, user_id, role, scope_type) VALUES ($1, $2, $3, 'Auditor', 'Tenant')",
+                _tenant, Guid.CreateVersion7(), _auditor);
+            await Exec(s, ct, "INSERT INTO iam.role_assignment (tenant_id, id, user_id, role, scope_type, scope_id) VALUES ($1, $2, $3, 'Cashier', 'Branch', $4)",
+                _tenant, Guid.CreateVersion7(), _cashier, _b1);
             return await Exec(s, ct, "INSERT INTO iam.role_assignment (tenant_id, id, user_id, role, scope_type) VALUES ($1, $2, $3, 'TenantOwner', 'Tenant')",
                 _tenant, Guid.CreateVersion7(), _owner);
         });
@@ -153,5 +167,99 @@ public sealed class AuditTests : IClassFixture<ApiFactory>, IAsyncLifetime
         var workerCs = new NpgsqlConnectionStringBuilder(Cs) { Username = "rc_worker_test", Password = "rc_worker_test" }.ToString();
         await using var wds = NpgsqlDataSource.Create(workerCs);
         Assert.True(Assert.Single(await new AuditChainVerifier(new PostgresUnitOfWork(wds)).VerifyAllAsync(CancellationToken.None, new HashSet<Guid> { _tenant })).Intact);
+    }
+
+    private static async Task<JsonDocument> Json(HttpResponseMessage r)
+    {
+        Assert.Equal(HttpStatusCode.OK, r.StatusCode);
+        return JsonDocument.Parse(await r.Content.ReadAsStringAsync());
+    }
+
+    [DbFact]
+    public async Task Auditor_searches_with_filters_and_pages_through_the_trail()
+    {
+        HttpClient owner = As(_ownerSub, _tenant);
+        for (int i = 0; i < 5; i++)
+        {
+            Assert.Equal(HttpStatusCode.Created, (await owner.PostAsJsonAsync("/api/v1/branches", new { code = $"S{i}", name = $"جستجو {i}" })).StatusCode);
+        }
+
+        Assert.Equal(HttpStatusCode.Created, (await owner.PostAsync($"/api/v1/branches/{_b1}/pairing-codes", null)).StatusCode);
+        HttpClient auditor = As(_auditorSub, _tenant);
+
+        using JsonDocument all = await Json(await auditor.GetAsync("/api/v1/audit"));
+        JsonElement items = all.RootElement.GetProperty("items");
+        Assert.Equal(6, items.GetArrayLength());
+        Assert.Equal("platform.pairing-code.issued", items[0].GetProperty("action").GetString());   // newest first
+        Assert.Equal(_owner, items[0].GetProperty("actorId").GetGuid());
+        Assert.Equal("TenantOwner", items[0].GetProperty("actorRoles")[0].GetString());
+        Assert.Equal("203.0.113.7", items[0].GetProperty("clientIp").GetString());
+        Assert.Equal("S4", items[1].GetProperty("details").GetProperty("code").GetString());
+        Assert.False(all.RootElement.GetProperty("page").GetProperty("hasMore").GetBoolean());
+
+        // exact action, action prefix, resource and actor filters
+        using JsonDocument exact = await Json(await auditor.GetAsync("/api/v1/audit?action=platform.branch.created"));
+        Assert.Equal(5, exact.RootElement.GetProperty("items").GetArrayLength());
+        using JsonDocument prefix = await Json(await auditor.GetAsync("/api/v1/audit?action=platform."));
+        Assert.Equal(6, prefix.RootElement.GetProperty("items").GetArrayLength());
+        using JsonDocument wild = await Json(await auditor.GetAsync("/api/v1/audit?action=" + Uri.EscapeDataString("%.")));
+        Assert.Equal(0, wild.RootElement.GetProperty("items").GetArrayLength());   // LIKE wildcards are literal
+        using JsonDocument byResource = await Json(await auditor.GetAsync($"/api/v1/audit?resourceType=Branch&resourceId={_b1}"));
+        Assert.Equal("platform.pairing-code.issued", Assert.Single(byResource.RootElement.GetProperty("items").EnumerateArray()).GetProperty("action").GetString());
+        using JsonDocument byOther = await Json(await auditor.GetAsync($"/api/v1/audit?actorId={_auditor}"));
+        Assert.Equal(0, byOther.RootElement.GetProperty("items").GetArrayLength());
+        using JsonDocument future = await Json(await auditor.GetAsync("/api/v1/audit?from=" + Uri.EscapeDataString(DateTimeOffset.UtcNow.AddMinutes(5).ToString("O"))));
+        Assert.Equal(0, future.RootElement.GetProperty("items").GetArrayLength());
+
+        // keyset paging: three pages of 2, no overlap, same order as the full list
+        var seen = new List<long>();
+        string? cursor = null;
+        do
+        {
+            using JsonDocument p = await Json(await auditor.GetAsync("/api/v1/audit?limit=2" + (cursor is null ? "" : "&cursor=" + cursor)));
+            seen.AddRange(p.RootElement.GetProperty("items").EnumerateArray().Select(e => e.GetProperty("seq").GetInt64()));
+            JsonElement page = p.RootElement.GetProperty("page");
+            cursor = page.GetProperty("hasMore").GetBoolean() ? page.GetProperty("nextCursor").GetString() : null;
+        }
+        while (cursor is not null);
+        Assert.Equal(items.EnumerateArray().Select(e => e.GetProperty("seq").GetInt64()), seen);
+    }
+
+    [DbFact]
+    public async Task Only_audit_viewers_may_search_and_bad_input_is_rejected()
+    {
+        Assert.Equal(HttpStatusCode.Forbidden, (await As(_cashierSub, _tenant).GetAsync("/api/v1/audit")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await As(_ownerSub, _tenant).GetAsync("/api/v1/audit")).StatusCode);
+        HttpClient auditor = As(_auditorSub, _tenant);
+        foreach (string q in new[] { "cursor=not-a-cursor", "cursor=" + Convert.ToBase64String("a:-1"u8.ToArray()), "limit=0", "limit=201",
+                     "from=2026-01-02T00:00:00Z&to=2026-01-01T00:00:00Z", "action=" + new string('a', 101) })
+        {
+            Assert.Equal(HttpStatusCode.BadRequest, (await auditor.GetAsync("/api/v1/audit?" + q)).StatusCode);
+        }
+    }
+
+    [DbFact]
+    public async Task Another_tenants_records_are_never_returned()
+    {
+        // a second tenant with its own owner writes a record; this tenant's auditor must not see it (RLS)
+        Guid other = Guid.CreateVersion7(), otherOwner = Guid.CreateVersion7();
+        string otherSub = "aud-other-" + Guid.NewGuid();
+        await using var ds = NpgsqlDataSource.Create(Cs);
+        var uow = new PostgresUnitOfWork(ds);
+        await uow.ExecuteWithoutTenantAsync(null, (s, ct) =>
+            Exec(s, ct, "INSERT INTO iam.merchant_user (id, idp_issuer, idp_subject, display_name) VALUES ($1, $2, $3, 'دیگری')", otherOwner, ApiFactory.Issuer, otherSub));
+        await uow.ExecuteAsync(new FixedTenantContext(new TenantId(other)), async (s, ct) =>
+        {
+            await Exec(s, ct, "INSERT INTO platform.tenant (id, legal_name, industry_code) VALUES ($1, 'دیگر', 'supermarket')", other);
+            await Exec(s, ct, "INSERT INTO iam.tenant_membership (tenant_id, user_id) VALUES ($1, $2)", other, otherOwner);
+            return await Exec(s, ct, "INSERT INTO iam.role_assignment (tenant_id, id, user_id, role, scope_type) VALUES ($1, $2, $3, 'TenantOwner', 'Tenant')",
+                other, Guid.CreateVersion7(), otherOwner);
+        });
+        Assert.Equal(HttpStatusCode.Created, (await As(otherSub, other).PostAsJsonAsync("/api/v1/branches", new { code = "X1", name = "بیگانه" })).StatusCode);
+
+        using JsonDocument mine = await Json(await As(_auditorSub, _tenant).GetAsync("/api/v1/audit"));
+        Assert.Equal(0, mine.RootElement.GetProperty("items").GetArrayLength());
+        // and the auditor cannot simply switch the tenant header to the other store (404: its existence is not revealed)
+        Assert.Equal(HttpStatusCode.NotFound, (await As(_auditorSub, other).GetAsync("/api/v1/audit")).StatusCode);
     }
 }

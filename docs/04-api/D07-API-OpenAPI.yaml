@@ -7235,6 +7235,26 @@ paths:
         required: false
         schema:
           type: string
+          maxLength: 100
+        description: Exact action, or a prefix ending in '.' (e.g. `iam.`)
+      - name: actorId
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - name: resourceType
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 100
+      - name: resourceId
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 100
       responses:
         '200':
           description: Success
@@ -7272,6 +7292,7 @@ paths:
       x-idempotent: false
       x-requirements:
       - AUD-001
+      - AUD-001.1
       - AUD-002
   /partner/catalog/products:
     get:
@@ -8267,6 +8288,15 @@ components:
           - string
           - 'null'
           format: uuid
+        actorRoles:
+          type: array
+          items:
+            type: string
+        impersonatedBy:
+          type:
+          - string
+          - 'null'
+          format: uuid
         action:
           type: string
         resourceType:
@@ -8279,20 +8309,38 @@ components:
           type:
           - string
           - 'null'
-        device:
+        branchId:
           type:
           - string
           - 'null'
+          format: uuid
+        terminalId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        clientIp:
+          type:
+          - string
+          - 'null'
+        details:
+          type: object
+          description: 'Sanitised at write time: no OTP, token, PIN, key, card number or contact PII (AUD-003)'
       required:
       - seq
       - occurredAt
       - actorKind
       - actorId
+      - actorRoles
+      - impersonatedBy
       - action
       - resourceType
       - resourceId
       - reason
-      - device
+      - branchId
+      - terminalId
+      - clientIp
+      - details
     BaleLinkToken:
       type: object
       additionalProperties: false

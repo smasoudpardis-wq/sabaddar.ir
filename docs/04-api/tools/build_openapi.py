@@ -39,6 +39,7 @@ def t(x):
         "bool": {"type": "boolean"},
         "dt": {"type": "string", "format": "date-time"},
         "date": {"type": "string", "format": "date"},
+        "obj": {"type": "object"},
         "money": {"$ref": "#/components/schemas/Money"},
         "qty": {"$ref": "#/components/schemas/Quantity"},
         "bp": {"$ref": "#/components/schemas/BasisPoints"},
@@ -416,8 +417,9 @@ schema("GrossProfitRow", key="str", netSales="money", cost="money", grossProfit=
        costBasis=("enum", ["MovingWeightedAverageAtSale"]), itemsWithZeroCost="int")
 schema("ReturnsReportRow", reason="str", cashierId="uuid", count="int", amount="money")
 schema("ReportMeta", generatedAt="dt", dataAsOf=("desc", "dt", "Read model freshness (RPT-002)"))
-schema("AuditRecord", seq="long", occurredAt="dt", actorKind="str", actorId="uuid?", action="str", resourceType="str",
-       resourceId="str?", reason="str?", device="str?")
+schema("AuditRecord", seq="long", occurredAt="dt", actorKind="str", actorId="uuid?", actorRoles=["str"], impersonatedBy="uuid?",
+       action="str", resourceType="str", resourceId="str?", reason="str?", branchId="uuid?", terminalId="uuid?",
+       clientIp="str?", details=("desc", "obj", "Sanitised at write time: no OTP, token, PIN, key, card number or contact PII (AUD-003)"))
 schema("IntegrationKeyCreate", name="str", scopes=[("enum", ["catalog.read", "inventory.read"])], expiresAt="dt")
 schema("IntegrationKey", id="uuid", name="str", scopes=["str"], expiresAt="dt", lastUsedAt="dt?",
        **{"secret?": ("desc", "str", "Returned once at creation only")})
@@ -1087,8 +1089,12 @@ for path, opid, sch, summ, rq in [
 tag("Audit", "ممیزی")
 op("get", "/audit", "listAudit", "Audit", "رکوردهای ممیزی Tenant", perm="audit.view", scope="Tenant",
    params=[{"$ref": "#/components/parameters/From"}, {"$ref": "#/components/parameters/To"},
-           {"name": "action", "in": "query", "required": False, "schema": {"type": "string"}}],
-   resp="AuditRecord", list_of=True, page=True, reqs=["AUD-001", "AUD-002"])
+           {"name": "action", "in": "query", "required": False, "schema": {"type": "string", "maxLength": 100},
+            "description": "Exact action, or a prefix ending in '.' (e.g. `iam.`)"},
+           {"name": "actorId", "in": "query", "required": False, "schema": {"type": "string", "format": "uuid"}},
+           {"name": "resourceType", "in": "query", "required": False, "schema": {"type": "string", "maxLength": 100}},
+           {"name": "resourceId", "in": "query", "required": False, "schema": {"type": "string", "maxLength": 100}}],
+   resp="AuditRecord", list_of=True, page=True, reqs=["AUD-001", "AUD-001.1", "AUD-002"])
 
 # ---------------- Integration API (API key)
 tag("PartnerApi", "API عمومی با Integration Key (INT)")

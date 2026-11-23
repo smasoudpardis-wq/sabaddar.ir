@@ -244,6 +244,18 @@ try {
   await page.getByTestId(`approve-${pendingId}`).click();
   await page.getByTestId(`decided-${pendingId}`).waitFor();
   check('A02', 'the owner approves it (fresh MFA; approver ≠ requester)', (await page.getByTestId(`decided-${pendingId}`).textContent()).includes('تأیید'));
+  // U01–U02 US-032 the owner reads the audit trail: the approval just made is on top, with who and from where
+  await page.goto(`${BFF}/audit`);
+  await page.getByTestId('audit-rows').waitFor();
+  const top = page.locator('[data-testid="audit-rows"] tbody tr').first();
+  check('U01', 'the decision just made is the newest audit record, with role and client address',
+    (await top.getAttribute('data-action')) === 'iam.approval.approved' && /TenantOwner/.test(await top.textContent()) && /127\.0\.0\.1/.test(await top.textContent()));
+  await page.getByTestId('audit-group').selectOption('platform.');
+  await Promise.all([page.waitForResponse((r) => r.url().includes('/bff/audit') && r.url().includes('action=platform.')),
+    page.getByTestId('audit-search').click()]);
+  await page.locator('[data-testid="audit-rows"] tbody tr[data-action^="iam."]').first().waitFor({ state: 'detached' });
+  const shown = await page.locator('[data-testid="audit-rows"] tbody tr').evaluateAll((trs) => trs.map((t) => t.getAttribute('data-action')));
+  check('U02', 'filtering by group shows only that group', shown.length > 0 && shown.every((a) => a.startsWith('platform.')), shown.join(','));
   await page.goto(BFF);
   await page.getByTestId('logout').waitFor();
 

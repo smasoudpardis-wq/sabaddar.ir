@@ -69,3 +69,17 @@ public static partial class AuditSanitizer
         }
     }
 }
+
+/// <summary>US-032 filters; <paramref name="Action"/> ending in '.' matches as a prefix. Newest first, keyset on seq.</summary>
+public sealed record AuditQuery(DateTimeOffset? From, DateTimeOffset? To, string? Action, Guid? ActorId, string? ResourceType,
+    string? ResourceId, long? BeforeSeq, int Limit);
+
+public sealed record AuditRecordView(long Seq, DateTimeOffset OccurredAt, string ActorKind, Guid? ActorId, IReadOnlyList<string> ActorRoles,
+    Guid? ImpersonatedBy, string Action, string ResourceType, string? ResourceId, string? Reason, Guid? BranchId, Guid? TerminalId,
+    string? ClientIp, string DetailsJson);
+
+/// <summary>Read side of the tenant's audit trail (RLS limits it to the active tenant).</summary>
+public interface IAuditSearch
+{
+    Task<IReadOnlyList<AuditRecordView>> SearchAsync(IUnitOfWorkScope scope, AuditQuery query, CancellationToken cancellationToken);
+}

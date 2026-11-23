@@ -40,6 +40,7 @@ public static class Permissions
     public const string TenantSettingsManage = "tenant.settings.manage";
     public const string UsersManage = "iam.users.manage";
     public const string TerminalsManage = "terminals.manage";
+    public const string AuditView = "audit.view";
 
     public static readonly IReadOnlyList<string> All =
     [
