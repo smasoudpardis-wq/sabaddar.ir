@@ -10,6 +10,7 @@ Usage:  python3 docs/04-api/tools/build_openapi.py        (writes the YAML next 
 Edit THIS file, not the YAML.
 """
 import json
+import re
 import pathlib
 import yaml
 
@@ -1204,8 +1205,15 @@ if __name__ == "__main__":
               "# RetailCloud D07 — OpenAPI 3.1 (Draft 0.1.0)\n")
     OUT.write_text(header + yaml.safe_dump(spec, allow_unicode=True, sort_keys=False, width=120), encoding="utf-8")
     # Manifest for the API's default-deny test (EndpointPolicyTests): operation -> method, path, permission.
+    def body_props(o):
+        ref = o.get("requestBody", {}).get("content", {}).get("application/json", {}).get("schema", {}).get("$ref")
+        return sorted(SCHEMAS[ref.split("/")[-1]].get("properties", {}).keys()) if ref else None
+
+    # US-010: the generated security tests (BOLA, scope, role, mass assignment) are driven by this manifest.
     manifest = [{"operationId": o["operationId"], "method": m.upper(), "path": p, "permission": o.get("x-permission"),
-                 "allowedWhenReadOnly": bool(o.get("x-allowed-when-read-only"))}
+                 "allowedWhenReadOnly": bool(o.get("x-allowed-when-read-only")), "scope": o.get("x-scope"),
+                 "pathParams": re.findall(r"\{(\w+)\}", p), "bodyProps": body_props(o),
+                 "idempotent": any(x.get("$ref", "").endswith("/IdempotencyKey") for x in o.get("parameters", []))}
                 for p, item in spec["paths"].items() for m, o in item.items()]
     (OUT.parent / "D07-operations.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     n_ops = sum(len(v) for v in PATHS.values())

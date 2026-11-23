@@ -4,1147 +4,2318 @@
   "method": "POST",
   "path": "/tenants",
   "permission": "authenticated",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": [
+   "firstBranchName",
+   "industryCode",
+   "legalName",
+   "pricingMode",
+   "timeZone"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "getTenantSetup",
   "method": "GET",
   "path": "/tenants/me/setup",
   "permission": "tenant.member",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "getMyTenant",
   "method": "GET",
   "path": "/tenants/me",
   "permission": "tenant.member",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "updateMyTenant",
   "method": "PATCH",
   "path": "/tenants/me",
   "permission": "tenant.settings.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": [
+   "expectedVersion",
+   "legalName",
+   "negativeStockPolicy",
+   "pricingMode",
+   "returnWindowDays",
+   "timeZone"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "listBranches",
   "method": "GET",
   "path": "/branches",
   "permission": "tenant.member",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "createBranch",
   "method": "POST",
   "path": "/branches",
   "permission": "tenant.settings.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": [
+   "code",
+   "name"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "createRegister",
   "method": "POST",
   "path": "/branches/{branchId}/registers",
   "permission": "tenant.settings.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [
+   "branchId"
+  ],
+  "bodyProps": [
+   "code"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "createPairingCode",
   "method": "POST",
   "path": "/branches/{branchId}/pairing-codes",
   "permission": "terminals.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [
+   "branchId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "pairTerminal",
   "method": "POST",
   "path": "/terminals/pair",
   "permission": "tenant.member",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": [
+   "deviceName",
+   "pairingCode",
+   "userAgent"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "listTerminals",
   "method": "GET",
   "path": "/terminals",
   "permission": "terminals.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "revokeTerminal",
   "method": "DELETE",
   "path": "/terminals/{terminalId}",
   "permission": "terminals.manage",
-  "allowedWhenReadOnly": true
+  "allowedWhenReadOnly": true,
+  "scope": "Branch",
+  "pathParams": [
+   "terminalId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "createExport",
   "method": "POST",
   "path": "/exports",
   "permission": "data.export",
-  "allowedWhenReadOnly": true
+  "allowedWhenReadOnly": true,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": [
+   "categories",
+   "from",
+   "includeFullPhone",
+   "to"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "getExport",
   "method": "GET",
   "path": "/exports/{exportId}",
   "permission": "data.export",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [
+   "exportId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "getMe",
   "method": "GET",
   "path": "/me",
   "permission": "authenticated",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "selectActiveTenant",
   "method": "POST",
   "path": "/me/active-tenant",
   "permission": "authenticated",
-  "allowedWhenReadOnly": true
+  "allowedWhenReadOnly": true,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": [
+   "tenantId"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "listUsers",
   "method": "GET",
   "path": "/users",
   "permission": "iam.users.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "inviteUser",
   "method": "POST",
   "path": "/users/invitations",
   "permission": "iam.users.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [],
+  "bodyProps": [
+   "displayName",
+   "email",
+   "mobile",
+   "roleAssignments"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "acceptInvitation",
   "method": "POST",
   "path": "/invitations/{token}/accept",
   "permission": "authenticated",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [
+   "token"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "updateUser",
   "method": "PATCH",
   "path": "/users/{userId}",
   "permission": "iam.users.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [
+   "userId"
+  ],
+  "bodyProps": [
+   "displayName",
+   "expectedVersion",
+   "status"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "addRoleAssignment",
   "method": "POST",
   "path": "/users/{userId}/role-assignments",
   "permission": "iam.users.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [
+   "userId"
+  ],
+  "bodyProps": [
+   "roleId",
+   "scopeId",
+   "scopeType"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "removeRoleAssignment",
   "method": "DELETE",
   "path": "/users/{userId}/role-assignments/{assignmentId}",
   "permission": "iam.users.manage",
-  "allowedWhenReadOnly": true
+  "allowedWhenReadOnly": true,
+  "scope": "Branch",
+  "pathParams": [
+   "userId",
+   "assignmentId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "listRoles",
   "method": "GET",
   "path": "/roles",
   "permission": "iam.users.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "setMyPin",
   "method": "PUT",
   "path": "/me/pin",
   "permission": "tenant.member",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": [
+   "pin"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "verifyMyPin",
   "method": "POST",
   "path": "/me/pin/verify",
   "permission": "tenant.member",
-  "allowedWhenReadOnly": true
+  "allowedWhenReadOnly": true,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": [
+   "pin"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "listApprovals",
   "method": "GET",
   "path": "/approvals",
   "permission": "tenant.member",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "getApproval",
   "method": "GET",
   "path": "/approvals/{approvalId}",
   "permission": "tenant.member",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [
+   "approvalId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "decideApproval",
   "method": "POST",
   "path": "/approvals/{approvalId}/decision",
   "permission": "tenant.member",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [
+   "approvalId"
+  ],
+  "bodyProps": [
+   "approverId",
+   "comment",
+   "decision",
+   "pin"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "listSupportAccessRequests",
   "method": "GET",
   "path": "/support-access-requests",
   "permission": "tenant.settings.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "decideSupportAccess",
   "method": "POST",
   "path": "/support-access-requests/{requestId}/decision",
   "permission": "tenant.settings.manage",
-  "allowedWhenReadOnly": true
+  "allowedWhenReadOnly": true,
+  "scope": "Tenant",
+  "pathParams": [
+   "requestId"
+  ],
+  "bodyProps": [
+   "approverId",
+   "comment",
+   "decision",
+   "pin"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "resolveBarcode",
   "method": "POST",
   "path": "/catalog/barcodes/resolve",
   "permission": "catalog.product.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [],
+  "bodyProps": [
+   "barcode",
+   "branchId",
+   "preferredSources"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "listProducts",
   "method": "GET",
   "path": "/products",
   "permission": "tenant.member",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "createProduct",
   "method": "POST",
   "path": "/products",
   "permission": "catalog.product.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": [
+   "axes",
+   "baseUnit",
+   "brand",
+   "catalogProductId",
+   "categoryId",
+   "confirmation",
+   "name",
+   "openingStock",
+   "taxCode",
+   "taxRate",
+   "variants"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "getProduct",
   "method": "GET",
   "path": "/products/{productId}",
   "permission": "tenant.member",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [
+   "productId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "updateProduct",
   "method": "PATCH",
   "path": "/products/{productId}",
   "permission": "catalog.product.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [
+   "productId"
+  ],
+  "bodyProps": [
+   "brand",
+   "expectedVersion",
+   "name",
+   "status",
+   "taxCode",
+   "taxRate"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "addVariant",
   "method": "POST",
   "path": "/products/{productId}/variants",
   "permission": "catalog.product.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [
+   "productId"
+  ],
+  "bodyProps": [
+   "axisValues",
+   "barcodes",
+   "sku",
+   "unitPrice"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "addBarcode",
   "method": "POST",
   "path": "/products/{productId}/variants/{variantId}/barcodes",
   "permission": "catalog.product.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [
+   "productId",
+   "variantId"
+  ],
+  "bodyProps": [
+   "code",
+   "isInternal",
+   "packagingUnit",
+   "unitFactor"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "removeBarcode",
   "method": "DELETE",
   "path": "/products/{productId}/variants/{variantId}/barcodes/{barcodeId}",
   "permission": "catalog.product.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [
+   "productId",
+   "variantId",
+   "barcodeId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "mergeProduct",
   "method": "POST",
   "path": "/products/{productId}/merge",
   "permission": "catalog.product.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [
+   "productId"
+  ],
+  "bodyProps": [
+   "expectedVersion",
+   "reason",
+   "targetProductId"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "suggestToGlobalCatalog",
   "method": "POST",
   "path": "/products/{productId}/catalog-suggestions",
   "permission": "catalog.product.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [
+   "productId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "listPriceLists",
   "method": "GET",
   "path": "/price-lists",
   "permission": "tenant.member",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "setPrices",
   "method": "POST",
   "path": "/price-lists/{priceListId}/prices",
   "permission": "catalog.price.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [
+   "priceListId"
+  ],
+  "bodyProps": [
+   "items",
+   "reason",
+   "validFrom"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "listDiscountRules",
   "method": "GET",
   "path": "/discount-rules",
   "permission": "tenant.member",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "createDiscountRule",
   "method": "POST",
   "path": "/discount-rules",
   "permission": "catalog.price.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [],
+  "bodyProps": [
+   "branchIds",
+   "name",
+   "percent",
+   "target",
+   "validFrom",
+   "validTo"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "setWeightedBarcodeProfiles",
   "method": "PUT",
   "path": "/weighted-barcode-profiles",
   "permission": "tenant.settings.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": [
+   "decimals",
+   "hasInnerCheckDigit",
+   "id",
+   "itemCodeLength",
+   "prefix",
+   "valueLength",
+   "valueType"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "listWarehouses",
   "method": "GET",
   "path": "/warehouses",
   "permission": "tenant.member",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "createWarehouse",
   "method": "POST",
   "path": "/warehouses",
   "permission": "tenant.settings.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": [
+   "branchId",
+   "code",
+   "kind"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "postGoodsReceipt",
   "method": "POST",
   "path": "/inventory/receipts",
   "permission": "inventory.receipt.create",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Warehouse",
+  "pathParams": [],
+  "bodyProps": [
+   "effectiveDate",
+   "lines",
+   "supplierId",
+   "supplierInvoiceNo",
+   "warehouseId"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "postAdjustment",
   "method": "POST",
   "path": "/inventory/adjustments",
   "permission": "inventory.adjust",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Warehouse",
+  "pathParams": [],
+  "bodyProps": [
+   "lines",
+   "note",
+   "reason",
+   "warehouseId"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "postTransfer",
   "method": "POST",
   "path": "/inventory/transfers",
   "permission": "inventory.transfer",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Warehouse",
+  "pathParams": [],
+  "bodyProps": [
+   "fromWarehouseId",
+   "lines",
+   "toWarehouseId"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "createCount",
   "method": "POST",
   "path": "/inventory/counts",
   "permission": "inventory.count",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Warehouse",
+  "pathParams": [],
+  "bodyProps": [
+   "blind",
+   "categoryIds",
+   "scope",
+   "warehouseId"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "addCountEntries",
   "method": "POST",
   "path": "/inventory/counts/{countId}/entries",
   "permission": "inventory.count",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Warehouse",
+  "pathParams": [
+   "countId"
+  ],
+  "bodyProps": [
+   "clientBatchId",
+   "entries"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "getCountResult",
   "method": "GET",
   "path": "/inventory/counts/{countId}/result",
   "permission": "inventory.count",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Warehouse",
+  "pathParams": [
+   "countId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "confirmCount",
   "method": "POST",
   "path": "/inventory/counts/{countId}/confirm",
   "permission": "inventory.adjust",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Warehouse",
+  "pathParams": [
+   "countId"
+  ],
+  "bodyProps": [
+   "expectedVersion"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "listStockBalances",
   "method": "GET",
   "path": "/inventory/balances",
   "permission": "tenant.member",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "listStockMovements",
   "method": "GET",
   "path": "/inventory/movements",
   "permission": "reports.view",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Warehouse",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "listSuppliers",
   "method": "GET",
   "path": "/suppliers",
   "permission": "tenant.member",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "createSupplier",
   "method": "POST",
   "path": "/suppliers",
   "permission": "inventory.receipt.create",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": [
+   "economicCode",
+   "name",
+   "nationalId",
+   "phone"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "paySupplier",
   "method": "POST",
   "path": "/suppliers/{supplierId}/payments",
   "permission": "accounting.journal.post",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [
+   "supplierId"
+  ],
+  "bodyProps": [
+   "amount",
+   "method",
+   "reference",
+   "registerShiftId"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "postPurchaseReturn",
   "method": "POST",
   "path": "/purchase-returns",
   "permission": "inventory.receipt.create",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Warehouse",
+  "pathParams": [],
+  "bodyProps": [
+   "agreedAmount",
+   "lines",
+   "note",
+   "supplierId",
+   "warehouseId"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "openShift",
   "method": "POST",
   "path": "/shifts",
   "permission": "shift.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Register",
+  "pathParams": [],
+  "bodyProps": [
+   "openingCash",
+   "registerId"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "getShift",
   "method": "GET",
   "path": "/shifts/{shiftId}",
   "permission": "shift.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "OwnShift",
+  "pathParams": [
+   "shiftId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "recordCashMovement",
   "method": "POST",
   "path": "/shifts/{shiftId}/cash-movements",
   "permission": "shift.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "OwnShift",
+  "pathParams": [
+   "shiftId"
+  ],
+  "bodyProps": [
+   "amount",
+   "direction",
+   "reason"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "closeShift",
   "method": "POST",
   "path": "/shifts/{shiftId}/close",
   "permission": "shift.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "OwnShift",
+  "pathParams": [
+   "shiftId"
+  ],
+  "bodyProps": [
+   "countedCash",
+   "denominations",
+   "expectedVersion",
+   "varianceReason"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "approveShiftVariance",
   "method": "POST",
   "path": "/shifts/{shiftId}/variance-approval",
   "permission": "shift.supervise",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [
+   "shiftId"
+  ],
+  "bodyProps": [
+   "approverId",
+   "comment",
+   "decision",
+   "pin"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "createSale",
   "method": "POST",
   "path": "/pos/sales",
   "permission": "pos.sell",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Register",
+  "pathParams": [],
+  "bodyProps": [
+   "clientDraftId",
+   "registerId"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "getSale",
   "method": "GET",
   "path": "/pos/sales/{saleId}",
   "permission": "pos.sell",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Register",
+  "pathParams": [
+   "saleId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "addSaleLine",
   "method": "POST",
   "path": "/pos/sales/{saleId}/lines",
   "permission": "pos.sell",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "OwnShift",
+  "pathParams": [
+   "saleId"
+  ],
+  "bodyProps": [
+   "barcode",
+   "qty",
+   "unit",
+   "variantId"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "updateSaleLine",
   "method": "PATCH",
   "path": "/pos/sales/{saleId}/lines/{lineNo}",
   "permission": "pos.sell",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "OwnShift",
+  "pathParams": [
+   "saleId",
+   "lineNo"
+  ],
+  "bodyProps": [
+   "expectedVersion",
+   "qty",
+   "unit"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "removeSaleLine",
   "method": "DELETE",
   "path": "/pos/sales/{saleId}/lines/{lineNo}",
   "permission": "pos.sell",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "OwnShift",
+  "pathParams": [
+   "saleId",
+   "lineNo"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "applyDiscount",
   "method": "POST",
   "path": "/pos/sales/{saleId}/discounts",
   "permission": "pos.discount.apply",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Register",
+  "pathParams": [
+   "saleId"
+  ],
+  "bodyProps": [
+   "approvalId",
+   "expectedVersion",
+   "kind",
+   "lineNo",
+   "value"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "attachCustomer",
   "method": "POST",
   "path": "/pos/sales/{saleId}/customer",
   "permission": "customers.lookup",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [
+   "saleId"
+  ],
+  "bodyProps": [
+   "buyerTaxInfo",
+   "expectedVersion",
+   "publicCode",
+   "qrToken",
+   "tenantCustomerId"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "holdSale",
   "method": "POST",
   "path": "/pos/sales/{saleId}/hold",
   "permission": "pos.sell",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "OwnShift",
+  "pathParams": [
+   "saleId"
+  ],
+  "bodyProps": [
+   "expectedVersion"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "resumeSale",
   "method": "POST",
   "path": "/pos/sales/{saleId}/resume",
   "permission": "pos.sell",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Register",
+  "pathParams": [
+   "saleId"
+  ],
+  "bodyProps": [
+   "expectedVersion"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "cancelSale",
   "method": "POST",
   "path": "/pos/sales/{saleId}/cancel",
   "permission": "pos.sale.cancel",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "OwnShift",
+  "pathParams": [
+   "saleId"
+  ],
+  "bodyProps": [
+   "expectedVersion",
+   "reason"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "recordTender",
   "method": "POST",
   "path": "/pos/sales/{saleId}/tenders",
   "permission": "pos.sell",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "OwnShift",
+  "pathParams": [
+   "saleId"
+  ],
+  "bodyProps": [
+   "amount",
+   "approvalId",
+   "cardLast4",
+   "method",
+   "referenceNo",
+   "tendered",
+   "terminalNo"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "finalizeSale",
   "method": "POST",
   "path": "/sales/{saleId}/finalize",
   "permission": "pos.sell",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "OwnShift",
+  "pathParams": [
+   "saleId"
+  ],
+  "bodyProps": [
+   "approvalId",
+   "expectedTotal",
+   "expectedVersion",
+   "paymentConfirmationId"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "listSales",
   "method": "GET",
   "path": "/sales",
   "permission": "pos.sell",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "createReturn",
   "method": "POST",
   "path": "/sales/{saleId}/returns",
   "permission": "sales.return.create",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [
+   "saleId"
+  ],
+  "bodyProps": [
+   "approvalId",
+   "branchId",
+   "lines",
+   "note",
+   "reason",
+   "refundMethod"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "listReturns",
   "method": "GET",
   "path": "/sales/{saleId}/returns",
   "permission": "sales.return.create",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [
+   "saleId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "deliverReceipt",
   "method": "POST",
   "path": "/sales/{saleId}/receipt-deliveries",
   "permission": "pos.sell",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [
+   "saleId"
+  ],
+  "bodyProps": [
+   "channel",
+   "guestPhone",
+   "otpChallengeId",
+   "otpCode"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "listSaleNotifications",
   "method": "GET",
   "path": "/sales/{saleId}/notifications",
   "permission": "pos.sell",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [
+   "saleId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "createPaymentIntent",
   "method": "POST",
   "path": "/payments/intents",
   "permission": "pos.sell",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "OwnShift",
+  "pathParams": [],
+  "bodyProps": [
+   "amount",
+   "gatewayId",
+   "saleId",
+   "sendLinkToCustomer"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "getPaymentIntent",
   "method": "GET",
   "path": "/payments/intents/{intentId}",
   "permission": "pos.sell",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Register",
+  "pathParams": [
+   "intentId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "pspCallback",
   "method": "POST",
   "path": "/callbacks/psp/{gateway}/{intentId}",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [
+   "gateway",
+   "intentId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "listGatewayConfigs",
   "method": "GET",
   "path": "/payment-gateways",
   "permission": "integrations.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "createGatewayConfig",
   "method": "POST",
   "path": "/payment-gateways",
   "permission": "integrations.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": [
+   "credentials",
+   "displayName",
+   "enabled",
+   "gatewayType"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "completeRefundManually",
   "method": "POST",
   "path": "/refunds/{refundId}/manual-completion",
   "permission": "payments.refund",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [
+   "refundId"
+  ],
+  "bodyProps": [
+   "note",
+   "reference"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "importSettlement",
   "method": "POST",
   "path": "/settlements/imports",
   "permission": "accounting.read",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": [
+   "fileObjectKey",
+   "format",
+   "gatewayOrTerminal"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "listAccounts",
   "method": "GET",
   "path": "/accounting/accounts",
   "permission": "accounting.read",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "createAccount",
   "method": "POST",
   "path": "/accounting/accounts",
   "permission": "accounting.journal.post",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": [
+   "accountType",
+   "code",
+   "name",
+   "parentId",
+   "requiresDetail"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "setAccountMappings",
   "method": "PUT",
   "path": "/accounting/account-mappings",
   "permission": "accounting.journal.post",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": [
+   "mappings"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "listJournals",
   "method": "GET",
   "path": "/accounting/journals",
   "permission": "accounting.read",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "createJournalDraft",
   "method": "POST",
   "path": "/accounting/journals",
   "permission": "accounting.journal.post",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": [
+   "description",
+   "effectiveAt",
+   "lines"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "postJournal",
   "method": "POST",
   "path": "/accounting/journals/{journalId}/post",
   "permission": "accounting.journal.post",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [
+   "journalId"
+  ],
+  "bodyProps": [
+   "expectedVersion"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "reverseJournal",
   "method": "POST",
   "path": "/accounting/journals/{journalId}/reverse",
   "permission": "accounting.journal.post",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [
+   "journalId"
+  ],
+  "bodyProps": [
+   "expectedVersion",
+   "reason"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "listPeriods",
   "method": "GET",
   "path": "/accounting/periods",
   "permission": "accounting.read",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "closePeriod",
   "method": "POST",
   "path": "/accounting/periods/{periodId}/close",
   "permission": "accounting.period.close",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [
+   "periodId"
+  ],
+  "bodyProps": [
+   "expectedVersion"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "getTrialBalance",
   "method": "GET",
   "path": "/accounting/reports/trial-balance",
   "permission": "accounting.read",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "getLedger",
   "method": "GET",
   "path": "/accounting/reports/ledger/{accountId}",
   "permission": "accounting.read",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [
+   "accountId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "createCreditAccount",
   "method": "POST",
   "path": "/credit-accounts",
   "permission": "credit.account.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": [
+   "approvalId",
+   "blockOnOverdue",
+   "creditIdentity",
+   "creditLimit",
+   "paymentTermDays",
+   "tenantCustomerId"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "listCreditAccounts",
   "method": "GET",
   "path": "/credit-accounts",
   "permission": "credit.account.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "getCreditAccount",
   "method": "GET",
   "path": "/credit-accounts/{creditAccountId}",
   "permission": "credit.account.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [
+   "creditAccountId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "updateCreditAccount",
   "method": "PATCH",
   "path": "/credit-accounts/{creditAccountId}",
   "permission": "credit.account.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [
+   "creditAccountId"
+  ],
+  "bodyProps": [
+   "approvalId",
+   "creditLimit",
+   "expectedVersion",
+   "paymentTermDays",
+   "reason",
+   "status"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "getStatement",
   "method": "GET",
   "path": "/credit-accounts/{creditAccountId}/statement",
   "permission": "receivables.collect",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [
+   "creditAccountId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "recordCollection",
   "method": "POST",
   "path": "/receivables/collections",
   "permission": "receivables.collect",
-  "allowedWhenReadOnly": true
+  "allowedWhenReadOnly": true,
+  "scope": "Branch",
+  "pathParams": [],
+  "bodyProps": [
+   "allocations",
+   "amount",
+   "creditAccountId",
+   "method",
+   "referenceNo",
+   "shiftId"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "writeOff",
   "method": "POST",
   "path": "/receivables/write-offs",
   "permission": "receivables.writeoff",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": [
+   "approvalId",
+   "chargeIds",
+   "reason"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "getAging",
   "method": "GET",
   "path": "/receivables/aging",
   "permission": "accounting.read",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "identifyCustomer",
   "method": "POST",
   "path": "/customers/identify",
   "permission": "customers.lookup",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [],
+  "bodyProps": [
+   "publicCode",
+   "qrToken"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "startCustomerOtp",
   "method": "POST",
   "path": "/customers/otp-challenges",
   "permission": "customers.lookup",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [],
+  "bodyProps": [
+   "phone",
+   "publicCode",
+   "purpose"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "linkMembership",
   "method": "POST",
   "path": "/customer-memberships/link",
   "permission": "customers.lookup",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [],
+  "bodyProps": [
+   "challengeId",
+   "code",
+   "consents"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "getTenantCustomer",
   "method": "GET",
   "path": "/customers/{tenantCustomerId}",
   "permission": "customers.lookup",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [
+   "tenantCustomerId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "createStoreInvite",
   "method": "POST",
   "path": "/store-invites",
   "permission": "tenant.settings.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [],
+  "bodyProps": [
+   "branchId",
+   "expiresInDays"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "portalStartOtp",
   "method": "POST",
   "path": "/c/auth/otp",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": [
+   "captchaToken",
+   "phone"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "portalVerifyOtp",
   "method": "POST",
   "path": "/c/auth/otp/verify",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": [
+   "challengeId",
+   "code"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "portalGetMe",
   "method": "GET",
   "path": "/c/me",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "portalRotatePublicCode",
   "method": "POST",
   "path": "/c/me/public-code/rotate",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "portalIssueQr",
   "method": "POST",
   "path": "/c/me/qr",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "portalGetInvite",
   "method": "GET",
   "path": "/c/join/{inviteToken}",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [
+   "inviteToken"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "portalJoinStore",
   "method": "POST",
   "path": "/c/join/{inviteToken}",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [
+   "inviteToken"
+  ],
+  "bodyProps": [
+   "consents",
+   "policyVersion"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "portalAcceptJoinRequest",
   "method": "POST",
   "path": "/c/join-requests/{joinRequestId}/accept",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [
+   "joinRequestId"
+  ],
+  "bodyProps": [
+   "consents",
+   "policyVersion"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "portalListMemberships",
   "method": "GET",
   "path": "/c/memberships",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "portalLeaveStore",
   "method": "DELETE",
   "path": "/c/memberships/{membershipId}",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [
+   "membershipId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "portalUpdateConsents",
   "method": "PUT",
   "path": "/c/memberships/{membershipId}/consents",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [
+   "membershipId"
+  ],
+  "bodyProps": [
+   "consents",
+   "policyVersion"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "portalAccessHistory",
   "method": "GET",
   "path": "/c/memberships/{membershipId}/access-history",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [
+   "membershipId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "portalListReceipts",
   "method": "GET",
   "path": "/c/receipts",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "portalGetCredit",
   "method": "GET",
   "path": "/c/memberships/{membershipId}/credit",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [
+   "membershipId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "portalPayBalance",
   "method": "POST",
   "path": "/c/payments/intents",
   "permission": null,
-  "allowedWhenReadOnly": true
+  "allowedWhenReadOnly": true,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": [
+   "amount",
+   "membershipId"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "portalBaleLinkToken",
   "method": "POST",
   "path": "/c/bale/link-token",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "portalExportMyData",
   "method": "POST",
   "path": "/c/data-export",
   "permission": null,
-  "allowedWhenReadOnly": true
+  "allowedWhenReadOnly": true,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "portalRequestDeletion",
   "method": "POST",
   "path": "/c/account/deletion",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "getPublicReceipt",
   "method": "GET",
   "path": "/r/{token}",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [
+   "token"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "baleWebhook",
   "method": "POST",
   "path": "/integrations/bale/webhook/{secretPath}",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [
+   "secretPath"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "getTaxProfile",
   "method": "GET",
   "path": "/tax/profile",
   "permission": "tax.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "updateTaxProfile",
   "method": "PUT",
   "path": "/tax/profile",
   "permission": "tax.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": [
+   "economicCode",
+   "expectedVersion",
+   "issuingUnits",
+   "nationalId",
+   "personType"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "generateSigningKey",
   "method": "POST",
   "path": "/tax/keys",
   "permission": "tax.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": [
+   "branchId"
+  ],
+  "idempotent": true
  },
  {
   "operationId": "getSigningKeyCsr",
   "method": "GET",
   "path": "/tax/keys/{keyId}/csr",
   "permission": "tax.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [
+   "keyId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "activateSigningKey",
   "method": "POST",
   "path": "/tax/keys/{keyId}/activate",
   "permission": "tax.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [
+   "keyId"
+  ],
+  "bodyProps": [
+   "expectedVersion"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "testTaxConnection",
   "method": "POST",
   "path": "/tax/connection-test",
   "permission": "tax.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "listTaxInvoices",
   "method": "GET",
   "path": "/tax/invoices",
   "permission": "tax.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "getTaxInvoice",
   "method": "GET",
   "path": "/tax/invoices/{taxInvoiceId}",
   "permission": "tax.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [
+   "taxInvoiceId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "retryTaxInvoice",
   "method": "POST",
   "path": "/tax/invoices/{taxInvoiceId}/retry",
   "permission": "tax.manage",
-  "allowedWhenReadOnly": true
+  "allowedWhenReadOnly": true,
+  "scope": "Tenant",
+  "pathParams": [
+   "taxInvoiceId"
+  ],
+  "bodyProps": null,
+  "idempotent": true
  },
  {
   "operationId": "getTaxDashboard",
   "method": "GET",
   "path": "/tax/dashboard",
   "permission": "tax.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "getReceiptTemplate",
   "method": "GET",
   "path": "/templates/receipt",
   "permission": "tenant.member",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "updateReceiptTemplate",
   "method": "PUT",
   "path": "/templates/receipt",
   "permission": "templates.receipt.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": [
+   "expectedVersion",
+   "overrides"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "createIntegrationKey",
   "method": "POST",
   "path": "/integrations/keys",
   "permission": "integrations.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": [
+   "expiresAt",
+   "name",
+   "scopes"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "revokeIntegrationKey",
   "method": "DELETE",
   "path": "/integrations/keys/{keyId}",
   "permission": "integrations.manage",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [
+   "keyId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "reportSalesDaily",
   "method": "GET",
   "path": "/reports/sales-daily",
   "permission": "reports.view",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "reportStock",
   "method": "GET",
   "path": "/reports/stock",
   "permission": "reports.view",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "reportReturns",
   "method": "GET",
   "path": "/reports/returns",
   "permission": "reports.view",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "reportGrossProfit",
   "method": "GET",
   "path": "/reports/gross-profit",
   "permission": "reports.view",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "listAudit",
   "method": "GET",
   "path": "/audit",
   "permission": "audit.view",
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "partnerListProducts",
   "method": "GET",
   "path": "/partner/catalog/products",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "partnerListBalances",
   "method": "GET",
   "path": "/partner/inventory/balances",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "platformListTenants",
   "method": "GET",
   "path": "/platform/tenants",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "platformChangeTenantStatus",
   "method": "POST",
   "path": "/platform/tenants/{tenantId}/status",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [
+   "tenantId"
+  ],
+  "bodyProps": [
+   "reason",
+   "status"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "platformRequestSupportAccess",
   "method": "POST",
   "path": "/platform/tenants/{tenantId}/support-access-requests",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [
+   "tenantId"
+  ],
+  "bodyProps": [
+   "durationMinutes",
+   "reason"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "platformListTaxPolicies",
   "method": "GET",
   "path": "/platform/tax-submission-policies",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "platformCreateTaxPolicy",
   "method": "POST",
   "path": "/platform/tax-submission-policies",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": [
+   "appliesTo",
+   "deadlineOffsetDays",
+   "periodType",
+   "reason",
+   "validFrom"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "platformListRetention",
   "method": "GET",
   "path": "/platform/retention-policies",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "platformSetRetention",
   "method": "PUT",
   "path": "/platform/retention-policies",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": [
+   "category",
+   "defaultDays",
+   "minimumDays",
+   "validFrom"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "platformListIndustries",
   "method": "GET",
   "path": "/platform/industry-profiles",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "platformUpdateIndustry",
   "method": "PUT",
   "path": "/platform/industry-profiles/{code}",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [
+   "code"
+  ],
+  "bodyProps": [
+   "expectedVersion",
+   "legalText",
+   "lockedFields",
+   "reason"
+  ],
+  "idempotent": false
  },
  {
   "operationId": "platformListCatalogSuggestions",
   "method": "GET",
   "path": "/platform/catalog/suggestions",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "platformDecideCatalogSuggestion",
   "method": "POST",
   "path": "/platform/catalog/suggestions/{suggestionId}/decision",
   "permission": null,
-  "allowedWhenReadOnly": false
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [
+   "suggestionId"
+  ],
+  "bodyProps": [
+   "decision",
+   "edits",
+   "reason"
+  ],
+  "idempotent": false
  }
 ]

@@ -80,3 +80,33 @@ public sealed class EntitlementExceptionHandler : Microsoft.AspNetCore.Diagnosti
         return true;
     }
 }
+
+/// <summary>
+/// A request body that cannot be bound becomes 400 validation (D09 §10.1). An unknown field is reported by name with
+/// <c>unknown-field</c> (TM-013 mass assignment); anything else unreadable as <c>body: malformed</c>.
+/// </summary>
+public sealed class BadRequestExceptionHandler : Microsoft.AspNetCore.Diagnostics.IExceptionHandler
+{
+    public async ValueTask<bool> TryHandleAsync(HttpContext httpContext, Exception exception, CancellationToken cancellationToken)
+    {
+        if (exception is not BadHttpRequestException bad)
+        {
+            return false;
+        }
+
+        IDictionary<string, string[]> errors = bad.InnerException is System.Text.Json.JsonException json
+            ? ErrorsOf(json)
+            : new Dictionary<string, string[]> { ["body"] = ["malformed"] };
+        await Problems.WriteAsync(httpContext, Problems.Validation(httpContext, errors));
+        return true;
+    }
+
+    /// <summary>An unknown field by name (<c>unknown-field</c>), anything else as <c>body: malformed</c>.</summary>
+    public static IDictionary<string, string[]> ErrorsOf(System.Text.Json.JsonException json)
+    {
+        ArgumentNullException.ThrowIfNull(json);
+        return json is { Path: { Length: > 2 } path } && json.Message.Contains("could not be mapped", StringComparison.Ordinal)
+            ? new Dictionary<string, string[]> { [path.TrimStart('$', '.')] = ["unknown-field"] }
+            : new Dictionary<string, string[]> { ["body"] = ["malformed"] };
+    }
+}

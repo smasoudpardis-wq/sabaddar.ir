@@ -66,7 +66,15 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(TimeProvider.System);
         services.AddProblemDetails(o => o.CustomizeProblemDetails = ProblemDefaults.Customize);
         services.AddExceptionHandler<EntitlementExceptionHandler>();
-        services.ConfigureHttpJsonOptions(o => o.SerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter()));
+        services.ConfigureHttpJsonOptions(o =>
+        {
+            o.SerializerOptions.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+            // TM-013 / SEC-T-013: a body field the command does not define is refused, never silently ignored
+            o.SerializerOptions.UnmappedMemberHandling = System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow;
+        });
+        // binding errors reach BadRequestExceptionHandler (problem+json 400) instead of an empty 400 outside Development
+        services.Configure<Microsoft.AspNetCore.Routing.RouteHandlerOptions>(o => o.ThrowOnBadRequest = true);
+        services.AddExceptionHandler<BadRequestExceptionHandler>();
         return services;
     }
 

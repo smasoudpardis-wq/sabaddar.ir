@@ -107,14 +107,14 @@ public static partial class Idempotency
         {
             command = JsonSerializer.Deserialize<TBody>(body, json);
         }
-        catch (JsonException)
+        catch (JsonException e)
         {
-            command = null;
+            return Problems.Validation(http, BadRequestExceptionHandler.ErrorsOf(e));   // same shape as other endpoints (TM-013)
         }
 
         if (command is null)
         {
-            return Problems.Create(http, StatusCodes.Status400BadRequest, "validation", "Request body is not valid JSON for this operation");
+            return Problems.Validation(http, new Dictionary<string, string[]> { ["body"] = ["malformed"] });
         }
 
         // The hash binds the key to operation + path (route values such as saleId) + exact body (BR-031).
