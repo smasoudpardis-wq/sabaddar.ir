@@ -77,12 +77,19 @@ jobs:
       PGUSER: postgres
       PGPASSWORD: postgres
       RC_TEST_PG: Host=localhost;Port=5432;Database=rc_it;Username=rc_app_test;Password=rc_app_test
+      RC_TEST_S3: http://127.0.0.1:9000
+      RC_TEST_S3_STRICT: "1"            # MinIO checks signatures and expiry (SEC-T-066)
       DOTNET_NOLOGO: "1"
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with: { global-json-file: src/backend/global.json }
+      - name: Start MinIO (US-016 object storage; pinned like src/backend/dev/compose.yaml)
+        run: |
+          docker run -d --name rc-minio -p 9000:9000 -e MINIO_ROOT_USER=minio -e MINIO_ROOT_PASSWORD=minio-dev-password \
+            minio/minio:RELEASE.2024-11-07T00-52-20Z server /data
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:9000/minio/health/live >/dev/null && break; sleep 1; done
       - run: sudo apt-get install -y -qq postgresql-client
       - run: src/backend/scripts/setup-test-db.sh rc_it
       - run: dotnet build src/backend/RetailCloud.sln -c Release
@@ -100,6 +107,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: "22" }
+      - name: Start MinIO (US-016 object storage; pinned like src/backend/dev/compose.yaml)
+        run: |
+          docker run -d --name rc-minio -p 9000:9000 -e MINIO_ROOT_USER=minio -e MINIO_ROOT_PASSWORD=minio-dev-password \
+            minio/minio:RELEASE.2024-11-07T00-52-20Z server /data
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:9000/minio/health/live >/dev/null && break; sleep 1; done
       - name: Start Keycloak with realm-as-code
         run: |
           docker run -d --name rc-kc -p 8080:8080 -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
@@ -135,12 +147,18 @@ jobs:
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
       NEXT_TELEMETRY_DISABLED: "1"
       VALKEY_URL: redis://127.0.0.1:6379
+      RC_E2E_S3: "1"                     # X02: the export downloads from MinIO through its presigned link
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with: { global-json-file: src/backend/global.json }
       - uses: actions/setup-node@v4
         with: { node-version: "22", cache: npm, cache-dependency-path: src/web/apps/merchant-admin/package-lock.json }
+      - name: Start MinIO (US-016 object storage; pinned like src/backend/dev/compose.yaml)
+        run: |
+          docker run -d --name rc-minio -p 9000:9000 -e MINIO_ROOT_USER=minio -e MINIO_ROOT_PASSWORD=minio-dev-password \
+            minio/minio:RELEASE.2024-11-07T00-52-20Z server /data
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:9000/minio/health/live >/dev/null && break; sleep 1; done
       - name: Start Keycloak with realm-as-code
         run: |
           docker run -d --name rc-kc -p 8080:8080 -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \

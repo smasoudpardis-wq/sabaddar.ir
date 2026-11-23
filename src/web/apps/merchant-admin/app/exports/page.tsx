@@ -69,7 +69,7 @@ export default function ExportsPage() {
         <button type="submit" disabled={selected.length === 0} style={{ minHeight: 44 }} data-testid="export-submit">درخواست خروجی</button>
       </form>
       {job && (
-        <p data-testid="export-status" data-status={job.status}>
+        <p data-testid="export-status" data-status={job.status} data-export-id={job.id}>
           وضعیت: {STATUS[job.status]}{job.rowCount !== null ? ` — ${job.rowCount.toLocaleString('fa-IR')} ردیف` : ''}
           {job.status === 'Completed' && <> {' '}<button onClick={() => void download()} style={{ minHeight: 44 }} data-testid="export-download">دریافت فایل</button></>}
         </p>

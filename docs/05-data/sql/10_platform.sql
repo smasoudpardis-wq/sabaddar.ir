@@ -83,7 +83,7 @@ END $$;
 CREATE TRIGGER terminal_no_unrevoke BEFORE UPDATE ON platform.terminal FOR EACH ROW EXECUTE FUNCTION platform.terminal_no_unrevoke();
 
 -- Plans and entitlements (TEN-003, US-014, [DEC D-97]). A plan is global reference data; NULL limit = unlimited.
--- The numbers below are defaults pending the client's commercial decision; operators change them by migration.
+-- The numbers below were approved by the client on 2026-11-23; operators change them by migration.
 CREATE TABLE platform.plan (
   code          text PRIMARY KEY CHECK (code ~ '^[A-Za-z]{2,30}$'),
   name          text NOT NULL,

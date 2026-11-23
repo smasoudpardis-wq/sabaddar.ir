@@ -272,6 +272,16 @@ try {
   await page.getByTestId('export-status').waitFor();
   check('X01', 'the owner requests a full data export and sees its status (TEN-005)',
     ['Queued', 'Running', 'Completed', 'Failed'].includes(await page.getByTestId('export-status').getAttribute('data-status')));
+  // X02 with object storage (RC_E2E_S3=1): the Workers finish the file and the 5-minute link downloads a ZIP
+  if (process.env.RC_E2E_S3 === '1') {
+    await page.locator('[data-testid="export-status"][data-status="Completed"]').waitFor({ timeout: 60000 });
+    const exportId = await page.getByTestId('export-status').getAttribute('data-export-id');
+    const job = await (await page.request.get(`${BFF}/bff/exports/${exportId}`)).json();
+    const file = await page.request.get(job.downloadUrl);
+    const bytes = await file.body();
+    check('X02', 'the finished export downloads from its presigned link as a ZIP (TEN-005, D-49)',
+      file.status() === 200 && bytes[0] === 0x50 && bytes[1] === 0x4b && job.downloadUrl.includes('X-Amz-Expires=300'));
+  }
   await page.goto(BFF);
   await page.getByTestId('logout').waitFor();
 
