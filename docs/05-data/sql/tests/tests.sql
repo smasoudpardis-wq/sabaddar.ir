@@ -545,6 +545,14 @@ SELECT t.expect_error('T138 ended access cannot be reopened', 'RC015',
   $$UPDATE iam.support_access_request SET status = 'Approved', revoked_by = NULL, revoked_at = NULL WHERE id = 'f5000000-0000-0000-0000-000000000001'$$);
 SELECT t.expect_error('T139 the history cannot be deleted', '42501',
   $$DELETE FROM iam.support_access_request WHERE id = 'f5000000-0000-0000-0000-000000000001'$$);
+-- US-111 accounts (ACC-001, AT-100)
+SELECT set_config('app.tenant_id', :A, false);
+UPDATE acc.account SET name = 'صندوق مرکزی' WHERE code = '1101';
+SELECT t.ok('T154 a system account can be renamed', (SELECT name FROM acc.account WHERE code = '1101') = 'صندوق مرکزی');
+SELECT t.expect_error('T155 a system account keeps its code, type and flags', 'RC018',
+  $$UPDATE acc.account SET account_type = 'Expense' WHERE code = '1101'$$);
+SELECT t.expect_error('T156 accounts are never deleted', '42501',
+  $$DELETE FROM acc.account WHERE code = '1101'$$);
 -- US-016 export jobs
 SELECT set_config('app.tenant_id', :A, false);
 SELECT t.expect_error('T129 an export cannot point at another tenant''s storage', '23514',

@@ -46,6 +46,8 @@ public static class Permissions
     public const string CatalogProductManage = "catalog.product.manage";
     public const string ShiftManage = "shift.manage";
     public const string ShiftSupervise = "shift.supervise";
+    public const string AccountingRead = "accounting.read";
+    public const string AccountingJournalPost = "accounting.journal.post";
 
     public static readonly IReadOnlyList<string> All =
     [

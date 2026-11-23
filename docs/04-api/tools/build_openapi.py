@@ -301,6 +301,7 @@ schema("TenderInput", method=("enum", ["Cash", "ExternalCardTerminal", "Customer
           "terminalNo?": "str", "cardLast4?": "str", "approvalId?": "uuid"})
 schema("VersionOnly", expectedVersion="int")
 schema("CancelRequest", expectedVersion="int", reason="str")
+schema("JournalReverse", reason=("desc", "str", "3-200 characters; becomes the reversal's description"))
 schema("FinalizeRequest", expectedVersion="int", expectedTotal="money",
        **{"paymentConfirmationId?": ("desc", "str", "Optional; payments are read server-side (D03 §6.3)"),
           "approvalId?": "uuid"})
@@ -502,6 +503,9 @@ ERROR_CATALOG = {
     "payment-not-confirmed": (409, "A tender is not confirmed yet"),
     "payment-failed": (409, "Gateway verify failed"),
     "period-closed": (409, "Fiscal period closed (DI-042)"),
+    "no-open-period": (422, "No fiscal period covers this date (ACC-001.1)"),
+    "journal-not-draft": (409, "Only a draft entry can be posted (ACC-003)"),
+    "journal-already-reversed": (409, "An entry is reversed once (DI-045)"),
     "sale-finalized": (409, "Finalized sale is immutable (DI-003)"),
     "shift-not-open": (409, "Cashier has no open shift on this register (BR-050)"),
     "shift-already-open": (409, "Register already has an open shift (DI-008)"),
@@ -973,10 +977,13 @@ op("get", "/accounting/journals", "listJournals", "Accounting", "دفتر روز
 op("post", "/accounting/journals", "createJournalDraft", "Accounting", "سند دستی (Draft)", perm="accounting.journal.post",
    scope="Tenant", idem=True, body="JournalCreate", resp="Journal", resp_code="201", reqs=["ACC-006"], audited=True)
 op("post", "/accounting/journals/{journalId}/post", "postJournal", "Accounting", "ثبت قطعی سند (تراز در Commit)",
-   perm="accounting.journal.post", scope="Tenant", idem=True, body="VersionOnly", resp="Journal",
-   reqs=["ACC-002", "ACC-003", "DI-040", "DI-042"], audited=True)
+   perm="accounting.journal.post", scope="Tenant", idem=True, resp="Journal", conflict=True,
+   reqs=["ACC-002", "ACC-006", "DI-040", "DI-042"], audited=True,
+   desc="No body. Idempotent by key; without the key's replay an entry still goes Draft -> Posted only once (409 journal-not-draft). "
+        "Entries carry no version.")
 op("post", "/accounting/journals/{journalId}/reverse", "reverseJournal", "Accounting", "سند معکوس", perm="accounting.journal.post",
-   scope="Tenant", idem=True, body="CancelRequest", resp="Journal", resp_code="201", reqs=["ACC-003", "DI-045"], audited=True)
+   scope="Tenant", idem=True, body="JournalReverse", resp="Journal", resp_code="201", reqs=["ACC-003", "ACC-009", "DI-045"], audited=True,
+   desc="The mirror entry is dated now in the open period (ACC-009); an entry is reversed once (409 journal-already-reversed).")
 op("get", "/accounting/periods", "listPeriods", "Accounting", "دوره‌های مالی", perm="accounting.read", scope="Tenant",
    resp="Period", list_of=True, reqs=["ACC-001.1"])
 op("post", "/accounting/periods/{periodId}/close", "closePeriod", "Accounting", "بستن دوره (بازگشایی در MVP ممکن نیست)",

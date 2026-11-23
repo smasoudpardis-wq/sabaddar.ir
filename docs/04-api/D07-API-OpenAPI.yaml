@@ -4707,6 +4707,8 @@ paths:
       tags:
       - Accounting
       summary: ثبت قطعی سند (تراز در Commit)
+      description: No body. Idempotent by key; without the key's replay an entry still goes Draft -> Posted only once (409
+        journal-not-draft). Entries carry no version.
       security: *id001
       parameters:
       - name: journalId
@@ -4716,12 +4718,6 @@ paths:
           type: string
           format: uuid
       - $ref: '#/components/parameters/IdempotencyKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/VersionOnly'
       responses:
         '200':
           description: Success
@@ -4729,8 +4725,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Journal'
-        '400':
-          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -4739,8 +4733,6 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
-        '422':
-          $ref: '#/components/responses/Unprocessable'
         '429':
           $ref: '#/components/responses/TooManyRequests'
         default:
@@ -4754,7 +4746,7 @@ paths:
       x-idempotent: true
       x-requirements:
       - ACC-002
-      - ACC-003
+      - ACC-006
       - DI-040
       - DI-042
       x-audited: true
@@ -4764,6 +4756,7 @@ paths:
       tags:
       - Accounting
       summary: سند معکوس
+      description: The mirror entry is dated now in the open period (ACC-009); an entry is reversed once (409 journal-already-reversed).
       security: *id001
       parameters:
       - name: journalId
@@ -4778,7 +4771,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CancelRequest'
+              $ref: '#/components/schemas/JournalReverse'
       responses:
         '201':
           description: Success
@@ -4811,6 +4804,7 @@ paths:
       x-idempotent: true
       x-requirements:
       - ACC-003
+      - ACC-009
       - DI-045
       x-audited: true
   /accounting/periods:
@@ -9937,6 +9931,15 @@ components:
           type: string
       required:
       - accountId
+    JournalReverse:
+      type: object
+      additionalProperties: false
+      properties:
+        reason:
+          type: string
+          description: 3-200 characters; becomes the reversal's description
+      required:
+      - reason
     LedgerRow:
       type: object
       additionalProperties: false
@@ -12851,6 +12854,15 @@ x-error-catalog:
   period-closed:
     status: 409
     meaning: Fiscal period closed (DI-042)
+  no-open-period:
+    status: 422
+    meaning: No fiscal period covers this date (ACC-001.1)
+  journal-not-draft:
+    status: 409
+    meaning: Only a draft entry can be posted (ACC-003)
+  journal-already-reversed:
+    status: 409
+    meaning: An entry is reversed once (DI-045)
   sale-finalized:
     status: 409
     meaning: Finalized sale is immutable (DI-003)

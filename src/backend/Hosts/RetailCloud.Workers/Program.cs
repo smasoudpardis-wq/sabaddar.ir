@@ -24,6 +24,8 @@ builder.Services.AddSingleton<RetailCloud.Platform.Infrastructure.ExportRetentio
 builder.Services.AddSingleton<IIntegrationEventConsumer, RetailCloud.IdentityAccess.Infrastructure.OwnerMembershipConsumer>();
 builder.Services.AddSingleton<IIntegrationEventConsumer, RetailCloud.Inventory.Infrastructure.DefaultWarehouseConsumer>();
 builder.Services.AddSingleton<IIntegrationEventConsumer, RetailCloud.Accounting.Infrastructure.TenantAccountingSetupConsumer>();
+builder.Services.AddSingleton<RetailCloud.Accounting.Application.IJournals, RetailCloud.Accounting.Infrastructure.PostgresJournals>();
+builder.Services.AddSingleton<IIntegrationEventConsumer, RetailCloud.Accounting.Infrastructure.ShiftCashVarianceConsumer>();   // ACC-004, UC-06
 builder.Services.AddHostedService<OutboxRelayService>();
 
 await builder.Build().RunAsync();

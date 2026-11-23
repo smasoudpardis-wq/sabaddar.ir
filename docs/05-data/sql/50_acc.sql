@@ -12,9 +12,25 @@ CREATE TABLE acc.account (
   is_postable     boolean NOT NULL DEFAULT true,
   PRIMARY KEY (tenant_id, id),
   UNIQUE (tenant_id, code),
-  FOREIGN KEY (tenant_id, parent_id) REFERENCES acc.account (tenant_id, id)
+  FOREIGN KEY (tenant_id, parent_id) REFERENCES acc.account (tenant_id, id),
+  CHECK (length(btrim(name)) BETWEEN 1 AND 200),
+  CHECK (code ~ '^[0-9]{1,12}$')
 );
 CALL core.enable_tenant_rls('acc.account');
+
+-- ACC-001 / AT-100: system accounts can only be renamed; any account keeps its code and type once it has lines.
+CREATE OR REPLACE FUNCTION acc.guard_account() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  IF OLD.is_system AND (to_jsonb(NEW) - 'name') <> (to_jsonb(OLD) - 'name') THEN
+    RAISE EXCEPTION 'system account % can only be renamed', OLD.code USING ERRCODE = 'RC018';
+  END IF;
+  IF (NEW.code, NEW.account_type) IS DISTINCT FROM (OLD.code, OLD.account_type)
+     AND EXISTS (SELECT 1 FROM acc.journal_line l WHERE l.tenant_id = OLD.tenant_id AND l.account_id = OLD.id) THEN
+    RAISE EXCEPTION 'account % has postings: code and type are fixed', OLD.code USING ERRCODE = 'RC018';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tr_account_guard BEFORE UPDATE ON acc.account FOR EACH ROW EXECUTE FUNCTION acc.guard_account();
 
 -- Account roles (D-30, D-59): posting rules reference roles; each tenant maps a role to one of its accounts.
 CREATE TABLE acc.account_role (
@@ -77,6 +93,7 @@ CREATE TABLE acc.journal_line (
   detail_id   uuid,
   debit       bigint NOT NULL DEFAULT 0,
   credit      bigint NOT NULL DEFAULT 0,
+  description text CHECK (length(description) <= 200),
   PRIMARY KEY (tenant_id, entry_id, line_no),
   FOREIGN KEY (tenant_id, entry_id)   REFERENCES acc.journal_entry (tenant_id, id),
   FOREIGN KEY (tenant_id, account_id) REFERENCES acc.account (tenant_id, id),   -- DI-046
@@ -124,8 +141,10 @@ CREATE CONSTRAINT TRIGGER tr_entry_balanced AFTER INSERT OR UPDATE ON acc.journa
 CREATE CONSTRAINT TRIGGER tr_line_balanced AFTER INSERT OR UPDATE OR DELETE ON acc.journal_line
   DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION acc.check_entry();
 
--- DI-041/042: immutability of Posted entries; posting only into Open periods.
-CREATE OR REPLACE FUNCTION acc.guard_entry() RETURNS trigger LANGUAGE plpgsql AS $$
+-- DI-041/042: immutability of Posted entries; posting only into Open periods. SECURITY DEFINER: the period row is
+-- locked FOR SHARE (so it cannot close mid-posting), which needs UPDATE rights the Workers must not have; the owner is
+-- still bound by FORCE RLS, so only the context tenant's period is visible.
+CREATE OR REPLACE FUNCTION acc.guard_entry() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
 DECLARE v_period_status text; v_span tstzrange;
 BEGIN
   IF TG_OP = 'DELETE' THEN
@@ -173,4 +192,7 @@ GRANT DELETE ON acc.journal_entry, acc.journal_line TO rc_app;   -- drafts only 
 GRANT SELECT ON ALL TABLES IN SCHEMA acc TO rc_worker, rc_reporting;
 -- Tenant provisioning consumer (US-011): default chart, role mapping and fiscal periods.
 GRANT INSERT ON acc.account, acc.account_role, acc.fiscal_period TO rc_worker;
+-- Automatic posting (ACC-004, PostingRule consumers in the Workers): draft -> lines -> Posted, never edits or deletes.
+GRANT INSERT ON acc.journal_entry, acc.journal_line TO rc_worker;
+GRANT UPDATE (status, posted_at) ON acc.journal_entry TO rc_worker;
 RESET ROLE;

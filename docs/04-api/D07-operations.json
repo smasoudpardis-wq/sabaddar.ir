@@ -1401,9 +1401,7 @@
   "pathParams": [
    "journalId"
   ],
-  "bodyProps": [
-   "expectedVersion"
-  ],
+  "bodyProps": null,
   "idempotent": true
  },
  {
@@ -1417,7 +1415,6 @@
    "journalId"
   ],
   "bodyProps": [
-   "expectedVersion",
    "reason"
   ],
   "idempotent": true

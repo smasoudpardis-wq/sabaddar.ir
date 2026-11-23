@@ -96,6 +96,11 @@ public static partial class Idempotency
         }
 
         byte[] body = await ReadBodyAsync(http);
+        if (body.Length == 0)
+        {
+            body = "{}"u8.ToArray();   // a command without a body (postJournal): the key still binds operation + path
+        }
+
         if (body.Length > MaxBodyBytes)
         {
             return Problems.Create(http, StatusCodes.Status413PayloadTooLarge, "validation", "Request body too large");

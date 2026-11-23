@@ -1,6 +1,6 @@
 -- Application SQLSTATE codes (class RC). RC001-RC029 are LOCAL: their meaning depends on the table (e.g. RC012 is
 -- "approval transition" in iam and "posted journal immutable" in acc), so code may only catch them around the one
--- statement it issued (RC015 = support access transition/SoD-05, 15_iam.sql; RC016 = barcode history, 20_merch.sql; RC017 = shift transition/cash movement, 40_sales.sql). RC030+ are GLOBAL, unique across the schema, and may be mapped centrally:
+-- statement it issued (RC015 = support access transition/SoD-05, 15_iam.sql; RC016 = barcode history, 20_merch.sql; RC017 = shift transition/cash movement, 40_sales.sql; RC018 = account guard, 50_acc.sql). RC030+ are GLOBAL, unique across the schema, and may be mapped centrally:
 --   RC030  entitlement-exceeded:<resource>:<cap>  (platform.enforce_entitlement; PostgresUnitOfWork -> 403, TEN-003)
 -- Run as rc_migrator.  Shared helpers used by every module schema.
 SET ROLE rc_migrator;

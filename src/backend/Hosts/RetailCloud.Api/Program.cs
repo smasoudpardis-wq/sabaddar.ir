@@ -12,6 +12,8 @@ using RetailCloud.Merchandising.Application;
 using RetailCloud.Merchandising.Infrastructure;
 using RetailCloud.Sales.Application;
 using RetailCloud.Sales.Infrastructure;
+using RetailCloud.Accounting.Application;
+using RetailCloud.Accounting.Infrastructure;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -26,6 +28,7 @@ builder.Services.AddSingleton<IExportJobs, PostgresExportJobs>();
 builder.Services.AddSingleton<ISupportAccess, PostgresSupportAccess>();
 builder.Services.AddSingleton<IProductCatalog, PostgresProductCatalog>();
 builder.Services.AddSingleton<IShifts, PostgresShifts>();
+builder.Services.AddSingleton<IJournals, PostgresJournals>();
 ObjectStorageOptions? storage = builder.Configuration.GetSection("Storage").Get<ObjectStorageOptions>();
 builder.Services.AddSingleton<IObjectStorage>(storage is { ServiceUrl.Length: > 0 } ? new S3ObjectStorage(storage) : new UnconfiguredObjectStorage());
 builder.Services.AddSingleton<IIdempotencyStore, PostgresIdempotencyStore>();
@@ -411,6 +414,187 @@ v1.MapGet("/audit", async (HttpContext http, RequestContext ctx, IUnitOfWork uow
         });
     })
     .RequirePermission(Permissions.AuditView);
+
+// Accounting (US-111, ACC-001..004/006/009): chart, role mappings, periods and journal entries. Reads need
+// accounting.read; writes accounting.journal.post. Balance, immutability and open periods are enforced by the database too.
+static string Rial(long v) => v.ToString(System.Globalization.CultureInfo.InvariantCulture);
+object JournalJson(JournalView j) => new
+{
+    j.Id, j.Status, j.EffectiveAt, j.Description,
+    source = j.SourceType is null ? null : new { type = j.SourceType, id = j.SourceId, purpose = j.Purpose, ruleVersion = j.RuleVersion },
+    j.ReversalOf, j.ReversedBy,
+    lines = j.Lines.Select(l => new { l.LineNo, l.AccountId, l.AccountCode, l.DetailType, l.DetailId, debit = Rial(l.Debit), credit = Rial(l.Credit), l.Description }),
+};
+
+IResult AccountingProblem(HttpContext http, AccountingOutcome outcome, string? detail) => outcome switch
+{
+    AccountingOutcome.NotFound => Problems.NotFound(http),
+    AccountingOutcome.NoOpenPeriod => Problems.Create(http, StatusCodes.Status422UnprocessableEntity, "no-open-period", "No fiscal period covers this date"),
+    AccountingOutcome.PeriodClosed => Problems.Create(http, StatusCodes.Status409Conflict, "period-closed", "The fiscal period is closed"),
+    AccountingOutcome.NotDraft => Problems.Create(http, StatusCodes.Status409Conflict, "journal-not-draft", "Only a draft entry can be posted"),
+    AccountingOutcome.AlreadyReversed => Problems.Create(http, StatusCodes.Status409Conflict, "journal-already-reversed", "This entry is already reversed"),
+    AccountingOutcome.DuplicateCode => Problems.Create(http, StatusCodes.Status409Conflict, "duplicate-code", "This account code is already used"),
+    AccountingOutcome.UnknownRole => Problems.Validation(http, new Dictionary<string, string[]> { ["mappings"] = [$"unknown role: {detail}"] }),
+    _ => Problems.Validation(http, new Dictionary<string, string[]> { ["lines"] = [detail ?? "unknown account"] }),
+};
+
+v1.MapGet("/accounting/accounts", async (RequestContext ctx, IUnitOfWork uow, IJournals journals, CancellationToken ct) =>
+        Results.Ok(await uow.ExecuteAsync(ctx, (s, c) => journals.AccountsAsync(s, c), ct)))
+    .RequirePermission(Permissions.AccountingRead);
+
+v1.MapPost("/accounting/accounts", async (AccountCreateInput body, RequestContext ctx, IUnitOfWork uow, IJournals journals, HttpContext http, CancellationToken ct) =>
+    {
+        var errors = new Dictionary<string, string[]>();
+        if (body.Code is not { Length: >= 1 and <= 12 } || !body.Code.All(char.IsAsciiDigit)) errors["code"] = ["1-12 digits"];
+        ProductRules.Name(errors, "name", body.Name);
+        if (body.AccountType is not ("Asset" or "Liability" or "Equity" or "Revenue" or "Expense")) errors["accountType"] = ["Asset|Liability|Equity|Revenue|Expense"];
+        if (errors.Count > 0) return Problems.Validation(http, errors);
+        var r = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            var created = await journals.CreateAccountAsync(s, body.Code!, body.Name!, body.AccountType!, body.ParentId, body.RequiresDetail ?? false, c);
+            if (created.Outcome == AccountingOutcome.Done)
+            {
+                await Audit(http, s, ActorOf(ctx, http), new AuditEntry("accounting.account.created", "Account", created.Value!.Id.ToString(),
+                    Details: new { body.Code, body.AccountType }), c);
+            }
+
+            return created;
+        }, ct);
+        return r.Outcome == AccountingOutcome.Done
+            ? Results.Created($"/api/v1/accounting/accounts", r.Value)
+            : r.Outcome == AccountingOutcome.UnknownAccount
+                ? Problems.Validation(http, new Dictionary<string, string[]> { ["parentId"] = [r.Detail!] })
+                : AccountingProblem(http, r.Outcome, r.Detail);
+    })
+    .RequirePermission(Permissions.AccountingJournalPost);
+
+v1.MapPut("/accounting/account-mappings", async (AccountMappingInput body, RequestContext ctx, IUnitOfWork uow, IJournals journals, HttpContext http,
+        CancellationToken ct) =>
+    {
+        if (body.Mappings is not { Length: >= 1 and <= 50 } || body.Mappings.Any(m => m.Role is null || m.AccountId is null)
+            || body.Mappings.Select(m => m.Role).Distinct(StringComparer.Ordinal).Count() != body.Mappings.Length)
+        {
+            return Problems.Validation(http, new Dictionary<string, string[]> { ["mappings"] = ["1-50 distinct {role, accountId}"] });
+        }
+
+        if (body.Mappings.Any(m => m.BranchId is not null))
+        {
+            return Problems.Validation(http, new Dictionary<string, string[]> { ["mappings.branchId"] = ["not-yet-supported"] });   // per-branch mapping later
+        }
+
+        var r = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            var set = await journals.SetMappingsAsync(s, body.Mappings.ToDictionary(m => m.Role!, m => m.AccountId!.Value, StringComparer.Ordinal), c);
+            if (set.Outcome == AccountingOutcome.Done)
+            {
+                await Audit(http, s, ActorOf(ctx, http), new AuditEntry("accounting.mappings.set", "AccountMapping", null,
+                    Details: new { roles = body.Mappings.Select(m => m.Role) }), c);
+            }
+
+            return set;
+        }, ct);
+        return r.Outcome switch
+        {
+            AccountingOutcome.Done => Results.NoContent(),
+            AccountingOutcome.UnknownAccount => Problems.Validation(http, new Dictionary<string, string[]> { ["mappings"] = [$"{r.Detail}: not a postable account of this store"] }),
+            _ => AccountingProblem(http, r.Outcome, r.Detail),
+        };
+    })
+    .RequirePermission(Permissions.AccountingJournalPost);
+
+v1.MapGet("/accounting/periods", async (RequestContext ctx, IUnitOfWork uow, IJournals journals, CancellationToken ct) =>
+        Results.Ok((await uow.ExecuteAsync(ctx, (s, c) => journals.PeriodsAsync(s, c), ct))
+            .Select(p => new { p.Id, p.FiscalYear, p.PeriodNo, start = p.Start, end = p.End, p.Status })))
+    .RequirePermission(Permissions.AccountingRead);
+
+v1.MapGet("/accounting/journals", async (RequestContext ctx, IUnitOfWork uow, IJournals journals, HttpContext http, DateTimeOffset? from, DateTimeOffset? to,
+        string? sourceType, string? cursor, int? limit, CancellationToken ct) =>
+    {
+        int size = limit ?? 50;
+        (DateTimeOffset, Guid)? before = null;
+        if (cursor is not null)
+        {
+            string[] parts = cursor.Split('_');
+            if (parts.Length != 2 || !long.TryParse(parts[0], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out long ticks)
+                || !Guid.TryParse(parts[1], out Guid lastId))
+            {
+                return Problems.Validation(http, new Dictionary<string, string[]> { ["cursor"] = ["Invalid cursor"] });
+            }
+
+            before = (new DateTimeOffset(ticks, TimeSpan.Zero), lastId);
+        }
+
+        if (size is < 1 or > 200 || sourceType is { Length: > 50 } || (from is not null && to is not null && from >= to))
+        {
+            return Problems.Validation(http, new Dictionary<string, string[]> { ["query"] = ["limit 1-200, from < to"] });
+        }
+
+        IReadOnlyList<JournalView> rows = await uow.ExecuteAsync(ctx, (s, c) => journals.ListAsync(s, from, to, sourceType, before, size + 1, c), ct);
+        bool more = rows.Count > size;
+        JournalView[] page = [.. rows.Take(size)];
+        string? next = more ? $"{page[^1].EffectiveAt.UtcTicks}_{page[^1].Id}" : null;
+        return Results.Ok(new { items = page.Select(JournalJson), page = new { nextCursor = next, hasMore = more } });
+    })
+    .RequirePermission(Permissions.AccountingRead);
+
+v1.MapIdempotentPost<JournalCreateInput>("/accounting/journals", "accounting.create-journal", async (body, scope, http, ct) =>
+    {
+        RequestContext ctx = http.RequestServices.GetRequiredService<RequestContext>();
+        var errors = new Dictionary<string, string[]>();
+        if (body.EffectiveAt is null) errors["effectiveAt"] = ["required"];
+        if (body.Description is not { Length: >= 1 and <= 500 }) errors["description"] = ["1-500 characters"];
+        var lines = new List<JournalLineSpec>();
+        for (int i = 0; i < (body.Lines?.Length ?? 0); i++)
+        {
+            JournalLineInput l = body.Lines![i];
+            long debit = 0, credit = 0;
+            if (l.AccountId is null || (l.Debit is not null && !TryMoney(l.Debit, true, out debit)) || (l.Credit is not null && !TryMoney(l.Credit, true, out credit))
+                || l.DetailType is not (null or "Customer" or "Supplier" or "Branch") || l.Description is { Length: > 200 })
+            {
+                errors[$"lines[{i}]"] = ["accountId, and a positive debit or credit (rial string)"];
+                continue;
+            }
+
+            lines.Add(new JournalLineSpec(l.AccountId.Value, debit, credit, l.DetailType, l.DetailId, l.Description));
+        }
+
+        if (errors.Count == 0 && JournalRules.Problem(lines) is { } problem) errors["lines"] = [problem];   // ACC-002 domain check
+        if (errors.Count > 0) return CommandResult.Fail(Problems.Validation(http, errors));
+        var r = await http.RequestServices.GetRequiredService<IJournals>().CreateDraftAsync(scope, body.EffectiveAt!.Value, body.Description, lines, ct);
+        if (r.Outcome != AccountingOutcome.Done) return CommandResult.Fail(AccountingProblem(http, r.Outcome, r.Detail));
+        await Audit(http, scope, ActorOf(ctx, http), new AuditEntry("accounting.journal.drafted", "Journal", r.Value!.Id.ToString(),
+            Details: new { lines = lines.Count, total = lines.Sum(l => l.Debit) }), ct);
+        return CommandResult.Created(JournalJson(r.Value));
+    })
+    .RequirePermission(Permissions.AccountingJournalPost);
+
+v1.MapIdempotentPost<JournalPostInput>("/accounting/journals/{journalId:guid}/post", "accounting.post-journal", async (_, scope, http, ct) =>
+    {
+        RequestContext ctx = http.RequestServices.GetRequiredService<RequestContext>();
+        Guid journalId = Guid.Parse((string)http.GetRouteValue("journalId")!, System.Globalization.CultureInfo.InvariantCulture);
+        var r = await http.RequestServices.GetRequiredService<IJournals>().PostAsync(scope, journalId, ct);
+        if (r.Outcome != AccountingOutcome.Done) return CommandResult.Fail(AccountingProblem(http, r.Outcome, r.Detail));
+        await Audit(http, scope, ActorOf(ctx, http), new AuditEntry("accounting.journal.posted", "Journal", journalId.ToString()), ct);
+        return CommandResult.Ok(JournalJson(r.Value!));
+    })
+    .RequirePermission(Permissions.AccountingJournalPost);
+
+v1.MapIdempotentPost<JournalReverseInput>("/accounting/journals/{journalId:guid}/reverse", "accounting.reverse-journal", async (body, scope, http, ct) =>
+    {
+        RequestContext ctx = http.RequestServices.GetRequiredService<RequestContext>();
+        Guid journalId = Guid.Parse((string)http.GetRouteValue("journalId")!, System.Globalization.CultureInfo.InvariantCulture);
+        if (body.Reason is not { Length: >= 3 and <= 200 })
+        {
+            return CommandResult.Fail(Problems.Validation(http, new Dictionary<string, string[]> { ["reason"] = ["3-200 characters"] }));
+        }
+
+        var r = await http.RequestServices.GetRequiredService<IJournals>().ReverseAsync(scope, journalId, body.Reason, ct);
+        if (r.Outcome != AccountingOutcome.Done) return CommandResult.Fail(AccountingProblem(http, r.Outcome, r.Detail));
+        await Audit(http, scope, ActorOf(ctx, http), new AuditEntry("accounting.journal.reversed", "Journal", journalId.ToString(), body.Reason,
+            new { reversal = r.Value!.Id }), ct);
+        return CommandResult.Created(JournalJson(r.Value));
+    })
+    .RequirePermission(Permissions.AccountingJournalPost);
 
 // Shifts (US-081, UC-06, SAL-009): open, cash in/out, blind close, variance approval. POS operations run on a registered
 // terminal of the register's branch (ABAC-04); a shift is visible to its cashier and to supervisors of its branch only.
@@ -1288,6 +1472,13 @@ v1.MapDelete("/users/{userId:guid}/role-assignments/{assignmentId:guid}", async 
 await app.RunAsync();
 
 internal sealed record SelectTenant(Guid TenantId);
+internal sealed record AccountCreateInput(string? Code, string? Name, string? AccountType, Guid? ParentId, bool? RequiresDetail);
+internal sealed record AccountMappingItem(string? Role, Guid? AccountId, Guid? BranchId);
+internal sealed record AccountMappingInput(AccountMappingItem[]? Mappings);
+internal sealed record JournalLineInput(Guid? AccountId, string? DetailType, Guid? DetailId, string? Debit, string? Credit, string? Description);
+internal sealed record JournalCreateInput(DateTimeOffset? EffectiveAt, string? Description, JournalLineInput[]? Lines);
+internal sealed record JournalReverseInput(string? Reason);
+internal sealed record JournalPostInput;
 internal sealed record ShiftOpenInput(Guid? RegisterId, string? OpeningCash);
 internal sealed record CashMovementInput(string? Direction, string? Amount, string? Reason);
 internal sealed record DenominationInput(string? Value, int? Count);
