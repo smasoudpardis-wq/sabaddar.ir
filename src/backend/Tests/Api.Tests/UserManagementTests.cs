@@ -147,6 +147,71 @@ public sealed class UserManagementTests : IClassFixture<ApiFactory>, IAsyncLifet
         Assert.Equal(await Code(expired), await Code(unknown));
     }
 
+    private async Task<(Guid Id, string Sub)> MemberAsync(string role, Guid branch)
+    {
+        Guid id = Guid.CreateVersion7();
+        string sub = "um-" + role.ToLowerInvariant() + "-" + Guid.NewGuid();
+        await using var ds = NpgsqlDataSource.Create(Environment.GetEnvironmentVariable("RC_TEST_PG")!);
+        var uow = new PostgresUnitOfWork(ds);
+        await uow.ExecuteWithoutTenantAsync(null, (s, ct) =>
+            Exec(s, ct, "INSERT INTO iam.merchant_user (id, idp_issuer, idp_subject, display_name) VALUES ($1, $2, $3, 'همکار')", id, ApiFactory.Issuer, sub));
+        await uow.ExecuteAsync(new FixedTenantContext(new TenantId(_tenant)), async (s, ct) =>
+        {
+            await Exec(s, ct, "INSERT INTO iam.tenant_membership (tenant_id, user_id) VALUES ($1, $2)", _tenant, id);
+            return await Exec(s, ct, "INSERT INTO iam.role_assignment (tenant_id, id, user_id, role, scope_type, scope_id) VALUES ($1, $2, $3, $4, 'Branch', $5)",
+                _tenant, Guid.CreateVersion7(), id, role, branch);
+        });
+        return (id, sub);
+    }
+
+    private static async Task<JsonElement> Json(HttpResponseMessage r)
+    {
+        using JsonDocument d = JsonDocument.Parse(await r.Content.ReadAsStringAsync());
+        return d.RootElement.Clone();
+    }
+
+    [DbFact]
+    public async Task AT018_disabling_a_member_cuts_their_access_to_the_store_at_once_and_is_reversible()
+    {
+        var (cashier, cashierSub) = await MemberAsync("Cashier", _b1);
+        var (other, _) = await MemberAsync("Cashier", _b2);
+        HttpClient manager = As(_managerSub, acr: "pwd"), owner = As(_ownerSub), victim = As(cashierSub, acr: "pwd");
+        Assert.Equal(HttpStatusCode.OK, (await victim.GetAsync("/api/v1/products")).StatusCode);
+
+        HttpResponseMessage disabled = await manager.PatchAsJsonAsync($"/api/v1/users/{cashier}", new { expectedVersion = 1, status = "Disabled" });
+        Assert.Equal(HttpStatusCode.OK, disabled.StatusCode);
+        JsonElement view = await Json(disabled);
+        Assert.Equal(("Disabled", 2), (view.GetProperty("status").GetString(), view.GetProperty("version").GetInt32()));
+        Assert.Equal(HttpStatusCode.NotFound, (await victim.GetAsync("/api/v1/products")).StatusCode);   // IAM-009: the very next request
+        Assert.Equal(0, (await Json(await As(cashierSub, tenant: false, acr: "pwd").GetAsync("/api/v1/me"))).GetProperty("memberships").GetArrayLength());
+
+        Assert.Equal("version-conflict", await Code(await manager.PatchAsJsonAsync($"/api/v1/users/{cashier}", new { expectedVersion = 1, status = "Active" })));
+        Assert.Equal(HttpStatusCode.NotFound, (await manager.PatchAsJsonAsync($"/api/v1/users/{other}", new { expectedVersion = 1, status = "Disabled" })).StatusCode);   // other branch
+        Assert.Equal(HttpStatusCode.NotFound, (await manager.PatchAsJsonAsync($"/api/v1/users/{_ownerId}", new { expectedVersion = 1, status = "Disabled" })).StatusCode);
+        Assert.Equal("cannot-disable-self", await Code(await owner.PatchAsJsonAsync($"/api/v1/users/{_ownerId}", new { expectedVersion = 1, status = "Disabled" })));
+        Assert.Equal(HttpStatusCode.BadRequest, (await owner.PatchAsJsonAsync($"/api/v1/users/{cashier}", new { expectedVersion = 2, status = "Active", displayName = "x" })).StatusCode);
+
+        JsonElement listed = (await Json(await owner.GetAsync("/api/v1/users"))).EnumerateArray().Single(u => u.GetProperty("id").GetGuid() == cashier);
+        Assert.Equal("Disabled", listed.GetProperty("status").GetString());   // D07 status, not the database's Suspended
+
+        HttpResponseMessage enabled = await manager.PatchAsJsonAsync($"/api/v1/users/{cashier}", new { expectedVersion = 2, status = "Active" });
+        Assert.Equal(("Active", 3), ((await Json(enabled)).GetProperty("status").GetString(), (await Json(enabled)).GetProperty("version").GetInt32()));
+        Assert.Equal(HttpStatusCode.OK, (await victim.GetAsync("/api/v1/products")).StatusCode);   // the roles were kept
+    }
+
+    [DbFact]
+    public async Task A_branch_manager_cannot_disable_a_user_holding_a_role_beyond_their_power()
+    {
+        var (accountantLike, _) = await MemberAsync("Cashier", _b1);
+        await using var ds = NpgsqlDataSource.Create(Environment.GetEnvironmentVariable("RC_TEST_PG")!);
+        await new PostgresUnitOfWork(ds).ExecuteAsync(new FixedTenantContext(new TenantId(_tenant)), (s, ct) =>
+            Exec(s, ct, "INSERT INTO iam.role_assignment (tenant_id, id, user_id, role, scope_type) VALUES ($1, $2, $3, 'Auditor', 'Tenant')",
+                _tenant, Guid.CreateVersion7(), accountantLike));
+        // visible through the branch role, but the tenant-wide Auditor role is outside the manager's power
+        Assert.Equal("forbidden", await Code(await As(_managerSub, acr: "pwd").PatchAsJsonAsync($"/api/v1/users/{accountantLike}",
+            new { expectedVersion = 1, status = "Disabled" })));
+    }
+
     [DbFact]
     public async Task A_branch_manager_administers_only_their_branch_and_cannot_escalate()
     {

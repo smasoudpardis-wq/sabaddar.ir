@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import * as client from 'openid-client';
 import { config, cookieNames } from '@/lib/config';
 import { oidc } from '@/lib/oidc';
-import { createSession, destroySession, saveSession, takePending } from '@/lib/session';
+import { createSession, destroySession, deviceLabel, saveSession, takePending } from '@/lib/session';
 import { callApi, currentSession, problem } from '@/lib/http';
 
 export const dynamic = 'force-dynamic';
@@ -25,7 +25,8 @@ export async function GET(req: NextRequest) {
   } catch {
     return problem(400, 'login-failed', 'Login could not be completed');
   }
-  const acr = tokens.claims()?.acr as string | undefined;
+  const claims = tokens.claims();
+  const acr = claims?.acr as string | undefined;
   if (pending.acr === 'mfa' && acr !== 'mfa') return problem(400, 'mfa-not-completed', 'Second factor was not completed');
 
   // TM-006: a new session id after every authentication (login and step-up); the old session is destroyed.
@@ -38,6 +39,8 @@ export async function GET(req: NextRequest) {
     idToken: tokens.id_token,
     acr,
     activeTenantId: previous?.activeTenantId,
+    subject: claims ? `${claims.iss}\n${claims.sub}` : undefined,     // US-024 session index
+    device: (req.cookies.get(names.device)?.value ? 'صندوق · ' : '') + deviceLabel(req.headers.get('user-agent')),
   });
 
   // Step-up started from a tenant selection: select it now; the API re-checks membership and MFA (BR-001, IAM-003).

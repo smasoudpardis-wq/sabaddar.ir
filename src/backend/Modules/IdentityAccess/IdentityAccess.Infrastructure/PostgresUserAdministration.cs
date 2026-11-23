@@ -17,30 +17,64 @@ public sealed class PostgresUserAdministration(IUnitOfWork unitOfWork, TimeProvi
 
     public static byte[] HashToken(string token) => SHA256.HashData(Encoding.UTF8.GetBytes(token));
 
-    public async Task<IReadOnlyList<UserView>> ListAsync(IUnitOfWorkScope scope, CancellationToken cancellationToken)
+    public Task<IReadOnlyList<UserView>> ListAsync(IUnitOfWorkScope scope, CancellationToken cancellationToken) =>
+        LoadAsync((PostgresUnitOfWorkScope)scope, null, cancellationToken);
+
+    public async Task<UserView?> GetAsync(IUnitOfWorkScope scope, UserId user, CancellationToken cancellationToken) =>
+        (await LoadAsync((PostgresUnitOfWorkScope)scope, user.Value, cancellationToken)).SingleOrDefault();
+
+    public async Task<UserStatusOutcome> SetStatusAsync(IUnitOfWorkScope scope, UserId user, int expectedVersion, bool active,
+        CancellationToken cancellationToken)
     {
-        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
-            "SELECT u.id, u.display_name, m.status, a.id, a.role, a.scope_type, a.scope_id " +
+        var s = (PostgresUnitOfWorkScope)scope;
+        await s.Transaction.SaveAsync("status", cancellationToken);
+        try
+        {
+            await using NpgsqlCommand cmd = s.Command(
+                "UPDATE iam.tenant_membership SET status = $3, version = version + 1 WHERE user_id = $1 AND version = $2 AND status <> 'Removed'");
+            cmd.Parameters.Add(new NpgsqlParameter { Value = user.Value });
+            cmd.Parameters.Add(new NpgsqlParameter { Value = expectedVersion });
+            cmd.Parameters.Add(new NpgsqlParameter { Value = active ? "Active" : "Suspended" });
+            if (await cmd.ExecuteNonQueryAsync(cancellationToken) == 1)
+            {
+                return UserStatusOutcome.Done;
+            }
+        }
+        catch (PostgresException e) when (e.SqlState == "RC010")
+        {
+            await s.Transaction.RollbackAsync("status", cancellationToken);
+            return UserStatusOutcome.LastOwner;
+        }
+
+        return await GetAsync(scope, user, cancellationToken) is null ? UserStatusOutcome.NotFound : UserStatusOutcome.VersionConflict;
+    }
+
+    private static async Task<IReadOnlyList<UserView>> LoadAsync(PostgresUnitOfWorkScope s, Guid? only, CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand cmd = s.Command(
+            "SELECT u.id, u.display_name, m.status, m.version, a.id, a.role, a.scope_type, a.scope_id " +
             "FROM iam.tenant_membership m JOIN iam.merchant_user u ON u.id = m.user_id " +
             "LEFT JOIN iam.role_assignment a ON a.tenant_id = m.tenant_id AND a.user_id = m.user_id " +
-            "WHERE m.status <> 'Removed' ORDER BY u.display_name, u.id, a.role");
+            "WHERE m.status <> 'Removed' AND ($1::uuid IS NULL OR m.user_id = $1) ORDER BY u.display_name, u.id, a.role");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)only ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Uuid });
         await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(cancellationToken);
-        var users = new List<(Guid Id, string Name, string Status, List<AssignmentView> A)>();
+        var users = new List<(Guid Id, string Name, string Status, int Version, List<AssignmentView> A)>();
         while (await r.ReadAsync(cancellationToken))
         {
             Guid id = r.GetGuid(0);
             if (users.Count == 0 || users[^1].Id != id)
             {
-                users.Add((id, r.GetString(1), r.GetString(2), []));
+                // D07 User.status: the database's Suspended is the API's Disabled
+                users.Add((id, r.GetString(1), r.GetString(2) == "Suspended" ? "Disabled" : r.GetString(2), r.GetInt32(3), []));
             }
 
-            if (!r.IsDBNull(3))
+            if (!r.IsDBNull(4))
             {
-                users[^1].A.Add(View(r.GetGuid(3), r.GetString(4), r.GetString(5), r.IsDBNull(6) ? null : r.GetGuid(6)));
+                users[^1].A.Add(View(r.GetGuid(4), r.GetString(5), r.GetString(6), r.IsDBNull(7) ? null : r.GetGuid(7)));
             }
         }
 
-        return [.. users.Select(u => new UserView(u.Id, u.Name, u.Status, u.A, null))];
+        return [.. users.Select(u => new UserView(u.Id, u.Name, u.Status, u.A, null, u.Version))];
     }
 
     public async Task<InvitationView> InviteAsync(IUnitOfWorkScope scope, UserId invitedBy, string displayName, string? email, string? mobile,

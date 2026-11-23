@@ -39,6 +39,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
         ["addRoleAssignment"] = f => new { roleId = RoleCatalog.IdOf("Cashier"), scopeType = "Branch", scopeId = f.Branch },
         ["decideSupportAccess"] = _ => new { decision = "Reject" },
         ["updateProduct"] = _ => new { expectedVersion = 1, name = "تغییر" },
+        ["updateUser"] = _ => new { expectedVersion = 1, status = "Disabled" },
         ["addVariant"] = _ => new { sku = "GEN-" + Guid.NewGuid().ToString("N")[..8], axisValues = new { size = Guid.NewGuid().ToString("N")[..8] } },
         ["addBarcode"] = _ => new { code = "96385074" },
         ["recordCashMovement"] = _ => new { direction = "In", amount = "1000", reason = "آزمون" },

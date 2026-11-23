@@ -1434,6 +1434,98 @@ v1.MapPost("/users/{userId:guid}/role-assignments", async (Guid userId, RoleAssi
     })
     .RequirePermission(Permissions.UsersManage);
 
+// updateUser (US-024, IAM-009): enable or disable a member of the active tenant. The caller must see the user (a role of
+// theirs inside the caller's reach, as listUsers) and must hold power over every role the user has (nobody disables
+// someone they could not have appointed). Disabling only reduces access, so it stays possible on a read-only tenant;
+// re-enabling does not. The next request of the user loses the tenant (membership cache dropped here; ≤ 30 s elsewhere).
+v1.MapPatch("/users/{userId:guid}", async (Guid userId, UserUpdateInput body, RequestContext ctx, IUnitOfWork uow, IUserAdministration users,
+        IEnumerable<IScopeLookup> lookups, ITenantReadOnlyQuery readOnly, IMemoryCache cache, HttpContext http, CancellationToken ct) =>
+    {
+        var errors = new Dictionary<string, string[]>();
+        if (body.ExpectedVersion is not >= 1)
+        {
+            errors["expectedVersion"] = ["required"];
+        }
+
+        if (body.Status is not ("Active" or "Disabled"))
+        {
+            errors["status"] = ["one of: Active, Disabled"];
+        }
+
+        if (body.DisplayName is not null)
+        {
+            errors["displayName"] = ["not-yet-supported"];   // the name belongs to the person, across all their stores
+        }
+
+        if (errors.Count > 0)
+        {
+            return Problems.Validation(http, errors);
+        }
+
+        bool enable = body.Status == "Active";
+        if (!enable && userId == ctx.User!.Value.Value)
+        {
+            return Problems.Create(http, StatusCodes.Status409Conflict, "cannot-disable-self", "You cannot disable your own access");
+        }
+
+        if (enable && await readOnly.ReasonAsync(ctx.ActiveTenant!.Value, ct) is { } reason)
+        {
+            return Problems.TenantReadOnly(http, reason);
+        }
+
+        IResult result = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            UserView? target = await users.GetAsync(s, new UserId(userId), c);
+            if (target is null)
+            {
+                return Problems.NotFound(http);
+            }
+
+            IReadOnlyList<RoleGrant> mine = ctx.ActiveMembership!.Assignments;
+            var scopes = new List<(string Role, ScopeRef? Scope)>();
+            foreach (AssignmentView a in target.RoleAssignments)
+            {
+                scopes.Add((a.RoleName, await ResolveScope(s, lookups, Enum.Parse<ScopeType>(a.ScopeType), a.ScopeId, c)));
+            }
+
+            bool visible = scopes.Count == 0
+                ? AccessPolicy.Allows(mine, Permissions.UsersManage, ScopeRef.Tenant)
+                : scopes.Any(x => x.Scope is not null && AccessPolicy.Allows(mine, Permissions.UsersManage, x.Scope));
+            if (!visible)
+            {
+                return Problems.NotFound(http);   // BR-003: someone outside the caller's reach looks like no one
+            }
+
+            if (scopes.Any(x => x.Scope is null || !AccessPolicy.CanAssign(mine, x.Role, x.Scope)))
+            {
+                return Forbidden(http);
+            }
+
+            if ((target.Status == "Active") == enable)
+            {
+                return Results.Ok(target);   // already so: nothing to change or audit
+            }
+
+            switch (await users.SetStatusAsync(s, new UserId(userId), body.ExpectedVersion!.Value, enable, c))
+            {
+                case UserStatusOutcome.NotFound:
+                    return Problems.NotFound(http);
+                case UserStatusOutcome.VersionConflict:
+                    return Problems.Create(http, StatusCodes.Status409Conflict, "version-conflict", "The user changed; reload and retry");
+                case UserStatusOutcome.LastOwner:
+                    return Problems.Create(http, StatusCodes.Status409Conflict, "last-owner", "A store must keep at least one active owner");
+            }
+
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry(enable ? "iam.user.enabled" : "iam.user.disabled", "User", userId.ToString(),
+                Details: new { roles = target.RoleAssignments.Select(a => a.RoleName).Distinct().Order() }), c);
+            return Results.Ok(await users.GetAsync(s, new UserId(userId), c));
+        }, ct);
+        RequestContextMiddleware.ForgetMemberships(cache, new UserId(userId));
+        return result;
+    })
+    .RequirePermission(Permissions.UsersManage)
+    .AllowWhenReadOnly();
+
 v1.MapDelete("/users/{userId:guid}/role-assignments/{assignmentId:guid}", async (Guid userId, Guid assignmentId, RequestContext ctx,
         IUnitOfWork uow, IUserAdministration users, IEnumerable<IScopeLookup> lookups, IMemoryCache cache, HttpContext http, CancellationToken ct) =>
     {
@@ -1472,6 +1564,7 @@ v1.MapDelete("/users/{userId:guid}/role-assignments/{assignmentId:guid}", async 
 await app.RunAsync();
 
 internal sealed record SelectTenant(Guid TenantId);
+internal sealed record UserUpdateInput(int? ExpectedVersion, string? Status, string? DisplayName);
 internal sealed record AccountCreateInput(string? Code, string? Name, string? AccountType, Guid? ParentId, bool? RequiresDetail);
 internal sealed record AccountMappingItem(string? Role, Guid? AccountId, Guid? BranchId);
 internal sealed record AccountMappingInput(AccountMappingItem[]? Mappings);

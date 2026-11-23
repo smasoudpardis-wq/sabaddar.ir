@@ -246,7 +246,7 @@
   "method": "PATCH",
   "path": "/users/{userId}",
   "permission": "iam.users.manage",
-  "allowedWhenReadOnly": false,
+  "allowedWhenReadOnly": true,
   "scope": "Branch",
   "pathParams": [
    "userId"

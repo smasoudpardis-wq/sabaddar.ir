@@ -19,6 +19,7 @@ CREATE TABLE iam.tenant_membership (
   user_id   uuid NOT NULL REFERENCES iam.merchant_user(id),
   status    text NOT NULL DEFAULT 'Active' CHECK (status IN ('Active','Suspended','Removed')),
   joined_at timestamptz NOT NULL DEFAULT now(),
+  version   int NOT NULL DEFAULT 1 CHECK (version >= 1),   -- updateUser optimistic concurrency (US-024)
   PRIMARY KEY (tenant_id, user_id)
 );
 CREATE INDEX ix_membership_user ON iam.tenant_membership (user_id) WHERE status = 'Active';
@@ -54,7 +55,8 @@ CREATE OR REPLACE FUNCTION iam.keep_last_owner() RETURNS trigger LANGUAGE plpgsq
 BEGIN
   IF OLD.role = 'TenantOwner' THEN
     PERFORM 1 FROM iam.role_assignment WHERE tenant_id = OLD.tenant_id AND role = 'TenantOwner' FOR UPDATE;
-    IF (SELECT count(*) FROM iam.role_assignment WHERE tenant_id = OLD.tenant_id AND role = 'TenantOwner' AND id <> OLD.id) = 0 THEN
+    IF (SELECT count(*) FROM iam.role_assignment a JOIN iam.tenant_membership m ON m.tenant_id = a.tenant_id AND m.user_id = a.user_id
+        WHERE a.tenant_id = OLD.tenant_id AND a.role = 'TenantOwner' AND a.id <> OLD.id AND m.status = 'Active') = 0 THEN
       RAISE EXCEPTION 'the last TenantOwner of a tenant cannot be removed' USING ERRCODE = 'RC010';
     END IF;
   END IF;
@@ -62,6 +64,23 @@ BEGIN
 END $$;
 CREATE TRIGGER keep_last_owner BEFORE DELETE ON iam.role_assignment FOR EACH ROW EXECUTE FUNCTION iam.keep_last_owner();
 CREATE TRIGGER no_role_update BEFORE UPDATE ON iam.role_assignment FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
+
+-- US-024 (IAM-009): suspending or removing a member may not leave the tenant without an active TenantOwner. The owner
+-- rows are locked first (as keep_last_owner does), so two owners disabling each other concurrently cannot both succeed.
+CREATE OR REPLACE FUNCTION iam.keep_active_owner() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF OLD.status = 'Active' AND NEW.status <> 'Active' THEN
+    PERFORM 1 FROM iam.role_assignment WHERE tenant_id = OLD.tenant_id AND role = 'TenantOwner' FOR UPDATE;
+    IF EXISTS (SELECT 1 FROM iam.role_assignment WHERE tenant_id = OLD.tenant_id AND user_id = OLD.user_id AND role = 'TenantOwner')
+       AND NOT EXISTS (SELECT 1 FROM iam.role_assignment a JOIN iam.tenant_membership m ON m.tenant_id = a.tenant_id AND m.user_id = a.user_id
+                       WHERE a.tenant_id = OLD.tenant_id AND a.role = 'TenantOwner' AND a.user_id <> OLD.user_id AND m.status = 'Active') THEN
+      RAISE EXCEPTION 'the last active TenantOwner of a tenant cannot be suspended' USING ERRCODE = 'RC010';
+    END IF;
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER keep_active_owner BEFORE UPDATE OF status ON iam.tenant_membership
+  FOR EACH ROW EXECUTE FUNCTION iam.keep_active_owner();
 
 -- Invitations (IAM-001, US-025): a single-use secret link; only its SHA-256 is stored. Delivery by SMS/e-mail comes with
 -- Notifications (X-03); until then the inviter shares the link. assignments = [{role, scopeType, scopeId}].

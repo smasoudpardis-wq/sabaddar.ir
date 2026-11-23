@@ -858,6 +858,9 @@ paths:
       tags:
       - Access
       summary: فعال/غیرفعال‌سازی کاربر (ابطال Session در ≤ ۶۰s)
+      description: Disabled suspends the membership in the active tenant only (role assignments are kept); the user's next
+        request to this tenant is refused within 60 s. The caller must hold every role the user has at its scope; nobody disables
+        themselves; the last active owner stays. displayName is not yet editable here (it belongs to the person).
       security: *id001
       parameters:
       - name: userId
@@ -905,6 +908,7 @@ paths:
       x-requirements:
       - IAM-009
       x-audited: true
+      x-allowed-when-read-only: true
   /users/{userId}/role-assignments:
     post:
       operationId: addRoleAssignment
@@ -12652,12 +12656,16 @@ components:
           - string
           - 'null'
           format: date-time
+        version:
+          type: integer
+          format: int32
       required:
       - id
       - displayName
       - status
       - roleAssignments
       - lastLoginAt
+      - version
     UserUpdate:
       type: object
       additionalProperties: false
@@ -12970,7 +12978,10 @@ x-error-catalog:
     meaning: The user already has this role at this scope
   last-owner:
     status: 409
-    meaning: A tenant must keep at least one TenantOwner
+    meaning: A tenant must keep at least one active TenantOwner
+  cannot-disable-self:
+    status: 409
+    meaning: A user cannot disable their own access (updateUser)
   pin-invalid:
     status: 403
     meaning: Wrong PIN; context attemptsLeft (AUTH-08)

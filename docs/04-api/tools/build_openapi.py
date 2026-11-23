@@ -171,7 +171,7 @@ schema("Invitation", id="uuid", displayName="str", status=("enum", ["Pending", "
        roleAssignments=["#RoleGrant"], **{"inviteToken?": ("desc", "str", "Only in the creation response")})
 schema("InvitationAccepted", tenantId="uuid", tenantName="str", roles=["str"])
 schema("User", id="uuid", displayName="str", status=("enum", ["Invited", "Active", "Disabled"]),
-       roleAssignments=["#RoleAssignment"], lastLoginAt="dt?")
+       roleAssignments=["#RoleAssignment"], lastLoginAt="dt?", version="int")
 schema("UserUpdate", expectedVersion="int", **{"status?": ("enum", ["Active", "Disabled"]), "displayName?": "str"})
 schema("Role", id="uuid", name="str", isSystem="bool", permissions=["str"])
 schema("ApprovalRequest", id="uuid", action="str", resourceType="str", resourceId="str?", reason="str?",
@@ -540,7 +540,8 @@ ERROR_CATALOG = {
     "internal": (500, "Unexpected error; details only in logs, correlate with traceId (SEC-T-016)"),
     "forbidden": (403, "The caller's roles do not grant the permission at this scope (IAM-006, D06 §6.1)"),
     "duplicate-assignment": (409, "The user already has this role at this scope"),
-    "last-owner": (409, "A tenant must keep at least one TenantOwner"),
+    "last-owner": (409, "A tenant must keep at least one active TenantOwner"),
+    "cannot-disable-self": (409, "A user cannot disable their own access (updateUser)"),
     "pin-invalid": (403, "Wrong PIN; context attemptsLeft (AUTH-08)"),
     "pin-locked": (403, "PIN locked after 5 failures; a full sign-in and a new PIN are needed"),
     "pin-not-set": (409, "The user has not set a PIN"),
@@ -572,9 +573,9 @@ SEC = {
 
 # TEN-004 / US-015: a suspended or trial-expired tenant is read-only. Every write is refused with 403 tenant-read-only
 # EXCEPT these: reads stay open anyway; export, debt collection and the tax queue continue (TEN-004); access can still
-# be reduced (revoke a device, remove a role) and the register unlocked to read; support can be let in to help.
+# be reduced (revoke a device, remove a role, disable a user — re-enabling is refused) and the register unlocked to read; support can be let in to help.
 READ_ONLY_ALLOWED = {
-    "selectActiveTenant", "verifyMyPin", "revokeTerminal", "removeRoleAssignment", "createExport",
+    "selectActiveTenant", "verifyMyPin", "revokeTerminal", "removeRoleAssignment", "updateUser", "createExport",
     "recordCollection", "portalPayBalance", "portalExportMyData", "retryTaxInvoice", "decideSupportAccess", "revokeSupportAccess",
 }
 
@@ -728,7 +729,10 @@ op("post", "/invitations/{token}/accept", "acceptInvitation", "Access", "پذی�
    desc="Callable by any valid identity holding the link, also before it is a RetailCloud user (the user is created). "
         "Unknown, used, revoked or expired tokens all answer 404.")
 op("patch", "/users/{userId}", "updateUser", "Access", "فعال/غیرفعال‌سازی کاربر (ابطال Session در ≤ ۶۰s)",
-   perm="iam.users.manage", scope="Branch", body="UserUpdate", resp="User", reqs=["IAM-009"], audited=True, conflict=True)
+   perm="iam.users.manage", scope="Branch", body="UserUpdate", resp="User", reqs=["IAM-009"], audited=True, conflict=True,
+   desc="Disabled suspends the membership in the active tenant only (role assignments are kept); the user's next request "
+        "to this tenant is refused within 60 s. The caller must hold every role the user has at its scope; nobody disables "
+        "themselves; the last active owner stays. displayName is not yet editable here (it belongs to the person).")
 op("post", "/users/{userId}/role-assignments", "addRoleAssignment", "Access", "تخصیص نقش", perm="iam.users.manage",
    scope="Branch", body="RoleAssignmentInput", resp="RoleAssignment", resp_code="201", reqs=["IAM-006"], audited=True, conflict=True)
 op("delete", "/users/{userId}/role-assignments/{assignmentId}", "removeRoleAssignment", "Access", "حذف تخصیص نقش",

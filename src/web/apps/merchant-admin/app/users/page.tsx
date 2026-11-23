@@ -1,9 +1,9 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { codeOf, MESSAGES, postJson, ROLE_LABELS } from '@/lib/client';
+import { codeOf, MESSAGES, patchJson, postJson, ROLE_LABELS } from '@/lib/client';
 
 type Assignment = { id: string; roleName: string; scopeType: string; scopeId: string | null };
-type User = { id: string; displayName: string; status: string; roleAssignments: Assignment[] };
+type User = { id: string; displayName: string; status: string; version: number; roleAssignments: Assignment[] };
 type Role = { id: string; name: string };
 type Branch = { id: string; code: string; name: string };
 
@@ -28,6 +28,14 @@ export default function UsersPage() {
 
   const branchName = (id: string | null) => branches.find((b) => b.id === id)?.name ?? (id ? '—' : 'کل فروشگاه');
 
+  /** US-024 (IAM-009): a disabled colleague loses this store at once; their roles are kept for re-enabling. */
+  async function toggle(u: User) {
+    setError('');
+    const r = await patchJson(`/bff/users/${u.id}`, { expectedVersion: u.version, status: u.status === 'Active' ? 'Disabled' : 'Active' });
+    if (!r.ok) setError(await codeOf(r));
+    await load();
+  }
+
   async function invite(e: React.FormEvent) {
     e.preventDefault();
     setError(''); setLink('');
@@ -49,8 +57,12 @@ export default function UsersPage() {
       <h1>کاربران فروشگاه</h1>
       <ul data-testid="users">
         {users.map((u) => (
-          <li key={u.id}>
+          <li key={u.id} data-testid={`user-${u.id}`} data-status={u.status}>
             {u.displayName}: {u.roleAssignments.map((a) => `${ROLE_LABELS[a.roleName] ?? a.roleName} (${branchName(a.scopeId)})`).join('، ')}
+            {u.status === 'Disabled' && <strong> — غیرفعال</strong>}
+            {' '}<button type="button" style={{ minHeight: 44 }} data-testid={`user-toggle-${u.id}`} onClick={() => void toggle(u)}>
+              {u.status === 'Active' ? 'غیرفعال‌سازی' : 'فعال‌سازی دوباره'}
+            </button>
           </li>
         ))}
       </ul>

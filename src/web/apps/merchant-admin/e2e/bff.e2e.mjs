@@ -132,14 +132,18 @@ try {
   check('E20', 'session survives a BFF restart (Valkey store)', afterRestart.s === 200 && afterRestart.b.legalName === 'فروشگاه الف', String(afterRestart.s));
   const redis = new Redis(process.env.VALKEY_URL ?? 'redis://127.0.0.1:6379');
   const keys = await redis.keys('rc:bff:*');
-  const values = await Promise.all(keys.map((k) => redis.get(k)));
+  const types = await Promise.all(keys.map((k) => redis.type(k)));
+  const values = await Promise.all(keys.filter((_, i) => types[i] === 'string').map((k) => redis.get(k)));
+  // US-024 per-user session index: a set whose members are session storage keys (hashes), never a session id
+  const members = (await Promise.all(keys.filter((_, i) => types[i] === 'set').map((k) => redis.smembers(k)))).flat();
   await redis.quit();
   // Every value must be the sealed format, and the decoded ciphertext must not contain token field names.
   // (Do not grep the base64 text for "eyJ": random ciphertext contains it by chance now and then.)
   const sealed = /^v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
   const plain = values.some((v) => !sealed.test(v ?? '')
       || /accessToken|refreshToken|"exp"/.test(Buffer.from((v ?? '').split('.')[2] ?? '', 'base64url').toString('latin1')))
-    || keys.some((k) => k.includes(sidAfter));
+    || keys.some((k) => k.includes(sidAfter))
+    || !members.every((m) => /^rc:bff:s:[A-Za-z0-9_-]{43}$/.test(m)) || members.some((m) => m.includes(sidAfter));
   check('E21', 'Valkey holds only encrypted values under hashed keys', keys.length > 0 && !plain, `${keys.length} keys`);
 
   // I01–I06 US-025: the owner invites a cashier for one branch; the cashier joins through the link (IAM-001, IAM-006)
@@ -306,6 +310,69 @@ try {
     check('X02', 'the finished export downloads from its presigned link as a ZIP (TEN-005, D-49)',
       file.status() === 200 && bytes[0] === 0x50 && bytes[1] === 0x4b && job.downloadUrl.includes('X-Amz-Expires=300'));
   }
+  await page.goto(BFF);
+  await page.getByTestId('logout').waitFor();
+
+  // D01–D05 US-024: my sessions on every device; sign one out, disable a colleague (IAM-009), sign out everywhere
+  const signInCashier = async () => {
+    const c = await browser.newContext();
+    const p = await c.newPage();
+    await p.goto(BFF);
+    await p.getByTestId('login').click();
+    await p.fill('#username', 'cashier@spike.test');
+    await p.fill('#password', 'Spike-Passw0rd-1');
+    await p.click('#kc-login');
+    await p.getByTestId(`select-${T1}`).click();
+    await p.getByTestId('active-tenant').waitFor();
+    return { c, p };
+  };
+  const call = (p, method, url) => p.evaluate(async ([m, u]) => {
+    const t = document.cookie.split('; ').find((x) => x.startsWith('rc_csrf='))?.split('=')[1] ?? '';
+    const r = await fetch(u, { method: m, headers: { 'x-csrf-token': t } });
+    return { s: r.status, b: r.status === 204 ? null : await r.json().catch(() => null) };
+  }, [method, url]);
+  const a = await signInCashier();
+  const b = await signInCashier();
+  await a.p.goto(`${BFF}/sessions`);
+  await a.p.getByTestId('session').first().waitFor();
+  const listed = await call(a.p, 'GET', '/bff/sessions');
+  // B's own view names its handle; the cashier's earlier sign-in (I03, browser closed without signing out) is listed too
+  const other = (await call(b.p, 'GET', '/bff/sessions')).b.items.find((x) => x.current);
+  const sessionRows = await a.p.getByTestId('session').count();
+  check('D01', 'the cashier sees every signed-in browser, this one marked, with a device label (IAM-005)',
+    listed.b.items.length >= 2 && listed.b.items.filter((x) => x.current).length === 1 && /Chrome/.test(other?.device ?? '')
+      && listed.b.items.some((x) => x.handle === other?.handle && !x.current) && sessionRows === listed.b.items.length,
+    JSON.stringify(listed.b.items.map((x) => [x.device, x.current])));
+  await a.p.getByTestId(`session-end-${other.handle}`).click();
+  await a.p.waitForFunction((n) => document.querySelectorAll('[data-testid=session]').length === n, sessionRows - 1);
+  const bAfter = await b.p.request.get(`${BFF}/bff/me`);
+  await b.p.goto(`${BFF}/auth/login`);
+  const reauth = await b.p.locator('#username').isVisible({ timeout: 10000 }).catch(() => false);
+  check('D02', 'the other browser is signed out and must enter the password again (Keycloak session ended too)', bAfter.status() === 401 && reauth,
+    `${bAfter.status()} login-form=${reauth}`);
+  await b.c.close();
+
+  await page.goto(`${BFF}/users`);
+  const row = page.getByTestId('users').locator('li', { hasText: 'صندوق‌دار (مرکزی)' });
+  await row.getByRole('button', { name: 'غیرفعال‌سازی' }).click();
+  await row.filter({ hasText: 'غیرفعال' }).locator('button', { hasText: 'فعال‌سازی دوباره' }).waitFor();
+  const cut = await call(a.p, 'GET', '/bff/products');
+  check('D03', 'a disabled cashier loses the store on the very next request (IAM-009, AT-018)', cut.s === 404, `${cut.s} ${cut.b?.code}`);
+  await row.getByRole('button', { name: 'فعال‌سازی دوباره' }).click();
+  await row.getByRole('button', { name: 'غیرفعال‌سازی' }).waitFor();
+  const back = await call(a.p, 'GET', '/bff/products');
+  check('D04', 're-enabled with the same roles, the cashier works again', back.s === 200, String(back.s));
+
+  const c3 = await signInCashier();
+  a.p.once('dialog', (d) => void d.accept());
+  await a.p.goto(`${BFF}/sessions`);
+  await a.p.getByTestId('logout-all').click();
+  await a.p.getByTestId('login').waitFor();
+  const [aMe, cMe] = [await a.p.request.get(`${BFF}/bff/me`), await c3.p.request.get(`${BFF}/bff/me`)];
+  check('D05', '«خروج از همه دستگاه‌ها» ends every session of the cashier, this one included', aMe.status() === 401 && cMe.status() === 401,
+    `${aMe.status()} ${cMe.status()}`);
+  await a.c.close();
+  await c3.c.close();
   await page.goto(BFF);
   await page.getByTestId('logout').waitFor();
 

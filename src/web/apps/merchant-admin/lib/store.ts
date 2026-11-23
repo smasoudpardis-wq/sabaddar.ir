@@ -11,6 +11,10 @@ export interface KvStore {
   take(key: string): Promise<string | null>;
   /** Try to acquire a short lock; false if held by someone else. */
   lock(key: string, ttlMs: number): Promise<boolean>;
+  /** Set membership with a TTL refreshed on every add (per-user session index, US-024). */
+  addMember(key: string, member: string, ttlSeconds: number): Promise<void>;
+  members(key: string): Promise<string[]>;
+  removeMember(key: string, member: string): Promise<void>;
 }
 
 class MemoryStore implements KvStore {
@@ -29,6 +33,20 @@ class MemoryStore implements KvStore {
     this.m.set(key, { v: '1', exp: Date.now() + ttlMs });
     return true;
   }
+  private readonly sets = new Map<string, { v: Set<string>; exp: number }>();
+  private liveSet(key: string) {
+    const e = this.sets.get(key);
+    if (e && e.exp < Date.now()) this.sets.delete(key);
+    return this.sets.get(key);
+  }
+  async addMember(key: string, member: string, ttl: number) {
+    const e = this.liveSet(key) ?? { v: new Set<string>(), exp: 0 };
+    e.v.add(member);
+    e.exp = Date.now() + ttl * 1000;
+    this.sets.set(key, e);
+  }
+  async members(key: string) { return [...(this.liveSet(key)?.v ?? [])]; }
+  async removeMember(key: string, member: string) { this.liveSet(key)?.v.delete(member); }
 }
 
 class ValkeyStore implements KvStore {
@@ -38,6 +56,9 @@ class ValkeyStore implements KvStore {
   async del(key: string) { await this.r.del(key); }
   async take(key: string) { return this.r.getdel(key); }
   async lock(key: string, ttlMs: number) { return (await this.r.set(key, '1', 'PX', ttlMs, 'NX')) === 'OK'; }
+  async addMember(key: string, member: string, ttl: number) { await this.r.multi().sadd(key, member).expire(key, ttl).exec(); }
+  async members(key: string) { return this.r.smembers(key); }
+  async removeMember(key: string, member: string) { await this.r.srem(key, member); }
 }
 
 function encryptionKey(): Buffer {

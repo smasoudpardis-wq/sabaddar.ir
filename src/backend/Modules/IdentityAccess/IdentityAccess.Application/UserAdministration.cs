@@ -10,7 +10,17 @@ public sealed record AssignmentView(Guid Id, Guid RoleId, string RoleName, strin
 }
 
 /// <summary>D07 <c>User</c>.</summary>
-public sealed record UserView(Guid Id, string DisplayName, string Status, IReadOnlyList<AssignmentView> RoleAssignments, DateTimeOffset? LastLoginAt);
+public sealed record UserView(Guid Id, string DisplayName, string Status, IReadOnlyList<AssignmentView> RoleAssignments, DateTimeOffset? LastLoginAt,
+    int Version = 1);
+
+/// <summary>US-024: the outcome of enabling or disabling a member.</summary>
+public enum UserStatusOutcome
+{
+    Done,
+    NotFound,
+    VersionConflict,
+    LastOwner,
+}
 
 /// <summary>D07 <c>Invitation</c>. <see cref="InviteToken"/> is returned once, at creation; only its hash is stored.</summary>
 public sealed record InvitationView(Guid Id, string DisplayName, string Status, DateTimeOffset ExpiresAt,
@@ -21,6 +31,16 @@ public sealed record AcceptedInvitation(Guid TenantId, string TenantName, IReadO
 /// <summary>US-025 (IAM-001, IAM-006). Authorization (who may do what at which scope) is decided by the caller.</summary>
 public interface IUserAdministration
 {
+    /// <summary>One member of the active tenant (Removed members are not found). Status is D07's: Active or Disabled.</summary>
+    Task<UserView?> GetAsync(IUnitOfWorkScope scope, UserId user, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// IAM-009: Disabled suspends the membership (role assignments are kept for a later re-enable). The database refuses
+    /// to leave the tenant without an active owner (<see cref="UserStatusOutcome.LastOwner"/>); re-enabling counts
+    /// against the plan's user cap.
+    /// </summary>
+    Task<UserStatusOutcome> SetStatusAsync(IUnitOfWorkScope scope, UserId user, int expectedVersion, bool active, CancellationToken cancellationToken);
+
     Task<IReadOnlyList<UserView>> ListAsync(IUnitOfWorkScope scope, CancellationToken cancellationToken);
 
     Task<InvitationView> InviteAsync(IUnitOfWorkScope scope, UserId invitedBy, string displayName, string? email, string? mobile,

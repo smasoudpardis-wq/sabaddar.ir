@@ -17,6 +17,9 @@ export const postJson = (url: string, body?: unknown) =>
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
+export const patchJson = (url: string, body: unknown) =>
+  fetch(url, { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf() }, body: JSON.stringify(body) });
+
 export const deleteWithCsrf = (url: string) => fetch(url, { method: 'DELETE', headers: { 'x-csrf-token': csrf() } });
 
 /** D09 §10.1 messages used outside the home page. */
@@ -25,7 +28,9 @@ export const MESSAGES: Record<string, string> = {
   'not-found': 'این دعوت معتبر نیست، قبلاً استفاده شده یا منقضی شده است.',
   validation: 'اطلاعات واردشده معتبر نیست.',
   'duplicate-assignment': 'این کاربر همین نقش را در همین محدوده دارد.',
-  'last-owner': 'فروشگاه باید دست‌کم یک مالک داشته باشد.',
+  'last-owner': 'فروشگاه باید دست‌کم یک مالک فعال داشته باشد.',
+  'cannot-disable-self': 'دسترسی خودتان را نمی‌توانید غیرفعال کنید.',
+  'current-session': 'برای خروج از همین دستگاه از دکمه «خروج» استفاده کنید.',
   'tenant-not-selected': 'ابتدا فروشگاه را انتخاب کنید.',
   'duplicate-code': 'این کد قبلاً استفاده شده است.',
   'rate-limited': 'تلاش‌های زیاد. چند دقیقه بعد دوباره امتحان کنید.',

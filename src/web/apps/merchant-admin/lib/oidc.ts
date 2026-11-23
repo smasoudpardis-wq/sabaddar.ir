@@ -15,3 +15,6 @@ export function oidc(): Promise<client.Configuration> {
   });
   return cached;
 }
+
+/** Revokes a refresh token. Keycloak 26 then ends the whole user session (checked through the admin API, US-024). */
+export const revokeAtIdp = async (refreshToken: string) => client.tokenRevocation(await oidc(), refreshToken);

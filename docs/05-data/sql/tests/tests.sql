@@ -374,6 +374,18 @@ SELECT t.expect_error('T98 the last TenantOwner cannot be removed', 'RC010',
   $$DELETE FROM iam.role_assignment WHERE role = 'TenantOwner'$$);
 SELECT t.expect_error('T99 role assignments are immutable (remove and re-add)', 'RC001',
   $$UPDATE iam.role_assignment SET scope_type = 'Tenant'$$);
+-- US-024: suspending members never leaves a tenant without an active owner
+SELECT t.expect_error('T165 the last active TenantOwner cannot be suspended (IAM-009)', 'RC010',
+  $$UPDATE iam.tenant_membership SET status = 'Suspended' WHERE user_id = 'e0000000-0000-0000-0000-000000000001'$$);
+INSERT INTO iam.tenant_membership (tenant_id, user_id) VALUES (:A, 'e0000000-0000-0000-0000-000000000002');
+INSERT INTO iam.role_assignment (tenant_id, id, user_id, role, scope_type) VALUES (:A, 'e0000000-0000-0000-0000-0000000000a2', 'e0000000-0000-0000-0000-000000000002', 'TenantOwner', 'Tenant');
+UPDATE iam.tenant_membership SET status = 'Suspended', version = version + 1 WHERE user_id = 'e0000000-0000-0000-0000-000000000002';
+SELECT t.ok('T166 a second owner can be suspended while another owner stays active',
+  (SELECT status FROM iam.tenant_membership WHERE user_id = 'e0000000-0000-0000-0000-000000000002') = 'Suspended');
+SELECT t.expect_error('T167 a suspended owner does not count: the only active owner keeps the role', 'RC010',
+  $$DELETE FROM iam.role_assignment WHERE role = 'TenantOwner' AND user_id = 'e0000000-0000-0000-0000-000000000001'$$);
+DELETE FROM iam.role_assignment WHERE id = 'e0000000-0000-0000-0000-0000000000a2';
+UPDATE iam.tenant_membership SET status = 'Removed' WHERE user_id = 'e0000000-0000-0000-0000-000000000002';
 INSERT INTO iam.invitation (tenant_id, id, token_hash, display_name, assignments, invited_by, expires_at)
   VALUES (:A, gen_random_uuid(), sha256('secret-token'), 'صندوق‌دار', '[{"role":"Cashier","scopeType":"Branch","scopeId":"a0000000-0000-0000-0000-000000000001"}]', 'e0000000-0000-0000-0000-000000000001', now() + interval '7 days'),
          (:A, gen_random_uuid(), sha256('expired-token'), 'قدیمی', '[{"role":"Cashier","scopeType":"Tenant","scopeId":null}]', 'e0000000-0000-0000-0000-000000000001', now() - interval '1 minute');
