@@ -135,6 +135,31 @@ SELECT t.expect_error('T15 movement for another tenant via parent rejected', '42
 SELECT t.expect_error('T20 second open shift on the same register (DI-008)', '23505',
   $$INSERT INTO sales.shift (tenant_id, id, register_id, cashier_id, opening_cash)
     VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000002', gen_random_uuid(), 0)$$);
+-- US-081 shifts and cash (UC-06)
+INSERT INTO platform.register (tenant_id, id, branch_id, code) VALUES (:A, 'a0000000-0000-0000-0000-000000000052', 'a0000000-0000-0000-0000-000000000001', 'R2');
+SELECT t.expect_error('T147 a shift needs a register of this tenant', '23503',
+  $$INSERT INTO sales.shift (tenant_id, id, register_id, cashier_id, opening_cash) VALUES (core.current_tenant(), gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 0)$$);
+INSERT INTO sales.shift (tenant_id, id, register_id, cashier_id, opening_cash)
+  VALUES (:A, 'a0000000-0000-0000-0000-000000000053', 'a0000000-0000-0000-0000-000000000052', 'e0000000-0000-0000-0000-000000000002', 1000000);
+INSERT INTO sales.cash_movement (tenant_id, id, shift_id, direction, amount, reason, recorded_by) VALUES
+  (:A, gen_random_uuid(), 'a0000000-0000-0000-0000-000000000053', 'In', 300000, 'پول خرد', 'e0000000-0000-0000-0000-000000000002'),
+  (:A, gen_random_uuid(), 'a0000000-0000-0000-0000-000000000053', 'Out', 500000, 'واریز به بانک', 'e0000000-0000-0000-0000-000000000002');
+SELECT t.ok('T148 the shift knows its branch and expected cash = opening + in - out (+ cash sales)',
+  (SELECT branch_id FROM sales.shift WHERE id = 'a0000000-0000-0000-0000-000000000053') = 'a0000000-0000-0000-0000-000000000001'
+  AND sales.shift_expected_cash('a0000000-0000-0000-0000-000000000053') = 800000);
+SELECT t.expect_error('T149 the variance must equal counted - expected', '23514',
+  $$UPDATE sales.shift SET status = 'Closed', expected_cash = 800000, counted_cash = 700000, variance = 0, closed_at = now(), closed_by = 'e0000000-0000-0000-0000-000000000002'
+    WHERE id = 'a0000000-0000-0000-0000-000000000053'$$);
+UPDATE sales.shift SET status = 'Closed', expected_cash = 800000, counted_cash = 700000, variance = -100000, variance_status = 'PendingApproval',
+  closed_at = now(), closed_by = 'e0000000-0000-0000-0000-000000000002' WHERE id = 'a0000000-0000-0000-0000-000000000053';
+SELECT t.expect_error('T150 no cash moves in or out of a closed shift', 'RC017',
+  format($$INSERT INTO sales.cash_movement (tenant_id, id, shift_id, direction, amount, reason, recorded_by) VALUES (%L, gen_random_uuid(), 'a0000000-0000-0000-0000-000000000053', 'Out', 1, 'بعد از بستن', gen_random_uuid())$$, :A));
+SELECT t.expect_error('T151 the count of a closed shift cannot be changed', 'RC017',
+  $$UPDATE sales.shift SET counted_cash = 800000, variance = 0 WHERE id = 'a0000000-0000-0000-0000-000000000053'$$);
+SELECT t.expect_error('T152 a cashier cannot approve the variance of their own shift (SoD-01)', '23514',
+  $$UPDATE sales.shift SET variance_status = 'Approved', variance_decided_by = 'e0000000-0000-0000-0000-000000000002', variance_decided_at = now() WHERE id = 'a0000000-0000-0000-0000-000000000053'$$);
+SELECT t.expect_error('T153 cash movements are append-only', '42501',
+  $$UPDATE sales.cash_movement SET amount = 1$$);
 SELECT t.expect_error('T21 finalized sale must have invoice number', '23514',
   $$UPDATE sales.sale SET status = 'Finalized', finalized_at = now() WHERE id = 'a0000000-0000-0000-0000-000000000040'$$);
 UPDATE sales.sale SET status = 'Finalized', finalized_at = now(), fiscal_year = 1405, invoice_no = 'B1-1405-000001'

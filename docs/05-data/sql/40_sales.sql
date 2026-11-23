@@ -4,20 +4,87 @@ CREATE TABLE sales.shift (
   tenant_id    uuid NOT NULL,
   id           uuid NOT NULL,
   register_id  uuid NOT NULL,
+  branch_id    uuid NOT NULL,                       -- the register's branch (set by sales.shift_register), for scope checks
   cashier_id   uuid NOT NULL,
   status       text NOT NULL DEFAULT 'Open' CHECK (status IN ('Open','Closing','Closed')),
   opening_cash bigint NOT NULL CHECK (opening_cash >= 0),
   expected_cash bigint NOT NULL DEFAULT 0,
-  counted_cash bigint,
+  counted_cash bigint CHECK (counted_cash >= 0),
+  variance     bigint,                                -- counted − expected (UC-06): negative = shortage
+  variance_reason text CHECK (length(variance_reason) <= 500),
+  variance_status text NOT NULL DEFAULT 'None' CHECK (variance_status IN ('None','PendingApproval','Approved','Rejected')),
+  variance_decided_by uuid,
+  variance_decided_at timestamptz,
   opened_at    timestamptz NOT NULL DEFAULT now(),
   closed_at    timestamptz,
+  closed_by    uuid,
   version      int NOT NULL DEFAULT 1,
   PRIMARY KEY (tenant_id, id),
-  CHECK (status <> 'Closed' OR (counted_cash IS NOT NULL AND closed_at IS NOT NULL))
+  CHECK (status <> 'Closed' OR (counted_cash IS NOT NULL AND closed_at IS NOT NULL AND closed_by IS NOT NULL
+                                AND variance = counted_cash - expected_cash)),
+  CHECK (variance_status = 'None' OR status = 'Closed'),
+  CHECK ((variance_status IN ('Approved','Rejected')) = (variance_decided_by IS NOT NULL AND variance_decided_at IS NOT NULL)),
+  CHECK (variance_decided_by IS NULL OR variance_decided_by <> cashier_id)               -- SoD-01: not one's own shortage
 );
+
+-- The register decides the branch; a register of another tenant (or none) cannot be used.
+CREATE OR REPLACE FUNCTION sales.shift_register() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  SELECT r.branch_id INTO NEW.branch_id FROM platform.register r WHERE r.tenant_id = NEW.tenant_id AND r.id = NEW.register_id;
+  IF NEW.branch_id IS NULL THEN
+    RAISE EXCEPTION 'register % not found', NEW.register_id USING ERRCODE = '23503';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER shift_register BEFORE INSERT ON sales.shift FOR EACH ROW EXECUTE FUNCTION sales.shift_register();
+
+-- UC-06 / §6.6: Open → Closed (Closing is reserved for an asynchronous count); after closing only the variance
+-- decision may change, once. Who opened it, the opening cash and the count are facts.
+CREATE OR REPLACE FUNCTION sales.shift_transition() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  IF (NEW.tenant_id, NEW.register_id, NEW.branch_id, NEW.cashier_id, NEW.opening_cash, NEW.opened_at)
+     IS DISTINCT FROM (OLD.tenant_id, OLD.register_id, OLD.branch_id, OLD.cashier_id, OLD.opening_cash, OLD.opened_at) THEN
+    RAISE EXCEPTION 'shift % facts are immutable', OLD.id USING ERRCODE = 'RC017';
+  END IF;
+  IF OLD.status = 'Closed' AND (
+       (NEW.status, NEW.expected_cash, NEW.counted_cash, NEW.variance, NEW.variance_reason, NEW.closed_at, NEW.closed_by)
+       IS DISTINCT FROM (OLD.status, OLD.expected_cash, OLD.counted_cash, OLD.variance, OLD.variance_reason, OLD.closed_at, OLD.closed_by)
+       OR NOT (NEW.variance_status = OLD.variance_status OR (OLD.variance_status = 'PendingApproval' AND NEW.variance_status IN ('Approved','Rejected')))
+       OR (OLD.variance_status <> 'PendingApproval' AND (NEW.variance_decided_by, NEW.variance_decided_at) IS DISTINCT FROM (OLD.variance_decided_by, OLD.variance_decided_at))) THEN
+    RAISE EXCEPTION 'closed shift % can only receive its variance decision', OLD.id USING ERRCODE = 'RC017';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER shift_transition BEFORE UPDATE ON sales.shift FOR EACH ROW EXECUTE FUNCTION sales.shift_transition();
 -- DI-008: at most one non-closed shift per register.
 CREATE UNIQUE INDEX ux_shift_one_open ON sales.shift (tenant_id, register_id) WHERE status <> 'Closed';
 CALL core.enable_tenant_rls('sales.shift');
+
+-- UC-06: cash put into or taken out of the drawer during a shift, with a reason; append-only, only while the shift is open.
+CREATE TABLE sales.cash_movement (
+  tenant_id   uuid NOT NULL,
+  id          uuid NOT NULL,
+  shift_id    uuid NOT NULL,
+  direction   text NOT NULL CHECK (direction IN ('In','Out')),
+  amount      bigint NOT NULL CHECK (amount > 0),
+  reason      text NOT NULL CHECK (length(btrim(reason)) BETWEEN 3 AND 200),
+  recorded_by uuid NOT NULL,
+  recorded_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, id),
+  FOREIGN KEY (tenant_id, shift_id) REFERENCES sales.shift (tenant_id, id)
+);
+CALL core.enable_tenant_rls('sales.cash_movement');
+
+CREATE OR REPLACE FUNCTION sales.cash_movement_open_shift() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  PERFORM 1 FROM sales.shift WHERE tenant_id = NEW.tenant_id AND id = NEW.shift_id AND status = 'Open' FOR SHARE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'shift % is not open', NEW.shift_id USING ERRCODE = 'RC017';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER cash_movement_open_shift BEFORE INSERT ON sales.cash_movement FOR EACH ROW EXECUTE FUNCTION sales.cash_movement_open_shift();
+
 
 CREATE TABLE sales.invoice_sequence (
   tenant_id   uuid NOT NULL,
@@ -138,8 +205,22 @@ CALL core.enable_tenant_rls('sales.sale_tender');
 
 -- Integration events go to core.outbox (shared transactional outbox, US-005 / ADR-013).
 
+-- UC-06: expected cash = opening + cash tendered on finalised sales of the shift + cash in − cash out (cash refunds join
+-- here with SaleReturn). Computed in the database at close, so the cashier cannot supply it.
+CREATE OR REPLACE FUNCTION sales.shift_expected_cash(p_shift uuid) RETURNS bigint LANGUAGE sql STABLE SET search_path = pg_catalog AS $$
+  SELECT sh.opening_cash
+       + coalesce((SELECT sum(t.amount) FROM sales.sale s JOIN sales.sale_tender t ON t.tenant_id = s.tenant_id AND t.sale_id = s.id
+                   WHERE s.tenant_id = sh.tenant_id AND s.shift_id = sh.id AND s.status = 'Finalized' AND t.method = 'Cash'), 0)
+       + coalesce((SELECT sum(CASE m.direction WHEN 'In' THEN m.amount ELSE -m.amount END) FROM sales.cash_movement m
+                   WHERE m.tenant_id = sh.tenant_id AND m.shift_id = sh.id), 0)
+  FROM sales.shift sh WHERE sh.id = p_shift AND sh.tenant_id = core.current_tenant()
+$$;
+
 GRANT USAGE ON SCHEMA sales TO rc_app, rc_worker, rc_reporting;
 GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA sales TO rc_app;
 GRANT DELETE ON sales.sale_line TO rc_app;            -- draft line removal (guard blocks finalized)
 GRANT SELECT ON sales.sale, sales.sale_line, sales.sale_tender, sales.shift TO rc_worker, rc_reporting;   -- shift: data export (TEN-005)
+GRANT SELECT ON sales.cash_movement TO rc_worker, rc_reporting;
+REVOKE UPDATE ON sales.cash_movement FROM rc_app;          -- append-only (UC-06)
+GRANT EXECUTE ON FUNCTION sales.shift_expected_cash(uuid) TO rc_app, rc_worker;
 RESET ROLE;

@@ -21,6 +21,7 @@ public class DependencyRulesTests
         typeof(RetailCloud.Inventory.Application.InventoryModule).Assembly,
         typeof(RetailCloud.Accounting.Application.ChartOfAccountsTemplate).Assembly,
         typeof(RetailCloud.Merchandising.Application.IProductCatalog).Assembly,
+        typeof(RetailCloud.Sales.Application.IShifts).Assembly,
     ];
 
     private static readonly Assembly[] ModuleInfrastructures =
@@ -30,6 +31,7 @@ public class DependencyRulesTests
         typeof(RetailCloud.Inventory.Infrastructure.DefaultWarehouseConsumer).Assembly,
         typeof(RetailCloud.Accounting.Infrastructure.TenantAccountingSetupConsumer).Assembly,
         typeof(RetailCloud.Merchandising.Infrastructure.PostgresProductCatalog).Assembly,
+        typeof(RetailCloud.Sales.Infrastructure.PostgresShifts).Assembly,
     ];
 
     private static readonly string[] InfrastructureNamespaces =

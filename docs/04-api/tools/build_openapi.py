@@ -264,9 +264,12 @@ schema("PurchaseReturnCreate", supplierId="uuid", warehouseId="uuid", lines=[{"v
 
 # Sales / Shift
 schema("ShiftOpen", registerId="uuid", openingCash="money")
-schema("Shift", id="uuid", registerId="uuid", cashierId="uuid", status=("enum", ["Open", "Closing", "Closed"]),
-       openingCash="money", **{"expectedCash?": ("desc", "money", "Hidden until counted when blind close is on (D-24)")},
-       countedCash="money?", variance="money?", openedAt="dt", closedAt="dt?", version="int")
+schema("Shift", id="uuid", registerId="uuid", branchId="uuid", cashierId="uuid", status=("enum", ["Open", "Closing", "Closed"]),
+       openingCash="money", expectedCash=("desc", "money?", "null until the shift is counted and closed (blind close, D-24)"),
+       countedCash="money?", variance=("desc", "money?", "counted − expected; negative = shortage (UC-06)"),
+       varianceStatus=("desc", ("enum", ["None", "PendingApproval", "Approved", "Rejected"]),
+                       "PendingApproval when |variance| exceeds the threshold; decided by shift.supervise, never the cashier (SoD-01)"),
+       varianceReason="str?", openedAt="dt", closedAt="dt?", version="int")
 schema("CashMovementCreate", direction=("enum", ["In", "Out"]), amount="money", reason="str")
 schema("ShiftClose", countedCash="money", expectedVersion="int", **{"denominations?": [{"value": "money", "count": "int"}], "varianceReason?": "str"})
 schema("SaleCreate", registerId="uuid", clientDraftId="str")
@@ -502,6 +505,7 @@ ERROR_CATALOG = {
     "sale-finalized": (409, "Finalized sale is immutable (DI-003)"),
     "shift-not-open": (409, "Cashier has no open shift on this register (BR-050)"),
     "shift-already-open": (409, "Register already has an open shift (DI-008)"),
+    "variance-not-pending": (409, "The shift has no variance waiting for approval (UC-06)"),
     "barcode-already-assigned": (409, "context.productId (CAT-006)"),
     "duplicate-reference": (409, "Card terminal reference already used (PAY-002.1)"),
     "credit-limit-exceeded": (409, "context.available (BR-082)"),

@@ -10,6 +10,8 @@ using RetailCloud.Platform.Application;
 using RetailCloud.Platform.Infrastructure;
 using RetailCloud.Merchandising.Application;
 using RetailCloud.Merchandising.Infrastructure;
+using RetailCloud.Sales.Application;
+using RetailCloud.Sales.Infrastructure;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -23,6 +25,7 @@ builder.Services.AddSingleton<ITenantReadOnlyQuery, PostgresTenantReadOnlyQuery>
 builder.Services.AddSingleton<IExportJobs, PostgresExportJobs>();
 builder.Services.AddSingleton<ISupportAccess, PostgresSupportAccess>();
 builder.Services.AddSingleton<IProductCatalog, PostgresProductCatalog>();
+builder.Services.AddSingleton<IShifts, PostgresShifts>();
 ObjectStorageOptions? storage = builder.Configuration.GetSection("Storage").Get<ObjectStorageOptions>();
 builder.Services.AddSingleton<IObjectStorage>(storage is { ServiceUrl.Length: > 0 } ? new S3ObjectStorage(storage) : new UnconfiguredObjectStorage());
 builder.Services.AddSingleton<IIdempotencyStore, PostgresIdempotencyStore>();
@@ -408,6 +411,158 @@ v1.MapGet("/audit", async (HttpContext http, RequestContext ctx, IUnitOfWork uow
         });
     })
     .RequirePermission(Permissions.AuditView);
+
+// Shifts (US-081, UC-06, SAL-009): open, cash in/out, blind close, variance approval. POS operations run on a registered
+// terminal of the register's branch (ABAC-04); a shift is visible to its cashier and to supervisors of its branch only.
+// The variance needing approval is a tenant setting later; until then Sales:VarianceApprovalThreshold (rial) [ASM].
+long varianceThreshold = builder.Configuration.GetValue<long?>("Sales:VarianceApprovalThreshold") ?? 500_000;
+
+object ShiftJson(ShiftView v) => new
+{
+    v.Id, v.RegisterId, v.BranchId, v.CashierId, v.Status,
+    openingCash = v.OpeningCash.ToString(System.Globalization.CultureInfo.InvariantCulture),
+    expectedCash = v.ExpectedCash?.ToString(System.Globalization.CultureInfo.InvariantCulture),   // null until counted (blind close, D-24)
+    countedCash = v.CountedCash?.ToString(System.Globalization.CultureInfo.InvariantCulture),
+    variance = v.Variance?.ToString(System.Globalization.CultureInfo.InvariantCulture),
+    v.VarianceStatus, v.VarianceReason, v.OpenedAt, v.ClosedAt, v.Version,
+};
+
+static bool TryMoney(string? text, bool positive, out long value) =>
+    long.TryParse(text, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out value)
+    && value <= 1_000_000_000_000_000 && (!positive || value > 0);
+
+bool SeesShift(RequestContext ctx, ShiftView shift) =>
+    shift.CashierId == ctx.User!.Value.Value
+    || AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.ShiftSupervise, new ScopeRef(ScopeType.Branch, shift.BranchId, shift.BranchId));
+
+IResult? OnTerminalOf(HttpContext http, RequestContext ctx, Guid branchId) =>
+    ctx.Terminal is { } t && t.BranchId == branchId
+        ? null
+        : Problems.Create(http, StatusCodes.Status403Forbidden, "terminal-not-registered", "Use a registered device of this branch (ABAC-04)");
+
+IResult ShiftProblem(HttpContext http, ShiftOutcome outcome) => outcome switch
+{
+    ShiftOutcome.NotFound => Problems.NotFound(http),
+    ShiftOutcome.AlreadyOpen => Problems.Create(http, StatusCodes.Status409Conflict, "shift-already-open", "This register already has an open shift"),
+    ShiftOutcome.NotOpen => Problems.Create(http, StatusCodes.Status409Conflict, "shift-not-open", "The shift is not open"),
+    ShiftOutcome.VersionConflict => Problems.Create(http, StatusCodes.Status409Conflict, "version-conflict", "The shift changed; reload and retry"),
+    ShiftOutcome.SelfApproval => Problems.Create(http, StatusCodes.Status403Forbidden, "self-approval", "Not for your own shift (SoD-01)"),
+    _ => Problems.Create(http, StatusCodes.Status409Conflict, "variance-not-pending", "This shift has no variance waiting for approval"),
+};
+
+v1.MapIdempotentPost<ShiftOpenInput>("/shifts", "sales.open-shift", async (body, scope, http, ct) =>
+    {
+        RequestContext ctx = http.RequestServices.GetRequiredService<RequestContext>();
+        var errors = new Dictionary<string, string[]>();
+        if (body.RegisterId is null) errors["registerId"] = ["required"];
+        if (!TryMoney(body.OpeningCash, positive: false, out long opening)) errors["openingCash"] = ["rial amount as a whole-number string"];
+        if (errors.Count > 0) return CommandResult.Fail(Problems.Validation(http, errors));
+
+        ScopeRef? register = await ResolveScope(scope, http.RequestServices.GetServices<IScopeLookup>(), ScopeType.Register, body.RegisterId, ct);
+        if (register is null) return CommandResult.Fail(Problems.NotFound(http));
+        if (!AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.ShiftManage, register)) return CommandResult.Fail(Forbidden(http));
+        if (OnTerminalOf(http, ctx, register.BranchId!.Value) is { } device) return CommandResult.Fail(device);
+
+        ShiftResult<ShiftView> opened = await http.RequestServices.GetRequiredService<IShifts>().OpenAsync(scope, body.RegisterId!.Value, ctx.User!.Value.Value, opening, ct);
+        if (opened.Outcome != ShiftOutcome.Done) return CommandResult.Fail(ShiftProblem(http, opened.Outcome));
+        await Audit(http, scope, ActorOf(ctx, http), new AuditEntry("sales.shift.opened", "Shift", opened.Value!.Id.ToString(),
+            Details: new { body.RegisterId, openingCash = opening }), ct);
+        return CommandResult.Created(ShiftJson(opened.Value));
+    })
+    .RequirePermission(Permissions.ShiftManage);
+
+v1.MapGet("/shifts/{shiftId:guid}", async (Guid shiftId, RequestContext ctx, IUnitOfWork uow, IShifts shifts, HttpContext http, CancellationToken ct) =>
+        await uow.ExecuteAsync(ctx, (s, c) => shifts.GetAsync(s, shiftId, c), ct) is { } shift && SeesShift(ctx, shift)
+            ? Results.Ok(ShiftJson(shift))
+            : Problems.NotFound(http))
+    .RequirePermission(Permissions.ShiftManage);
+
+v1.MapIdempotentPost<CashMovementInput>("/shifts/{shiftId:guid}/cash-movements", "sales.cash-movement", async (body, scope, http, ct) =>
+    {
+        RequestContext ctx = http.RequestServices.GetRequiredService<RequestContext>();
+        Guid shiftId = Guid.Parse((string)http.GetRouteValue("shiftId")!, System.Globalization.CultureInfo.InvariantCulture);
+        var errors = new Dictionary<string, string[]>();
+        if (body.Direction is not ("In" or "Out")) errors["direction"] = ["In|Out"];
+        if (!TryMoney(body.Amount, positive: true, out long amount)) errors["amount"] = ["positive rial amount as a string"];
+        if (body.Reason is not { Length: >= 3 and <= 200 }) errors["reason"] = ["3-200 characters"];
+        if (errors.Count > 0) return CommandResult.Fail(Problems.Validation(http, errors));
+
+        IShifts shifts = http.RequestServices.GetRequiredService<IShifts>();
+        if (await shifts.GetAsync(scope, shiftId, ct) is not { } shift || !SeesShift(ctx, shift)) return CommandResult.Fail(Problems.NotFound(http));
+        if (OnTerminalOf(http, ctx, shift.BranchId) is { } device) return CommandResult.Fail(device);
+        ShiftResult<CashMovementView> moved = await shifts.RecordCashAsync(scope, shiftId, body.Direction == "In", amount, body.Reason!, ctx.User!.Value.Value, ct);
+        if (moved.Outcome != ShiftOutcome.Done) return CommandResult.Fail(ShiftProblem(http, moved.Outcome));
+        await Audit(http, scope, ActorOf(ctx, http), new AuditEntry(body.Direction == "In" ? "sales.cash.in" : "sales.cash.out", "Shift", shiftId.ToString(),
+            body.Reason, new { amount }), ct);
+        return CommandResult.Created(new
+        {
+            moved.Value!.Id, moved.Value.Direction, amount = amount.ToString(System.Globalization.CultureInfo.InvariantCulture), moved.Value.Reason, moved.Value.RecordedAt,
+        });
+    })
+    .RequirePermission(Permissions.ShiftManage);
+
+v1.MapIdempotentPost<ShiftCloseInput>("/shifts/{shiftId:guid}/close", "sales.close-shift", async (body, scope, http, ct) =>
+    {
+        RequestContext ctx = http.RequestServices.GetRequiredService<RequestContext>();
+        Guid shiftId = Guid.Parse((string)http.GetRouteValue("shiftId")!, System.Globalization.CultureInfo.InvariantCulture);
+        var errors = new Dictionary<string, string[]>();
+        if (!TryMoney(body.CountedCash, positive: false, out long counted)) errors["countedCash"] = ["rial amount as a whole-number string"];
+        if (body.ExpectedVersion is null) errors["expectedVersion"] = ["required"];
+        if (body.VarianceReason is { Length: > 500 }) errors["varianceReason"] = ["up to 500 characters"];
+        if (body.Denominations is { } notes)
+        {
+            long sum = 0;
+            foreach (DenominationInput d in notes)
+            {
+                if (!TryMoney(d.Value, positive: true, out long note) || d.Count is not (>= 0 and <= 100_000)) { errors["denominations"] = ["value: positive amount, count: 0-100000"]; break; }
+                sum += note * d.Count!.Value;
+            }
+
+            if (!errors.ContainsKey("denominations") && errors.Count == 0 && sum != counted) errors["denominations"] = ["must add up to countedCash"];
+        }
+
+        if (errors.Count > 0) return CommandResult.Fail(Problems.Validation(http, errors));
+        IShifts shifts = http.RequestServices.GetRequiredService<IShifts>();
+        if (await shifts.GetAsync(scope, shiftId, ct) is not { } shift || !SeesShift(ctx, shift)) return CommandResult.Fail(Problems.NotFound(http));
+        if (OnTerminalOf(http, ctx, shift.BranchId) is { } device) return CommandResult.Fail(device);
+        ShiftResult<ShiftView> closed = await shifts.CloseAsync(scope, shiftId, body.ExpectedVersion!.Value, counted, body.VarianceReason, varianceThreshold,
+            ctx.User!.Value.Value, ct);
+        if (closed.Outcome != ShiftOutcome.Done) return CommandResult.Fail(ShiftProblem(http, closed.Outcome));
+        await Audit(http, scope, ActorOf(ctx, http), new AuditEntry("sales.shift.closed", "Shift", shiftId.ToString(), body.VarianceReason,
+            new { counted, closed.Value!.ExpectedCash, closed.Value.Variance, closed.Value.VarianceStatus }), ct);
+        return CommandResult.Ok(ShiftJson(closed.Value));
+    })
+    .RequirePermission(Permissions.ShiftManage);
+
+v1.MapPost("/shifts/{shiftId:guid}/variance-approval", async (Guid shiftId, ApprovalDecisionInput body, RequestContext ctx, IUnitOfWork uow, IShifts shifts,
+        HttpContext http, CancellationToken ct) =>
+    {
+        if (body.Decision is not ("Approve" or "Reject") || body.Pin is not null || body.ApproverId is not null || body.Comment is { Length: > 500 })
+        {
+            return Problems.Validation(http, new Dictionary<string, string[]> { ["decision"] = ["Approve|Reject"] });
+        }
+
+        (ShiftOutcome outcome, ShiftView? view) = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            if (await shifts.GetAsync(s, shiftId, c) is not { } shift
+                || !AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.ShiftSupervise, new ScopeRef(ScopeType.Branch, shift.BranchId, shift.BranchId)))
+            {
+                return (ShiftOutcome.NotFound, (ShiftView?)null);
+            }
+
+            ShiftResult<ShiftView> r = await shifts.DecideVarianceAsync(s, shiftId, body.Decision == "Approve", ctx.User!.Value.Value, c);
+            if (r.Outcome == ShiftOutcome.Done)
+            {
+                await Audit(http, s, ActorOf(ctx, http), new AuditEntry(body.Decision == "Approve" ? "sales.shift.variance-approved" : "sales.shift.variance-rejected",
+                    "Shift", shiftId.ToString(), body.Comment, new { r.Value!.Variance }), c);
+            }
+
+            return (r.Outcome, r.Value);
+        }, ct);
+        return outcome == ShiftOutcome.Done ? Results.Ok(ShiftJson(view!)) : ShiftProblem(http, outcome);
+    })
+    .RequirePermission(Permissions.ShiftSupervise)
+    .RequireRecentMfa();
 
 // Catalog (US-041, CAT-001/002/002.1/003): products, variants and barcodes. Reads for every member; writes need
 // catalog.product.manage. Price lists, opening stock, categories and the variant matrix arrive with their own stories
@@ -1133,6 +1288,10 @@ v1.MapDelete("/users/{userId:guid}/role-assignments/{assignmentId:guid}", async 
 await app.RunAsync();
 
 internal sealed record SelectTenant(Guid TenantId);
+internal sealed record ShiftOpenInput(Guid? RegisterId, string? OpeningCash);
+internal sealed record CashMovementInput(string? Direction, string? Amount, string? Reason);
+internal sealed record DenominationInput(string? Value, int? Count);
+internal sealed record ShiftCloseInput(string? CountedCash, int? ExpectedVersion, DenominationInput[]? Denominations, string? VarianceReason);
 internal sealed record BarcodeInput(string? Code, string? PackagingUnit, string? UnitFactor, bool? IsInternal);
 internal sealed record VariantInput(string? Sku, Dictionary<string, string?>? AxisValues, string? UnitPrice, BarcodeInput[]? Barcodes);
 internal sealed record ProductConfirmation(bool? Confirmed, int? SourceCandidate);

@@ -11581,6 +11581,9 @@ components:
         registerId:
           type: string
           format: uuid
+        branchId:
+          type: string
+          format: uuid
         cashierId:
           type: string
           format: uuid
@@ -11593,8 +11596,10 @@ components:
         openingCash:
           $ref: '#/components/schemas/Money'
         expectedCash:
-          $ref: '#/components/schemas/Money'
-          description: Hidden until counted when blind close is on (D-24)
+          anyOf:
+          - $ref: '#/components/schemas/Money'
+          - type: 'null'
+          description: null until the shift is counted and closed (blind close, D-24)
         countedCash:
           anyOf:
           - $ref: '#/components/schemas/Money'
@@ -11603,6 +11608,20 @@ components:
           anyOf:
           - $ref: '#/components/schemas/Money'
           - type: 'null'
+          description: counted − expected; negative = shortage (UC-06)
+        varianceStatus:
+          type: string
+          enum:
+          - None
+          - PendingApproval
+          - Approved
+          - Rejected
+          description: PendingApproval when |variance| exceeds the threshold; decided by shift.supervise, never the cashier
+            (SoD-01)
+        varianceReason:
+          type:
+          - string
+          - 'null'
         openedAt:
           type: string
           format: date-time
@@ -11617,11 +11636,15 @@ components:
       required:
       - id
       - registerId
+      - branchId
       - cashierId
       - status
       - openingCash
+      - expectedCash
       - countedCash
       - variance
+      - varianceStatus
+      - varianceReason
       - openedAt
       - closedAt
       - version
@@ -12837,6 +12860,9 @@ x-error-catalog:
   shift-already-open:
     status: 409
     meaning: Register already has an open shift (DI-008)
+  variance-not-pending:
+    status: 409
+    meaning: The shift has no variance waiting for approval (UC-06)
   barcode-already-assigned:
     status: 409
     meaning: context.productId (CAT-006)

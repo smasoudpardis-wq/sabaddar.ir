@@ -12,6 +12,7 @@
     <ProjectReference Include="../../Modules/Inventory/Inventory.Infrastructure/Inventory.Infrastructure.csproj" />
     <ProjectReference Include="../../Modules/Accounting/Accounting.Infrastructure/Accounting.Infrastructure.csproj" />
     <ProjectReference Include="../../Modules/Merchandising/Merchandising.Infrastructure/Merchandising.Infrastructure.csproj" />
+    <ProjectReference Include="../../Modules/Sales/Sales.Infrastructure/Sales.Infrastructure.csproj" />
   </ItemGroup>
   <ItemGroup><Using Include="Xunit" /></ItemGroup>
 </Project>
