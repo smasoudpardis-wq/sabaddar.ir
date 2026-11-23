@@ -220,4 +220,93 @@ public sealed class CatalogTests : IClassFixture<ApiFactory>, IAsyncLifetime
         Assert.Equal(HttpStatusCode.Created, variant.StatusCode);
         Assert.Equal("05901234123457", (await Body(variant)).GetProperty("barcodes")[0].GetProperty("codeNormalized").GetString());
     }
+    private static string Label(string data12) => data12 + Gtin.ComputeCheckDigit(data12);
+
+    private static async Task<HttpResponseMessage> Resolve(HttpClient c, string barcode) =>
+        await c.PostAsJsonAsync("/api/v1/catalog/barcodes/resolve", new { barcode, branchId = Guid.NewGuid() });
+
+    [DbFact]
+    public async Task AT029_weighted_profiles_decode_a_label_to_the_variant_and_its_weight_or_price()
+    {
+        HttpClient owner = Owner();
+        JsonElement initial = await Body(await owner.GetAsync("/api/v1/weighted-barcode-profiles"));
+        Assert.Equal(1, initial.GetProperty("version").GetInt32());
+        Assert.Empty(initial.GetProperty("profiles").EnumerateArray());
+
+        object weight = new { prefix = "21", itemCodeLength = 5, valueType = "Weight", valueLength = 5, decimals = 3, hasInnerCheckDigit = false };
+        object price = new { prefix = "22", itemCodeLength = 5, valueType = "Price", valueLength = 4, decimals = 0, hasInnerCheckDigit = true };
+        HttpResponseMessage set = await owner.PutAsJsonAsync("/api/v1/weighted-barcode-profiles", new { expectedVersion = 1, profiles = new[] { weight, price } });
+        Assert.Equal(HttpStatusCode.OK, set.StatusCode);
+        Assert.Equal(2, (await Body(set)).GetProperty("version").GetInt32());
+
+        // a stale version and an overlapping prefix (DI-084) change nothing
+        HttpResponseMessage stale = await owner.PutAsJsonAsync("/api/v1/weighted-barcode-profiles", new { expectedVersion = 1, profiles = Array.Empty<object>() });
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+        Assert.Equal("version-conflict", (await Body(stale)).GetProperty("code").GetString());
+        object overlapping = new { prefix = "2", itemCodeLength = 6, valueType = "Price", valueLength = 5, decimals = 0, hasInnerCheckDigit = false };
+        HttpResponseMessage overlap = await owner.PutAsJsonAsync("/api/v1/weighted-barcode-profiles", new { expectedVersion = 2, profiles = new[] { weight, overlapping } });
+        Assert.Equal(HttpStatusCode.BadRequest, overlap.StatusCode);
+        JsonElement now = await Body(await owner.GetAsync("/api/v1/weighted-barcode-profiles"));
+        Assert.Equal(2, now.GetProperty("version").GetInt32());
+        Assert.Equal(["21", "22"], now.GetProperty("profiles").EnumerateArray().Select(p => p.GetProperty("prefix").GetString()));
+
+        async Task<Guid> Make(string name, string sku, string unit, object barcode) =>
+            (await Body(await Create(owner, new
+            {
+                name, baseUnit = unit, confirmation = new { confirmed = true }, variants = new[] { new { sku, barcodes = new[] { barcode } } },
+            }))).GetProperty("variants")[0].GetProperty("id").GetGuid();
+        Guid cheese = await Make("پنیر لیقوان فله", "AT29-CHEESE", "KG", new { code = "00123", isInternal = true });
+        Guid meat = await Make("گوشت چرخ‌کرده", "AT29-MEAT", "KG", new { code = "00456", isInternal = true });
+        await Make("شیر", "AT29-MILK", "EA", new { code = "6260100000018" });
+
+        JsonElement w = await Body(await Resolve(owner, "2100123012503"));   // 1.250 kg of item 00123
+        Assert.Equal("known", w.GetProperty("kind").GetString());
+        Assert.Equal(cheese, w.GetProperty("tenantProduct").GetProperty("variantId").GetGuid());
+        JsonElement wn = w.GetProperty("normalized");
+        Assert.True(wn.GetProperty("isWeighted").GetBoolean());
+        Assert.True(wn.GetProperty("isInternal").GetBoolean());
+        Assert.Equal("02100123012503", wn.GetProperty("gtin14").GetString());
+        Assert.Equal(cheese, wn.GetProperty("weighted").GetProperty("variantId").GetGuid());
+        Assert.Equal("1.250", wn.GetProperty("weighted").GetProperty("value").GetString());
+        Assert.Equal("Weight", wn.GetProperty("weighted").GetProperty("valueType").GetString());
+
+        JsonElement p = (await Body(await Resolve(owner, "2200456928752"))).GetProperty("normalized").GetProperty("weighted");   // 2,875 rials of 00456
+        Assert.Equal(meat, p.GetProperty("variantId").GetGuid());
+        Assert.Equal("2875", p.GetProperty("value").GetString());
+        Assert.Equal("Price", p.GetProperty("valueType").GetString());
+
+        // a misprinted price (inner check digit) is refused, never sold at a wrong amount
+        HttpResponseMessage misprint = await Resolve(owner, "2200456028759");
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, misprint.StatusCode);
+        Assert.Equal("invalid-barcode", (await Body(misprint)).GetProperty("code").GetString());
+
+        JsonElement unknown = await Body(await Resolve(owner, Label("219999901000")));
+        Assert.Equal("not_found", unknown.GetProperty("kind").GetString());
+        Assert.True(unknown.GetProperty("normalized").GetProperty("isWeighted").GetBoolean());
+
+        JsonElement milk = await Body(await Resolve(owner, "۶۲۶۰۱۰۰۰۰۰۰۱۸"));   // Persian digits from a keyboard wedge
+        Assert.Equal("known", milk.GetProperty("kind").GetString());
+        Assert.False(milk.GetProperty("normalized").GetProperty("isWeighted").GetBoolean());
+        Assert.Equal("AT29-MILK", milk.GetProperty("tenantProduct").GetProperty("sku").GetString());
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, (await Resolve(owner, "6260100000017")).StatusCode);   // bad check digit
+
+        JsonElement plu = await Body(await Resolve(owner, "00123"));   // the internal code itself
+        Assert.Equal(cheese, plu.GetProperty("tenantProduct").GetProperty("variantId").GetGuid());
+        Assert.False(plu.GetProperty("normalized").GetProperty("isWeighted").GetBoolean());
+    }
+
+    [DbFact]
+    public async Task A_profile_set_that_does_not_fill_an_EAN_13_is_refused_field_by_field()
+    {
+        HttpResponseMessage r = await Owner().PutAsJsonAsync("/api/v1/weighted-barcode-profiles", new
+        {
+            expectedVersion = 1,
+            profiles = new[] { new { prefix = "12", itemCodeLength = 5, valueType = "Price", valueLength = 4, decimals = 2, hasInnerCheckDigit = false } },
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, r.StatusCode);
+        JsonElement errors = (await Body(r)).GetProperty("errors");
+        Assert.True(errors.TryGetProperty("profiles[0].prefix", out _));
+        Assert.True(errors.TryGetProperty("profiles[0].decimals", out _));
+        Assert.True(errors.TryGetProperty("profiles[0]", out _));
+    }
 }

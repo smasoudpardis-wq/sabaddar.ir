@@ -228,8 +228,14 @@ schema("PriceList", id="uuid", name="str", branchIds=["uuid"])
 schema("DiscountRuleCreate", name="str", target={"kind": ("enum", ["Product", "Category"]), "id": "uuid"},
        percent="bp", validFrom="dt", **{"validTo?": "dt", "branchIds?": ["uuid"]})
 schema("DiscountRule", id="uuid", name="str", percent="bp", validFrom="dt", validTo="dt?")
-schema("WeightedBarcodeProfile", **{"id?": "uuid"}, prefix="str", itemCodeLength="int",
-       valueType=("enum", ["Weight", "Price"]), valueLength="int", decimals="int", hasInnerCheckDigit="bool")
+schema("WeightedBarcodeProfile", **{"id?": "uuid"}, prefix=("desc", "str", "1-3 digits starting with 2 (GS1 restricted circulation)"),
+       itemCodeLength=("desc", "int", "1-6; the item code is the variant's internal code (its PLU on the scale)"),
+       valueType=("enum", ["Weight", "Price"]), valueLength="int",
+       decimals=("desc", "int", "Weight: kilogram decimals 0-3; Price: 0 (whole rials)"),
+       hasInnerCheckDigit=("desc", "bool", "GS1 value check digit before a 4- or 5-digit value. "
+                           "prefix + itemCodeLength + valueLength (+1) = 12, the data digits of an EAN-13"))
+schema("WeightedBarcodeProfileSet", version="int", profiles=["#WeightedBarcodeProfile"])
+schema("WeightedBarcodeProfileSetUpdate", expectedVersion="int", profiles=["#WeightedBarcodeProfile"])
 
 # Inventory / Procurement
 schema("WarehouseCreate", branchId="uuid", code="str", **{"kind?": ("enum", ["Sellable", "ReturnsDamaged"])})
@@ -576,7 +582,7 @@ SEC = {
 # be reduced (revoke a device, remove a role, disable a user — re-enabling is refused) and the register unlocked to read; support can be let in to help.
 READ_ONLY_ALLOWED = {
     "selectActiveTenant", "verifyMyPin", "revokeTerminal", "removeRoleAssignment", "updateUser", "createExport",
-    "recordCollection", "portalPayBalance", "portalExportMyData", "retryTaxInvoice", "decideSupportAccess", "revokeSupportAccess",
+    "recordCollection", "resolveBarcode", "portalPayBalance", "portalExportMyData", "retryTaxInvoice", "decideSupportAccess", "revokeSupportAccess",
 }
 
 
@@ -774,7 +780,10 @@ op("post", "/catalog/barcodes/resolve", "resolveBarcode", "Catalog", "تشخیص
             "fields": {"name": "Low fat milk 1L"}, "conflictsWith": [0]}],
        "degraded": False})},
    desc="Sample barcode values are illustrative and not guaranteed real GTINs. Never returns another tenant's "
-        "price/stock/ids (P0-8). Providers time out at 2s each, 4s total; degraded=true when skipped.")
+        "price/stock/ids (P0-8). Providers time out at 2s each, 4s total; degraded=true when skipped. "
+        "A weighted label (CAT-007) is decoded first: its item code is looked up as the variant's internal code and "
+        "`normalized.weighted.value` is kilograms (3 decimals) or rials; a wrong value check digit is 422 invalid-barcode. "
+        "Implemented so far: the tenant source only (global catalog and providers: US-043); unitPrice comes with price lists.")
 op("get", "/products", "listProducts", "Catalog", "جستجوی کالا (بارکد، SKU، نام نرمال‌شده فارسی)",
    params=[{"name": "q", "in": "query", "required": False, "schema": {"type": "string"}},
            {"name": "barcode", "in": "query", "required": False, "schema": {"type": "string"}},
@@ -809,9 +818,13 @@ op("post", "/price-lists/{priceListId}/prices", "setPrices", "Catalog", "تعی�
 op("get", "/discount-rules", "listDiscountRules", "Catalog", "قواعد تخفیف", resp="DiscountRule", list_of=True, reqs=["CAT-010"])
 op("post", "/discount-rules", "createDiscountRule", "Catalog", "قاعده تخفیف خودکار", perm="catalog.price.manage",
    scope="Branch", body="DiscountRuleCreate", resp="DiscountRule", resp_code="201", reqs=["CAT-010"], audited=True)
-op("put", "/weighted-barcode-profiles", "setWeightedBarcodeProfiles", "Catalog", "Profileهای بارکد وزنی",
-   perm="tenant.settings.manage", scope="Tenant", body="WeightedBarcodeProfile", resp="WeightedBarcodeProfile",
-   reqs=["CAT-007", "DI-084"], audited=True, conflict=True)
+op("get", "/weighted-barcode-profiles", "getWeightedBarcodeProfiles", "Catalog", "Profileهای بارکد وزنی",
+   resp="WeightedBarcodeProfileSet", reqs=["CAT-007"])
+op("put", "/weighted-barcode-profiles", "setWeightedBarcodeProfiles", "Catalog", "تعیین Profileهای بارکد وزنی (کل مجموعه)",
+   perm="tenant.settings.manage", scope="Tenant", body="WeightedBarcodeProfileSetUpdate", resp="WeightedBarcodeProfileSet",
+   reqs=["CAT-007", "DI-084"], audited=True, conflict=True,
+   desc="Replaces the whole set (0-10 profiles). Prefixes must not overlap (equal, or one starting another): 400 validation. "
+        "A 13-digit code starting with a profile's prefix is always read as a weighted label.")
 
 # ---------------- Inventory & procurement
 tag("Inventory", "انبار، رسید، تعدیل، انتقال و انبارگردانی (INV)")

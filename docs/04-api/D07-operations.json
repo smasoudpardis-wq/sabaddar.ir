@@ -415,7 +415,7 @@
   "method": "POST",
   "path": "/catalog/barcodes/resolve",
   "permission": "catalog.product.manage",
-  "allowedWhenReadOnly": false,
+  "allowedWhenReadOnly": true,
   "scope": "Branch",
   "pathParams": [],
   "bodyProps": [
@@ -632,6 +632,17 @@
   "idempotent": false
  },
  {
+  "operationId": "getWeightedBarcodeProfiles",
+  "method": "GET",
+  "path": "/weighted-barcode-profiles",
+  "permission": "tenant.member",
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
+ },
+ {
   "operationId": "setWeightedBarcodeProfiles",
   "method": "PUT",
   "path": "/weighted-barcode-profiles",
@@ -640,13 +651,8 @@
   "scope": "Tenant",
   "pathParams": [],
   "bodyProps": [
-   "decimals",
-   "hasInnerCheckDigit",
-   "id",
-   "itemCodeLength",
-   "prefix",
-   "valueLength",
-   "valueType"
+   "expectedVersion",
+   "profiles"
   ],
   "idempotent": false
  },

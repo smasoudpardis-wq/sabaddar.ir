@@ -78,7 +78,7 @@ public readonly record struct Gtin
         ComputeCheckDigit(digits.AsSpan(0, digits.Length - 1)) == digits[^1] - '0';
 
     /// <summary>Accepts Persian (U+06F0–06F9) and Arabic-Indic (U+0660–0669) digits from keyboard wedges (NFR-UX-001).</summary>
-    private static string NormalizeDigits(string value) =>
+    public static string NormalizeDigits(string value) =>
         string.Create(value.Length, value, static (span, src) =>
         {
             for (int i = 0; i < src.Length; i++)

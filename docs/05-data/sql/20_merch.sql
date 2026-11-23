@@ -104,7 +104,46 @@ CREATE TABLE merch.price_list_item (
 );
 CALL core.enable_tenant_rls('merch.price_list_item');
 
+-- CAT-007: weighted barcode profiles (an EAN-13 starting with 2: prefix, item code, [price check digit], value,
+-- check digit). A tenant edits its profiles as one set (PUT) guarded by weighted_barcode_settings.version.
+CREATE TABLE merch.weighted_barcode_settings (
+  tenant_id uuid PRIMARY KEY,
+  version   int NOT NULL DEFAULT 1 CHECK (version >= 1)
+);
+CALL core.enable_tenant_rls('merch.weighted_barcode_settings');
+
+CREATE TABLE merch.weighted_barcode_profile (
+  tenant_id             uuid NOT NULL,
+  id                    uuid NOT NULL,
+  prefix                text NOT NULL CHECK (prefix ~ '^2[0-9]{0,2}$'),     -- GS1 restricted circulation (20-29)
+  item_code_length      int  NOT NULL CHECK (item_code_length BETWEEN 1 AND 6),
+  value_type            text NOT NULL CHECK (value_type IN ('Weight','Price')),
+  value_length          int  NOT NULL CHECK (value_length BETWEEN 3 AND 6),
+  decimals              int  NOT NULL CHECK (decimals BETWEEN 0 AND 3),   -- Weight: digits after the point (kg)
+  has_inner_check_digit boolean NOT NULL DEFAULT false,                   -- GS1 price/weight check digit (4 or 5 digits)
+  PRIMARY KEY (tenant_id, id),
+  CHECK (length(prefix) + item_code_length + value_length + has_inner_check_digit::int = 12),
+  CHECK (NOT has_inner_check_digit OR value_length IN (4, 5)),
+  CHECK (value_type = 'Weight' OR decimals = 0)                            -- a price is whole rials
+);
+CALL core.enable_tenant_rls('merch.weighted_barcode_profile');
+
+-- DI-084: one tenant's prefixes never overlap (neither equal nor one starting the other), so a code decodes one way.
+CREATE OR REPLACE FUNCTION merch.weighted_prefix_disjoint() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended('rc-weighted-prefix:' || NEW.tenant_id, 0));
+  IF EXISTS (SELECT 1 FROM merch.weighted_barcode_profile p
+             WHERE p.tenant_id = NEW.tenant_id AND p.id <> NEW.id
+               AND (starts_with(p.prefix, NEW.prefix) OR starts_with(NEW.prefix, p.prefix))) THEN
+    RAISE EXCEPTION 'weighted barcode prefix % overlaps another profile', NEW.prefix USING ERRCODE = 'RC022';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER weighted_prefix_disjoint BEFORE INSERT OR UPDATE ON merch.weighted_barcode_profile
+  FOR EACH ROW EXECUTE FUNCTION merch.weighted_prefix_disjoint();
+
 GRANT USAGE ON SCHEMA merch TO rc_app, rc_worker, rc_reporting;
 GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA merch TO rc_app;
 GRANT SELECT ON ALL TABLES IN SCHEMA merch TO rc_worker, rc_reporting;
+GRANT DELETE ON merch.weighted_barcode_profile TO rc_app;   -- the set is replaced as a whole
 RESET ROLE;

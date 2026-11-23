@@ -31,6 +31,8 @@ public sealed record BarcodeSpec(string Code, string Normalized, string Packagin
     }
 }
 
+public sealed record BarcodeMatch(Guid ProductId, Guid VariantId, string Name, string Sku, string BaseUnit, bool IsInternal);
+
 public sealed record VariantSpec(string Sku, IReadOnlyDictionary<string, string> AxisValues, IReadOnlyList<BarcodeSpec> Barcodes);
 
 public sealed record ProductSpec(string Name, string? Brand, string BaseUnit, string? TaxCode, int TaxRate, IReadOnlyList<VariantSpec> Variants);
@@ -66,6 +68,9 @@ public interface IProductCatalog
 
     Task<CatalogResult<BarcodeView>> AddBarcodeAsync(IUnitOfWorkScope scope, Guid productId, Guid variantId, BarcodeSpec spec,
         CancellationToken cancellationToken);
+
+    /// <summary>The variant an active barcode (GTIN-14, or an internal code) currently belongs to (CAT-003, CAT-007).</summary>
+    Task<BarcodeMatch?> FindByCodeAsync(IUnitOfWorkScope scope, string codeNormalized, CancellationToken cancellationToken);
 
     Task<CatalogOutcome> RemoveBarcodeAsync(IUnitOfWorkScope scope, Guid productId, Guid variantId, Guid barcodeId, CancellationToken cancellationToken);
 }

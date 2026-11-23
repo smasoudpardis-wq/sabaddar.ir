@@ -112,6 +112,21 @@ SELECT t.expect_error('T145 a standard barcode is stored only as GTIN-14', '2351
     VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000011', '6260000000017', '6260000000017')$$);
 SELECT t.expect_error('T146 barcode rows are never deleted', '42501',
   $$DELETE FROM merch.tenant_product_barcode WHERE code_normalized = '06260000000017'$$);
+-- US-045 weighted barcode profiles (CAT-007, DI-084)
+INSERT INTO merch.weighted_barcode_profile (tenant_id, id, prefix, item_code_length, value_type, value_length, decimals)
+  VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000070', '21', 5, 'Weight', 5, 3);
+SELECT t.expect_error('T168 a prefix that starts another profile''s prefix is rejected (DI-084)', 'RC022',
+  $$INSERT INTO merch.weighted_barcode_profile (tenant_id, id, prefix, item_code_length, value_type, value_length, decimals)
+    VALUES (core.current_tenant(), gen_random_uuid(), '2', 6, 'Price', 5, 0)$$);
+SELECT t.expect_error('T169 an equal prefix is rejected too (DI-084)', 'RC022',
+  $$INSERT INTO merch.weighted_barcode_profile (tenant_id, id, prefix, item_code_length, value_type, value_length, decimals)
+    VALUES (core.current_tenant(), gen_random_uuid(), '21', 5, 'Price', 5, 0)$$);
+SELECT t.expect_error('T170 the parts must fill the 12 data digits of an EAN-13', '23514',
+  $$INSERT INTO merch.weighted_barcode_profile (tenant_id, id, prefix, item_code_length, value_type, value_length, decimals)
+    VALUES (core.current_tenant(), gen_random_uuid(), '22', 5, 'Price', 4, 0)$$);
+INSERT INTO merch.weighted_barcode_profile (tenant_id, id, prefix, item_code_length, value_type, value_length, decimals, has_inner_check_digit)
+  VALUES (core.current_tenant(), gen_random_uuid(), '22', 5, 'Price', 4, 0, true);
+SELECT t.ok('T171 a disjoint prefix is accepted', (SELECT count(*) FROM merch.weighted_barcode_profile) = 2);
 SELECT t.expect_error('T11 overlapping price validity (DI-083)', '23P01',
   $$INSERT INTO merch.price_list_item (tenant_id, id, price_list_id, variant_id, unit_price, valid)
     VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000020',

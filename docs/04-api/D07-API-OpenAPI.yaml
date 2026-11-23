@@ -1404,8 +1404,11 @@ paths:
       tags:
       - Catalog
       summary: تشخیص بارکد و پیشنهاد مشخصات
-      description: Sample barcode values are illustrative and not guaranteed real GTINs. Never returns another tenant's price/stock/ids
-        (P0-8). Providers time out at 2s each, 4s total; degraded=true when skipped.
+      description: 'Sample barcode values are illustrative and not guaranteed real GTINs. Never returns another tenant''s
+        price/stock/ids (P0-8). Providers time out at 2s each, 4s total; degraded=true when skipped. A weighted label (CAT-007)
+        is decoded first: its item code is looked up as the variant''s internal code and `normalized.weighted.value` is kilograms
+        (3 decimals) or rials; a wrong value check digit is 422 invalid-barcode. Implemented so far: the tenant source only
+        (global catalog and providers: US-043); unitPrice comes with price lists.'
       security: *id001
       requestBody:
         required: true
@@ -1485,6 +1488,7 @@ paths:
       - CAT-004.1
       - CAT-005
       - CAT-007
+      x-allowed-when-read-only: true
       x-rate-limit-class: catalog-resolve
   /products:
     get:
@@ -2117,25 +2121,61 @@ paths:
       - CAT-010
       x-audited: true
   /weighted-barcode-profiles:
-    put:
-      operationId: setWeightedBarcodeProfiles
+    get:
+      operationId: getWeightedBarcodeProfiles
       tags:
       - Catalog
       summary: Profileهای بارکد وزنی
       security: *id001
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/WeightedBarcodeProfile'
       responses:
         '200':
           description: Success
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/WeightedBarcodeProfile'
+                $ref: '#/components/schemas/WeightedBarcodeProfileSet'
+          headers:
+            ETag:
+              schema:
+                type: string
+              description: Weak ETag of version
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: tenant.member
+      x-idempotent: false
+      x-requirements:
+      - CAT-007
+    put:
+      operationId: setWeightedBarcodeProfiles
+      tags:
+      - Catalog
+      summary: تعیین Profileهای بارکد وزنی (کل مجموعه)
+      description: 'Replaces the whole set (0-10 profiles). Prefixes must not overlap (equal, or one starting another): 400
+        validation. A 13-digit code starting with a profile''s prefix is always read as a weighted label.'
+      security: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WeightedBarcodeProfileSetUpdate'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WeightedBarcodeProfileSet'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -12799,9 +12839,11 @@ components:
           format: uuid
         prefix:
           type: string
+          description: 1-3 digits starting with 2 (GS1 restricted circulation)
         itemCodeLength:
           type: integer
           format: int32
+          description: 1-6; the item code is the variant's internal code (its PLU on the scale)
         valueType:
           type: string
           enum:
@@ -12813,8 +12855,11 @@ components:
         decimals:
           type: integer
           format: int32
+          description: 'Weight: kilogram decimals 0-3; Price: 0 (whole rials)'
         hasInnerCheckDigit:
           type: boolean
+          description: GS1 value check digit before a 4- or 5-digit value. prefix + itemCodeLength + valueLength (+1) = 12,
+            the data digits of an EAN-13
       required:
       - prefix
       - itemCodeLength
@@ -12822,6 +12867,34 @@ components:
       - valueLength
       - decimals
       - hasInnerCheckDigit
+    WeightedBarcodeProfileSet:
+      type: object
+      additionalProperties: false
+      properties:
+        version:
+          type: integer
+          format: int32
+        profiles:
+          type: array
+          items:
+            $ref: '#/components/schemas/WeightedBarcodeProfile'
+      required:
+      - version
+      - profiles
+    WeightedBarcodeProfileSetUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        expectedVersion:
+          type: integer
+          format: int32
+        profiles:
+          type: array
+          items:
+            $ref: '#/components/schemas/WeightedBarcodeProfile'
+      required:
+      - expectedVersion
+      - profiles
     WriteOffCreate:
       type: object
       additionalProperties: false

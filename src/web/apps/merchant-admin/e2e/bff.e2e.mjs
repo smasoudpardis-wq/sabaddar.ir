@@ -294,6 +294,29 @@ try {
   await page.getByTestId('product-search-submit').click();
   await page.getByTestId('products').filter({ hasText: 'E2E-COLA' }).waitFor();
   check('C02', 'found by the scanned GTIN-14 and by a name typed with Arabic letters (CAT-003, CAT-011)', true);
+  // W01–W03 US-045: the owner sets a scale label format; a printed label then decodes to the item and its weight
+  await page.goto(`${BFF}/products`);
+  await page.getByTestId('product-name').fill('پنیر فله آزمایشی');
+  await page.getByTestId('product-sku').fill('E2E-CHEESE');
+  await page.getByTestId('product-barcode').fill('00123');
+  await page.getByTestId('product-internal').check();
+  await page.getByTestId('product-submit').click();
+  await page.getByTestId('product-created').waitFor();
+  await page.goto(`${BFF}/weighted-barcodes`);
+  await page.getByTestId('weighted-prefix').fill('21');
+  await page.getByTestId('weighted-submit').click();
+  await page.getByTestId('weighted-saved').waitFor();
+  await page.locator('[data-testid="weighted-profiles"] [data-prefix="21"]').waitFor();
+  check('W01', 'the owner defines a weighted barcode profile (CAT-007)', true);
+  await page.getByTestId('weighted-label').fill('2100123012503');
+  await page.getByTestId('weighted-try').click();
+  const decoded = (await page.getByTestId('weighted-result').textContent()) ?? '';
+  check('W02', 'a scale label decodes to the item and 1.250 kg (AT-029)', decoded.includes('پنیر فله آزمایشی') && decoded.includes('1.250'), decoded);
+  await page.getByTestId('weighted-label').fill('2100123012504');   // wrong check digit
+  await page.getByTestId('weighted-try').click();
+  const bad = (await page.getByTestId('weighted-error').textContent()) ?? '';
+  check('W03', 'a misread label is refused, not guessed (CAT-003)', bad.includes('بارکد معتبر نیست'), bad);
+  await shot(page, 'weighted-barcodes');
   // X01 US-016: the owner (fresh MFA) requests a full export; the job is recorded and its status is shown
   await page.goto(`${BFF}/exports`);
   await page.getByTestId('export-submit').click();

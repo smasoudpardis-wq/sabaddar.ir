@@ -27,6 +27,7 @@ builder.Services.AddSingleton<ITenantReadOnlyQuery, PostgresTenantReadOnlyQuery>
 builder.Services.AddSingleton<IExportJobs, PostgresExportJobs>();
 builder.Services.AddSingleton<ISupportAccess, PostgresSupportAccess>();
 builder.Services.AddSingleton<IProductCatalog, PostgresProductCatalog>();
+builder.Services.AddSingleton<IWeightedBarcodeProfiles, PostgresWeightedBarcodeProfiles>();
 builder.Services.AddSingleton<IShifts, PostgresShifts>();
 builder.Services.AddSingleton<IJournals, PostgresJournals>();
 ObjectStorageOptions? storage = builder.Configuration.GetSection("Storage").Get<ObjectStorageOptions>();
@@ -970,6 +971,131 @@ v1.MapDelete("/products/{productId:guid}/variants/{variantId:guid}/barcodes/{bar
     })
     .RequirePermission(Permissions.CatalogProductManage);
 
+// ---------------- US-045: weighted barcode profiles (CAT-007, DI-084) and barcode resolve
+v1.MapGet("/weighted-barcode-profiles", async (RequestContext ctx, IUnitOfWork uow, IWeightedBarcodeProfiles weighted, CancellationToken ct) =>
+        Results.Ok(await uow.ExecuteAsync(ctx, (s, c) => weighted.GetAsync(s, c), ct)))
+    .RequireTenantMember();
+
+v1.MapPut("/weighted-barcode-profiles", async (WeightedProfilesInput body, RequestContext ctx, IUnitOfWork uow, IWeightedBarcodeProfiles weighted,
+        HttpContext http, CancellationToken ct) =>
+    {
+        var errors = new Dictionary<string, string[]>();
+        if (body.ExpectedVersion is null) errors["expectedVersion"] = ["required"];
+        if (body.Profiles is not { Length: <= WeightedBarcodes.MaxProfiles }) errors["profiles"] = [$"0-{WeightedBarcodes.MaxProfiles} profiles"];
+        for (int i = 0; i < (body.Profiles?.Length ?? 0) && body.Profiles!.Length <= WeightedBarcodes.MaxProfiles; i++)
+        {
+            WeightedProfileInput p = body.Profiles[i] ?? new WeightedProfileInput(null, null, null, null, null, null, null);
+            WeightedBarcodes.Validate(errors, $"profiles[{i}]", p.Prefix, p.ItemCodeLength, p.ValueType, p.ValueLength, p.Decimals, p.HasInnerCheckDigit);
+        }
+
+        if (errors.Count == 0)
+        {
+            if (body.Profiles!.Where(p => p.Id is not null).GroupBy(p => p.Id).Any(g => g.Count() > 1)) errors["profiles"] = ["duplicate id"];
+            else if (WeightedBarcodes.Overlap([.. body.Profiles!.Select(p => p.Prefix!)]) is { } clash)
+            {
+                errors["profiles"] = [$"prefixes {clash.A} and {clash.B} overlap: a label would decode two ways (DI-084)"];
+            }
+        }
+
+        if (errors.Count > 0) return Problems.Validation(http, errors);
+        WeightedBarcodeProfile[] profiles = [.. body.Profiles!.Select(p => new WeightedBarcodeProfile(p.Id ?? Guid.CreateVersion7(), p.Prefix!,
+            p.ItemCodeLength!.Value, Enum.Parse<WeightedValueType>(p.ValueType!), p.ValueLength!.Value, p.Decimals!.Value, p.HasInnerCheckDigit ?? false))];
+        var (outcome, set) = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            var r = await weighted.ReplaceAsync(s, body.ExpectedVersion!.Value, profiles, c);
+            if (r.Outcome == WeightedProfilesOutcome.Done)
+            {
+                await Audit(http, s, ActorOf(ctx, http), new AuditEntry("catalog.weighted-profiles.set", "WeightedBarcodeProfile", null,
+                    Details: new { version = r.Set!.Version, prefixes = profiles.Select(p => p.Prefix) }), c);
+            }
+
+            return r;
+        }, ct);
+        return outcome switch
+        {
+            WeightedProfilesOutcome.Done => Results.Ok(set),
+            WeightedProfilesOutcome.VersionConflict => Problems.Create(http, StatusCodes.Status409Conflict, "version-conflict",
+                "The profiles changed; reload and retry"),
+            _ => Problems.Validation(http, new Dictionary<string, string[]> { ["profiles"] = ["prefixes overlap (DI-084)"] }),
+        };
+    })
+    .RequirePermission(Permissions.TenantSettingsManage);
+
+// CAT-003/CAT-007: what a scanned code is in this store. Weighted labels are decoded first (their item code is the
+// variant's internal code); then the code is looked up as GTIN-14 or internal code. Global catalog and licensed
+// providers (CAT-004/005) are US-043: until then candidates is empty.
+v1.MapPost("/catalog/barcodes/resolve", async (BarcodeResolveInput body, RequestContext ctx, IUnitOfWork uow, IProductCatalog catalog,
+        IWeightedBarcodeProfiles weighted, HttpContext http, CancellationToken ct) =>
+    {
+        var errors = new Dictionary<string, string[]>();
+        if (body.Barcode is not { Length: >= 1 and <= 32 } || string.IsNullOrWhiteSpace(body.Barcode)) errors["barcode"] = ["1-32 characters"];
+        if (body.BranchId is null) errors["branchId"] = ["required"];
+        if (body.PreferredSources?.Any(x => x is not ("tenant" or "global" or "licensed_providers")) == true)
+        {
+            errors["preferredSources"] = ["tenant|global|licensed_providers"];
+        }
+
+        if (errors.Count > 0) return Problems.Validation(http, errors);
+        if (!AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.CatalogProductManage, new ScopeRef(ScopeType.Branch, body.BranchId, body.BranchId)))
+        {
+            return Forbidden(http);
+        }
+
+        string code = Gtin.NormalizeDigits(body.Barcode!.Trim());
+        bool gs1 = Gtin.TryParse(code, out Gtin gtin);
+        bool digitsOnly = code.All(char.IsAsciiDigit) && code.Length is 8 or 12 or 13 or 14;
+        if (!gs1 && (digitsOnly || !InternalCode.IsValid(code)))
+        {
+            return InputProblem(http, new Dictionary<string, string[]> { ["barcode"] = ["not a valid EAN-8, UPC-A, EAN-13, GTIN-14 or internal code"] }, true);
+        }
+
+        var result = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            WeightedProfileSet set = await weighted.GetAsync(s, c);
+            var (status, label) = WeightedBarcodes.Decode(set.Profiles, code);
+            BarcodeMatch? match = status switch
+            {
+                WeightedDecodeStatus.Decoded => await catalog.FindByCodeAsync(s, label!.ItemCode, c),
+                WeightedDecodeStatus.NotWeighted => await catalog.FindByCodeAsync(s, gs1 ? gtin.Normalized14 : code, c),
+                _ => null,
+            };
+            return (status, label, match);
+        }, ct);
+        if (result.status == WeightedDecodeStatus.Invalid)
+        {
+            return InputProblem(http, new Dictionary<string, string[]> { ["barcode"] = ["weighted label: the value check digit does not match"] }, true);
+        }
+
+        bool isWeighted = result.status == WeightedDecodeStatus.Decoded;
+        var normalized = new Dictionary<string, object?>
+        {
+            ["isInternal"] = !gs1 || gtin.IsRestrictedCirculation,
+            ["isWeighted"] = isWeighted,
+        };
+        if (gs1) normalized["gtin14"] = gtin.Normalized14;
+        if (isWeighted && result.match is not null)
+        {
+            normalized["weighted"] = new { variantId = result.match.VariantId, value = result.label!.ValueText, valueType = result.label.Profile.ValueType.ToString() };
+        }
+
+        var response = new Dictionary<string, object?>
+        {
+            ["kind"] = result.match is null ? "not_found" : "known",
+            ["normalized"] = normalized,
+            ["candidates"] = Array.Empty<object>(),
+            ["degraded"] = false,
+        };
+        if (result.match is { } m)
+        {
+            response["tenantProduct"] = new { productId = m.ProductId, variantId = m.VariantId, name = m.Name, sku = m.Sku, unitPrice = (string?)null };
+        }
+
+        return Results.Ok(response);
+    })
+    .RequirePermission(Permissions.CatalogProductManage)
+    .AllowWhenReadOnly()
+    .RequireRateLimiting(RateLimits.CatalogResolve);
+
 // Support JIT access (US-027, IAM-008, SoD-05): the store owner sees, approves, rejects and ends platform support
 // access. Deciding and ending need TenantOwner (not just tenant.settings.manage) and a fresh second factor.
 bool IsOwner(RequestContext ctx) => ctx.ActiveMembership!.Assignments.Any(a => a.Role == "TenantOwner");
@@ -1576,6 +1702,10 @@ internal sealed record ShiftOpenInput(Guid? RegisterId, string? OpeningCash);
 internal sealed record CashMovementInput(string? Direction, string? Amount, string? Reason);
 internal sealed record DenominationInput(string? Value, int? Count);
 internal sealed record ShiftCloseInput(string? CountedCash, int? ExpectedVersion, DenominationInput[]? Denominations, string? VarianceReason);
+internal sealed record WeightedProfileInput(Guid? Id, string? Prefix, int? ItemCodeLength, string? ValueType, int? ValueLength, int? Decimals,
+    bool? HasInnerCheckDigit);
+internal sealed record WeightedProfilesInput(int? ExpectedVersion, WeightedProfileInput[]? Profiles);
+internal sealed record BarcodeResolveInput(string? Barcode, Guid? BranchId, string[]? PreferredSources);
 internal sealed record BarcodeInput(string? Code, string? PackagingUnit, string? UnitFactor, bool? IsInternal);
 internal sealed record VariantInput(string? Sku, Dictionary<string, string?>? AxisValues, string? UnitPrice, BarcodeInput[]? Barcodes);
 internal sealed record ProductConfirmation(bool? Confirmed, int? SourceCandidate);

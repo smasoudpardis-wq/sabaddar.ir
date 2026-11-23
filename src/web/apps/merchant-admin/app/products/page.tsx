@@ -13,6 +13,7 @@ export default function ProductsPage() {
   const [search, setSearch] = useState('');
   const [items, setItems] = useState<Product[]>([]);
   const [form, setForm] = useState({ name: '', brand: '', sku: '', barcode: '', packagingUnit: 'EA', unitFactor: '1', taxRate: '10' });
+  const [internal, setInternal] = useState(false);   // the store's own code, e.g. a scale item code (CAT-003, CAT-007)
   const [key, setKey] = useState(() => crypto.randomUUID());
   const [error, setError] = useState('');
   const [created, setCreated] = useState('');
@@ -37,7 +38,7 @@ export default function ProductsPage() {
       body: JSON.stringify({
         name: form.name, brand: form.brand || undefined, baseUnit: 'EA', taxRate: Math.round(Number(form.taxRate) * 100),
         confirmation: { confirmed: true },
-        variants: [{ sku: form.sku, barcodes: form.barcode ? [{ code: form.barcode, packagingUnit: form.packagingUnit, unitFactor: form.unitFactor }] : [] }],
+        variants: [{ sku: form.sku, barcodes: form.barcode ? [{ code: form.barcode, packagingUnit: form.packagingUnit, unitFactor: form.unitFactor, isInternal: internal || undefined }] : [] }],
       }),
     });
     if (!r.ok) return setError(await codeOf(r));
@@ -72,6 +73,7 @@ export default function ProductsPage() {
         <label>برند <input value={form.brand} onChange={set('brand')} /></label>{' '}
         <label>SKU <input required value={form.sku} onChange={set('sku')} dir="ltr" data-testid="product-sku" /></label>{' '}
         <label>بارکد <input value={form.barcode} onChange={set('barcode')} dir="ltr" inputMode="numeric" data-testid="product-barcode" /></label>{' '}
+        <label><input type="checkbox" checked={internal} onChange={(e) => setInternal(e.target.checked)} data-testid="product-internal" /> کد داخلی (مثلاً کد کالا در ترازو)</label>{' '}
         <label>بسته‌بندی <select value={form.packagingUnit} onChange={set('packagingUnit')}>{UNITS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>{' '}
         <label>تعداد در بسته <input value={form.unitFactor} onChange={set('unitFactor')} dir="ltr" size={4} /></label>{' '}
         <label>نرخ مالیات ٪ <input value={form.taxRate} onChange={set('taxRate')} dir="ltr" size={4} /></label>{' '}

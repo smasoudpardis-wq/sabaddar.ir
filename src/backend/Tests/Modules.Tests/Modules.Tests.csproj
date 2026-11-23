@@ -7,6 +7,7 @@
     <PackageReference Include="FsCheck.Xunit" />
     <ProjectReference Include="../../Modules/Accounting/Accounting.Application/Accounting.Application.csproj" />
     <ProjectReference Include="../../Modules/Notifications/Notifications.Application/Notifications.Application.csproj" />
+    <ProjectReference Include="../../Modules/Merchandising/Merchandising.Application/Merchandising.Application.csproj" />
   </ItemGroup>
   <ItemGroup><Using Include="Xunit" /></ItemGroup>
 </Project>

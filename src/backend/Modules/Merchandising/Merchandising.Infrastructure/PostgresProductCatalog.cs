@@ -120,6 +120,21 @@ public sealed class PostgresProductCatalog(IOutbox outbox) : IProductCatalog
         return (string)(await cmd.ExecuteScalarAsync(ct))!;
     }
 
+    public async Task<BarcodeMatch?> FindByCodeAsync(IUnitOfWorkScope scope, string codeNormalized, CancellationToken cancellationToken)
+    {
+        var s = (PostgresUnitOfWorkScope)scope;
+        await using NpgsqlCommand cmd = s.Command(
+            "SELECT p.id, v.id, p.name, v.sku, p.base_unit_code, b.is_internal FROM merch.tenant_product_barcode b " +
+            "JOIN merch.tenant_variant v ON v.tenant_id = b.tenant_id AND v.id = b.variant_id " +
+            "JOIN merch.tenant_product p ON p.tenant_id = v.tenant_id AND p.id = v.product_id " +
+            "WHERE b.active AND b.code_normalized = $1");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = codeNormalized });
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(cancellationToken);
+        return await r.ReadAsync(cancellationToken)
+            ? new BarcodeMatch(r.GetGuid(0), r.GetGuid(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetBoolean(5))
+            : null;
+    }
+
     public async Task<CatalogResult<ProductView>> UpdateAsync(IUnitOfWorkScope scope, Guid productId, ProductChange change, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(change);

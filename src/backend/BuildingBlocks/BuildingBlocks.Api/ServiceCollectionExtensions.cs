@@ -53,7 +53,9 @@ public static class ServiceCollectionExtensions
             o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
             o.OnRejected = async (ctx, ct) =>
             {
-                ctx.HttpContext.Response.Headers.RetryAfter = "600";
+                ctx.HttpContext.Response.Headers.RetryAfter =
+                    (ctx.Lease.TryGetMetadata(System.Threading.RateLimiting.MetadataName.RetryAfter, out TimeSpan wait) ? Math.Max(1, (int)Math.Ceiling(wait.TotalSeconds)) : 600)
+                    .ToString(System.Globalization.CultureInfo.InvariantCulture);
                 await Problems.WriteAsync(ctx.HttpContext, Problems.Create(ctx.HttpContext, StatusCodes.Status429TooManyRequests, "rate-limited", "Too many attempts"));
             };
             foreach (string policy in new[] { RateLimits.Pairing, RateLimits.Invitation })
@@ -62,6 +64,11 @@ public static class ServiceCollectionExtensions
                     http.User.FindFirst("iss")?.Value + "|" + http.User.FindFirst("sub")?.Value,
                     _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(10) }));
             }
+
+            // D07 README: barcode resolve 120 a minute per user (a scanner is fast, a scraper faster)
+            o.AddPolicy(RateLimits.CatalogResolve, http => System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+                http.User.FindFirst("iss")?.Value + "|" + http.User.FindFirst("sub")?.Value,
+                _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions { PermitLimit = 120, Window = TimeSpan.FromMinutes(1) }));
         });
         services.AddSingleton(TimeProvider.System);
         services.AddProblemDetails(o => o.CustomizeProblemDetails = ProblemDefaults.Customize);
@@ -96,5 +103,6 @@ public static class RateLimits
 {
     public const string Pairing = "pairing";
     public const string Invitation = "invitation";
+    public const string CatalogResolve = "catalog-resolve";
 }
 
