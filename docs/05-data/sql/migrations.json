@@ -1,0 +1,19 @@
+{
+  "$comment": "US-004 / D05 §11: ordered migration steps applied by RetailCloud.Migrator. Applied steps are immutable (checksum); change the schema by appending a step. Until the first production release the baseline steps may still change (recreate dev databases).",
+  "bootstrap": "00_bootstrap_superuser.sql",
+  "fitness": "90_fitness.sql",
+  "steps": [
+    { "module": "core",     "id": "0001_baseline", "file": "01_core.sql" },
+    { "module": "platform", "id": "0001_baseline", "file": "10_platform.sql" },
+    { "module": "iam",      "id": "0001_baseline", "file": "15_iam.sql" },
+    { "module": "merch",    "id": "0001_baseline", "file": "20_merch.sql" },
+    { "module": "inv",      "id": "0001_baseline", "file": "30_inv.sql" },
+    { "module": "sales",    "id": "0001_baseline", "file": "40_sales.sql" },
+    { "module": "acc",      "id": "0001_baseline", "file": "50_acc.sql" },
+    { "module": "ar",       "id": "0001_baseline", "file": "55_ar.sql" },
+    { "module": "cid",      "id": "0001_baseline", "file": "60_cid.sql" },
+    { "module": "tax",      "id": "0001_baseline", "file": "70_tax.sql" },
+    { "module": "audit",    "id": "0001_baseline", "file": "80_audit.sql" },
+    { "module": "core",     "id": "0002_oracles",  "file": "91_oracles.sql" }
+  ]
+}

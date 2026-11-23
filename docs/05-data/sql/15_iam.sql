@@ -181,7 +181,9 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
   GROUP BY m.tenant_id, t.legal_name, t.status
   ORDER BY t.legal_name
 $$;
+GRANT CREATE ON SCHEMA iam TO rc_tenant_directory;  -- a new owner needs CREATE on the schema; revoked at once (fitness 6)
 ALTER FUNCTION iam.my_memberships() OWNER TO rc_tenant_directory;
+REVOKE CREATE ON SCHEMA iam FROM rc_tenant_directory;
 REVOKE ALL ON FUNCTION iam.my_memberships() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION iam.my_memberships() TO rc_app;
 
@@ -191,7 +193,9 @@ CREATE OR REPLACE FUNCTION iam.invitation_tenant(p_token_hash bytea) RETURNS uui
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
   SELECT tenant_id FROM iam.invitation WHERE token_hash = p_token_hash AND status = 'Pending' AND expires_at > now()
 $$;
+GRANT CREATE ON SCHEMA iam TO rc_tenant_directory;  -- a new owner needs CREATE on the schema; revoked at once (fitness 6)
 ALTER FUNCTION iam.invitation_tenant(bytea) OWNER TO rc_tenant_directory;
+REVOKE CREATE ON SCHEMA iam FROM rc_tenant_directory;
 REVOKE ALL ON FUNCTION iam.invitation_tenant(bytea) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION iam.invitation_tenant(bytea) TO rc_app;
 

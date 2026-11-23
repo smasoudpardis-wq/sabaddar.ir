@@ -6,6 +6,7 @@
     <PackageReference Include="coverlet.collector" />
     <ProjectReference Include="../../BuildingBlocks/BuildingBlocks.Infrastructure/BuildingBlocks.Infrastructure.csproj" />
     <ProjectReference Include="../../Hosts/RetailCloud.Workers/RetailCloud.Workers.csproj" />
+    <ProjectReference Include="../../Hosts/RetailCloud.Migrator/RetailCloud.Migrator.csproj" />
   </ItemGroup>
   <ItemGroup><Using Include="Xunit" /></ItemGroup>
 </Project>

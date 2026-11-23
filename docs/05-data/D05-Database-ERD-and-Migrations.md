@@ -24,7 +24,7 @@ open_questions: [BQ-01..BQ-04]
 > PGHOST=… PGPORT=… PGUSER=postgres docs/05-data/sql/tests/run_all.sh
 > ```
 >
-> DDL نمونه **مرجع طراحی** است، نه Migration نهایی. Migrationهای واقعی با EF Core و به ازای ماژول تولید می‌شوند (بخش 11)، ولی باید همین قیدها، Triggerها و Policyها را داشته باشند و همین تست‌ها را پاس کنند.
+> DDL نمونه **مرجع طراحی** است، نه Migration نهایی. Migrationهای واقعی به ازای ماژول و با `RetailCloud.Migrator` اجرا می‌شوند (بخش 11، `[DEC D-96]`)، ولی باید همین قیدها، Triggerها و Policyها را داشته باشند و همین تست‌ها را پاس کنند.
 
 ---
 
@@ -502,9 +502,17 @@ CALL core.enable_tenant_rls('sales.sale');   -- ENABLE + FORCE + policy tenant_i
 ## 11. راهبرد Migration
 
 ### 11.1 ابزار و سازمان
-- **EF Core Migrations به ازای ماژول** (یک `DbContext` و یک `__EFMigrationsHistory` در Schema همان ماژول: `sales.__ef_migrations_history`).
-- Triggerها، Policyها، Exclusion Constraintها و Functionها با `migrationBuilder.Sql(...)` و از فایل‌های SQL نسخه‌دار (همین الگوی `sql/`) اعمال می‌شوند. **بعد از هر Migration، Fitness و تست‌های DB اجرا می‌شوند** (CI).
-- خروجی Migration در CI یک **Migration Bundle** (`efbundle`) است که Pipeline با نقش `rc_migrator` اجرا می‌کند. Api و Workers هرگز Migration اجرا نمی‌کنند.
+- **Migration با فایل‌های SQL نسخه‌دار به ازای ماژول** `[DEC D-96]` (US-004): فهرست مرتب گام‌ها در `sql/migrations.json` (ماژول، شناسه `NNNN_name`، فایل). تاریخچه هر ماژول در Schema خودش است: `sales.migration_history` (شناسه، Checksum SHA-256، زمان، اجراکننده، مدت).
+- **اجراکننده `RetailCloud.Migrator`** (پروژه جدا؛ Api و Workers به آن ارجاع ندارند و هرگز Migration اجرا نمی‌کنند؛ تست معماری R11):
+  - هر گام در یک تراکنش، همراه با ثبت تاریخچه‌اش؛ `lock_timeout = 3s` با ۳ بار تلاش و `statement_timeout = 5min`.
+  - فقط یک اجراکننده در هر لحظه (Advisory Lock).
+  - توقف اگر: فایل گامِ اجراشده تغییر کرده باشد (Checksum)؛ گامی در DB باشد که در فهرست نیست؛ یا ترتیب به هم خورده باشد.
+  - گامی که خط اولش `-- rc:no-transaction` است بیرون از تراکنش اجرا می‌شود (`CREATE INDEX CONCURRENTLY`).
+  - پس از اجرا، Fitness (`90_fitness.sql`) باید خالی باشد؛ وگرنه خروج با کد ۲.
+- **نقش‌ها:** بخش Superuser (`00_bootstrap_superuser.sql`: نقش‌ها، Extensionها، Schemaها) یک بار برای هر DB با `--bootstrap`. اجرای عادی با یک Login **غیر Superuser** که عضو `rc_migrator` و `rc_tenant_directory` است. واگذاری مالکیت تابع به `rc_tenant_directory` به `CREATE` روی Schema نیاز دارد؛ این مجوز فقط برای همان دستور داده و در همان تراکنش پس گرفته می‌شود (Fitness قاعده ۶).
+- **CI** (`scripts/check-migrations.sh`): اجرای Migrator با Login غیر Superuser روی DB خالی؛ `pg_dump` آن باید با Schema مرجع (اجرای مستقیم فایل‌ها) **یکسان** باشد؛ اجرای دوم باید بی‌اثر باشد؛ سپس Fitness و `tests.sql`.
+- فایل‌های SQL همراه باینری Migrator منتشر می‌شوند، پس هر Release دقیقاً همان Migrationهایی را اجرا می‌کند که با آن ساخته شده است.
+- **تا اولین Release تولیدی**، گام‌های `0001_baseline` هنوز ویرایش می‌شوند (DBهای توسعه از نو ساخته می‌شوند). پس از آن، هر تغییر یک گام جدید است.
 - ترتیب اجرا: `core` ← `platform` ← `iam` ← سایر ماژول‌ها به ترتیب وابستگی منطقی (Migrationها بین Schemaها FK ندارند، پس ترتیب فقط برای `core` مهم است).
 
 ### 11.2 قواعد Zero-downtime (Expand/Contract)
@@ -552,6 +560,7 @@ CALL core.enable_tenant_rls('sales.sale');   -- ENABLE + FORCE + policy tenant_i
 | D-40 | DEC | الگوی ثبت سند: Insert Draft ← Lines ← Update Posted، با بررسی Deferred در Commit |
 | D-41 | DEC | `inv.posted_source` برای Idempotency سندی روی Ledger پارتیشن‌شده |
 | D-42 | DEC | زنجیره Audit با Trigger در DB (نه در Application) تا Caller نتواند seq یا hash را تعیین کند |
+| D-96 | DEC | Migration با SQL نسخه‌دار و `RetailCloud.Migrator`، نه EF Core Migrations: بخش اصلی Schema (RLS، Policy، Trigger، تابع SECURITY DEFINER، Grant) در EF مدل‌پذیر نیست و D05 آن را از قبل با `migrationBuilder.Sql` از همین فایل‌ها می‌خواست؛ EF Core برای دسترسی به داده (A-01) بدون تغییر می‌ماند. Schema حاصل در CI با DDL مرجع مقایسه می‌شود (US-004) |
 | BQ-01 | OQ | ذخیره Snapshot قلم: JSONB یا ستون‌های صریح؟ (اثر حجم) — Default: ستون‌های صریح برای فیلدهای مالیاتی و JSONB کوچک برای بقیه |
 | BQ-02 | OQ | Partitioning اسناد حسابداری در سال اول یا بعد از رسیدن به آستانه؟ |
 | BQ-03 | OQ | آیا Restore یک Tenant منفرد (نه کل DB) الزام قراردادی است؟ اگر بله: ابزار Export و Import منطقی به ازای Tenant در P0 |

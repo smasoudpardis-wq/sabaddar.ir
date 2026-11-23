@@ -86,6 +86,8 @@ jobs:
       - run: sudo apt-get install -y -qq postgresql-client
       - run: src/backend/scripts/setup-test-db.sh rc_it
       - run: dotnet build src/backend/RetailCloud.sln -c Release
+      - name: US-004 migrations (non-superuser Migrator = reference DDL, fitness clean, idempotent)
+        run: src/backend/scripts/check-migrations.sh
       - name: Tests (unit, property, architecture, integration — integration must not skip in CI)
         run: |
           dotnet test src/backend/RetailCloud.sln -c Release --no-build --logger "trx;LogFileName=results.trx" 2>&1 | tee test.log

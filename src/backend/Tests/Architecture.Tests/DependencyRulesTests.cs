@@ -6,7 +6,7 @@ using RetailCloud.BuildingBlocks.Infrastructure;
 
 namespace RetailCloud.Architecture.Tests;
 
-/// <summary>D04 §5.2 dependency rules R1–R9 as executable tests (NFR-MNT-001). New modules add their assemblies here.</summary>
+/// <summary>D04 §5.2 dependency rules R1–R11 as executable tests (NFR-MNT-001). New modules add their assemblies here.</summary>
 public class DependencyRulesTests
 {
     private static readonly Assembly Domain = typeof(Money).Assembly;
@@ -117,6 +117,30 @@ public class DependencyRulesTests
             .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}Tests{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
             .Where(f => !f.Contains("BuildingBlocks.Infrastructure", StringComparison.Ordinal))
             .Where(f => File.ReadAllText(f).Contains("app.tenant_id", StringComparison.Ordinal))
+            .Select(f => Path.GetRelativePath(root, f))
+            .ToList();
+        Assert.Empty(offenders);
+    }
+
+    [Fact]
+    public void R11_only_the_Migrator_changes_the_schema()
+    {
+        // D05 §11.1: Api and Workers never run migrations. They do not reference the Migrator, and no other source touches
+        // the migration history or runs DDL through code.
+        string root = FindRepoRoot();
+        string backend = Path.Combine(root, "src", "backend");
+        foreach (string host in new[] { "RetailCloud.Api", "RetailCloud.Workers" })
+        {
+            string csproj = File.ReadAllText(Path.Combine(backend, "Hosts", host, host + ".csproj"));
+            Assert.DoesNotContain("RetailCloud.Migrator", csproj, StringComparison.Ordinal);
+        }
+
+        string[] forbidden = ["migration_history", "pg_advisory_lock(", "CREATE TABLE", "ALTER TABLE", "DROP TABLE"];
+        var offenders = Directory.EnumerateFiles(backend, "*.cs", SearchOption.AllDirectories)
+            .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}Tests{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            .Where(f => !f.Contains("RetailCloud.Migrator", StringComparison.Ordinal))
+            .Where(f => forbidden.Any(x => File.ReadAllText(f).Contains(x, StringComparison.OrdinalIgnoreCase)))
             .Select(f => Path.GetRelativePath(root, f))
             .ToList();
         Assert.Empty(offenders);

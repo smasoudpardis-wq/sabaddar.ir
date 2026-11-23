@@ -110,7 +110,9 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
   WHERE published_at IS NULL AND dead_at IS NULL AND next_attempt_at <= now()
   LIMIT p_limit
 $$;
+GRANT CREATE ON SCHEMA core TO rc_tenant_directory;  -- a new owner needs CREATE on the schema; revoked at once (fitness 6)
 ALTER FUNCTION core.outbox_due_tenants(int) OWNER TO rc_tenant_directory;
+REVOKE CREATE ON SCHEMA core FROM rc_tenant_directory;
 REVOKE ALL ON FUNCTION core.outbox_due_tenants(int) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION core.outbox_due_tenants(int) TO rc_worker;
 
@@ -126,6 +128,8 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
   WHERE o.published_at IS NULL
   GROUP BY o.producer
 $$;
+GRANT CREATE ON SCHEMA core TO rc_tenant_directory;  -- a new owner needs CREATE on the schema; revoked at once (fitness 6)
 ALTER FUNCTION core.outbox_stats() OWNER TO rc_tenant_directory;
+REVOKE CREATE ON SCHEMA core FROM rc_tenant_directory;
 REVOKE ALL ON FUNCTION core.outbox_stats() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION core.outbox_stats() TO rc_worker;

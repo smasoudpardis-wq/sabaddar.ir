@@ -9,7 +9,9 @@ GRANT SELECT (id, status) ON platform.tenant TO rc_tenant_directory;
 CREATE OR REPLACE FUNCTION core.list_tenant_ids() RETURNS SETOF uuid
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS
 $$ SELECT id FROM platform.tenant WHERE status <> 'Closed' ORDER BY id $$;
+GRANT CREATE ON SCHEMA core TO rc_tenant_directory;  -- a new owner needs CREATE on the schema; revoked at once (fitness 6)
 ALTER FUNCTION core.list_tenant_ids() OWNER TO rc_tenant_directory;
+REVOKE CREATE ON SCHEMA core FROM rc_tenant_directory;
 REVOKE ALL ON FUNCTION core.list_tenant_ids() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION core.list_tenant_ids() TO rc_worker;
 
