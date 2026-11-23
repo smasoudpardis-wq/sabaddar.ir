@@ -29,6 +29,9 @@ done
 T1=0194f000-0000-7000-8000-0000000000a1; T2=0194f000-0000-7000-8000-0000000000a2; TF=0194f000-0000-7000-8000-0000000000af
 U=0194f000-0000-7000-8000-0000000000b1; APPROVAL=0194f000-0000-7000-8000-0000000000c1
 psql -v ON_ERROR_STOP=1 -q -d "$DB" <<SQL
+-- Clean-up of earlier runs: as superuser with triggers off (the last-owner rule would refuse it; FK order irrelevant).
+SET session_replication_role = replica;
+DELETE FROM iam.user_pin WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM iam.role_assignment WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM iam.tenant_membership WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM iam.merchant_user WHERE id = '$U' OR (idp_issuer = '$ISSUER' AND idp_subject = '$SUB');
@@ -46,6 +49,7 @@ DELETE FROM platform.tenant WHERE id IN ('$T1','$T2','$TF');
 DELETE FROM iam.role_assignment WHERE user_id IN (SELECT id FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$NEW_SUB');
 DELETE FROM iam.tenant_membership WHERE user_id IN (SELECT id FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$NEW_SUB');
 DELETE FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$NEW_SUB';
+SET session_replication_role = origin;
 INSERT INTO platform.tenant (id, legal_name, industry_code) VALUES
   ('$T1','فروشگاه الف','supermarket'), ('$T2','فروشگاه ب','supermarket'), ('$TF','فروشگاه غریبه','supermarket');
 INSERT INTO platform.branch (tenant_id, id, code, name) VALUES ('$T1', gen_random_uuid(), 'B1', 'مرکزی');

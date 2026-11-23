@@ -1035,6 +1035,82 @@ paths:
       x-idempotent: false
       x-requirements:
       - IAM-006
+  /me/pin:
+    put:
+      operationId: setMyPin
+      tags:
+      - Access
+      summary: تعیین PIN صندوق (تا ۱۰ دقیقه پس از ورود کامل)
+      security: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PinInput'
+      responses:
+        '204':
+          description: No content
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: tenant.member
+      x-idempotent: false
+      x-requirements:
+      - IAM-004
+      - AUTH-08
+      x-audited: true
+  /me/pin/verify:
+    post:
+      operationId: verifyMyPin
+      tags:
+      - Access
+      summary: باز کردن قفل صندوق با PIN (فقط Terminal ثبت‌شده؛ ۵ خطا = قفل)
+      security: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PinInput'
+      responses:
+        '204':
+          description: No content
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: tenant.member
+      x-idempotent: false
+      x-requirements:
+      - IAM-004
+      - AUTH-08
+      x-audited: true
   /approvals:
     get:
       operationId: listApprovals
@@ -8063,6 +8139,10 @@ components:
           type: string
         pin:
           type: string
+          description: 'On-device approval: the approver''s PIN (with approverId), registered terminal only'
+        approverId:
+          type: string
+          format: uuid
       required:
       - decision
     ApprovalRequest:
@@ -10077,6 +10157,15 @@ components:
       - start
       - end
       - status
+    PinInput:
+      type: object
+      additionalProperties: false
+      properties:
+        pin:
+          type: string
+          description: 4-6 digits
+      required:
+      - pin
     PlatformTenant:
       type: object
       additionalProperties: false
@@ -12622,6 +12711,18 @@ x-error-catalog:
   last-owner:
     status: 409
     meaning: A tenant must keep at least one TenantOwner
+  pin-invalid:
+    status: 403
+    meaning: Wrong PIN; context attemptsLeft (AUTH-08)
+  pin-locked:
+    status: 403
+    meaning: PIN locked after 5 failures; a full sign-in and a new PIN are needed
+  pin-not-set:
+    status: 409
+    meaning: The user has not set a PIN
+  reauth-required:
+    status: 403
+    meaning: Sign in again (setting a PIN needs a sign-in within 10 minutes)
   self-approval:
     status: 403
     meaning: The requester cannot approve their own request (SoD-01)

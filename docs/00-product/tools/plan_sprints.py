@@ -25,7 +25,7 @@ spec.loader.exec_module(bl)
 
 VELOCITY = int(sys.argv[1]) if len(sys.argv) > 1 else 40
 START = dt.date(2026, 11, 22)
-DONE = {"US-001", "US-002", "SP-07", "SP-01", "US-003", "US-021", "US-022", "US-006", "US-005", "US-011", "US-025", "US-012", "US-013", "US-026"}  # D12 §0.1
+DONE = {"US-001", "US-002", "SP-07", "SP-01", "US-003", "US-021", "US-022", "US-006", "US-005", "US-011", "US-025", "US-012", "US-013", "US-026", "US-023"}  # D12 §0.1
 AS_OF = "2026-11-23"                           # date of the progress snapshot (update with DONE)
 PARTIAL = {"US-007": "Compose برای Dev هست؛ Staging و Mirrorها منتظر زیرساخت (X-07)"}
 BLOCKER = {                                    # external input each item waits for (D13 §2, D12 §4.2)

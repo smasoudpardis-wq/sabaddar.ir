@@ -132,6 +132,18 @@
   "permission": "iam.users.manage"
  },
  {
+  "operationId": "setMyPin",
+  "method": "PUT",
+  "path": "/me/pin",
+  "permission": "tenant.member"
+ },
+ {
+  "operationId": "verifyMyPin",
+  "method": "POST",
+  "path": "/me/pin/verify",
+  "permission": "tenant.member"
+ },
+ {
   "operationId": "listApprovals",
   "method": "GET",
   "path": "/approvals",

@@ -62,7 +62,35 @@ async function freshAccessToken(session: Session): Promise<string> {
 }
 
 /** Calls RetailCloud.Api with the session's token and the server-held active tenant (BR-001). */
-export async function callApi(session: Session, method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<Response> {
+/** IAM-005: a registered terminal locks after 5 idle minutes; then only the PIN (or a new sign-in) opens it. */
+export const TERMINAL_IDLE_LOCK_SECONDS = 5 * 60;
+
+export async function isOnTerminal(): Promise<boolean> {
+  return !!(await cookies()).get(cookieNames().device)?.value;
+}
+
+/** Applies the idle auto-lock; returns true when the session is (now) locked. */
+export async function lockStateOf(session: Session): Promise<boolean> {
+  if (session.lockedAt) return true;
+  const nowS = Math.floor(Date.now() / 1000);
+  if ((await isOnTerminal()) && session.lastActive && nowS - session.lastActive > TERMINAL_IDLE_LOCK_SECONDS) {
+    session.lockedAt = nowS;
+    await saveSession(session);
+    return true;
+  }
+  return false;
+}
+
+export async function callApi(session: Session, method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>,
+  options: { allowLocked?: boolean } = {}): Promise<Response> {
+  if (!options.allowLocked && (await lockStateOf(session))) {
+    return problemResponse(423, 'session-locked', 'The register is locked; unlock with your PIN');
+  }
+  const nowS = Math.floor(Date.now() / 1000);
+  if (!options.allowLocked && (!session.lastActive || nowS - session.lastActive > 30)) {
+    session.lastActive = nowS;
+    await saveSession(session);
+  }
   let token: string;
   try {
     token = await freshAccessToken(session);

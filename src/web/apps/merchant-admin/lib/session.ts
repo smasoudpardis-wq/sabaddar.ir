@@ -14,6 +14,8 @@ export interface Session {
   csrf: string;
   createdAt: number;       // epoch seconds; absolute lifetime cap
   lastSeen: number;
+  lastActive?: number;      // last unlocked API use (auto-lock on terminals, IAM-005)
+  lockedAt?: number;        // register locked: only the PIN unlocks it (IAM-004, US-023)
 }
 
 export interface PendingAuth {

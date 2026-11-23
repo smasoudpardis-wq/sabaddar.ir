@@ -56,3 +56,29 @@ public sealed class LastOwnerException : Exception
     {
     }
 }
+
+/// <summary>Outcome of a PIN check (IAM-004, AUTH-08).</summary>
+public enum PinCheck
+{
+    Ok,
+    Wrong,
+    Locked,
+    NotSet,
+}
+
+/// <summary>Register PIN per user and tenant. Verification is only offered to requests from a registered terminal.</summary>
+public interface IPinStore
+{
+    /// <summary>4–6 digits. Setting a PIN also clears a lockout.</summary>
+    Task SetAsync(IUnitOfWorkScope scope, UserId user, string pin, CancellationToken cancellationToken);
+
+    /// <summary>Counts failures; the fifth consecutive failure locks the PIN. Returns attempts left on <see cref="PinCheck.Wrong"/>.</summary>
+    Task<(PinCheck Result, int AttemptsLeft)> VerifyAsync(IUnitOfWorkScope scope, UserId user, string pin, CancellationToken cancellationToken);
+}
+
+public static class PinRules
+{
+    public const int MaxAttempts = 5;
+
+    public static bool IsValid(string? pin) => pin is { Length: >= 4 and <= 6 } && pin.All(char.IsAsciiDigit);
+}

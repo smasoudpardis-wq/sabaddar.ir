@@ -130,6 +130,21 @@ BEGIN
 END $$;
 CREATE TRIGGER approval_transition BEFORE UPDATE ON iam.approval_request FOR EACH ROW EXECUTE FUNCTION iam.approval_transition();
 
+-- Register PIN (IAM-004, AUTH-08, US-023): per user and tenant, Argon2id (m=64MB, t=3, p=1) in PHC format. Only usable
+-- on a registered terminal; 5 consecutive failures lock it until the user sets a new PIN after a full login.
+CREATE TABLE iam.user_pin (
+  tenant_id       uuid NOT NULL,
+  user_id         uuid NOT NULL,
+  pin_hash        text NOT NULL CHECK (pin_hash LIKE '$argon2id$v=19$m=65536,t=3,p=1$%'),
+  failed_attempts int  NOT NULL DEFAULT 0 CHECK (failed_attempts BETWEEN 0 AND 5),
+  locked_at       timestamptz,
+  updated_at      timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, user_id),
+  FOREIGN KEY (tenant_id, user_id) REFERENCES iam.tenant_membership (tenant_id, user_id),
+  CHECK ((failed_attempts = 5) = (locked_at IS NOT NULL))
+);
+CALL core.enable_tenant_rls('iam.user_pin');
+
 GRANT USAGE ON SCHEMA iam TO rc_app, rc_worker;
 GRANT SELECT, INSERT, UPDATE ON iam.merchant_user TO rc_app;
 GRANT SELECT, INSERT, UPDATE ON iam.tenant_membership TO rc_app;
@@ -137,6 +152,7 @@ GRANT SELECT, INSERT, DELETE ON iam.role_assignment TO rc_app;
 GRANT UPDATE ON iam.role_assignment TO rc_app;   -- only for the row lock in keep_last_owner; the no_role_update trigger rejects every UPDATE
 GRANT SELECT, INSERT, UPDATE ON iam.invitation TO rc_app;
 GRANT SELECT, INSERT, UPDATE ON iam.approval_request TO rc_app;
+GRANT SELECT, INSERT, UPDATE ON iam.user_pin TO rc_app;
 GRANT SELECT ON iam.merchant_user, iam.tenant_membership, iam.role_assignment TO rc_worker;
 GRANT INSERT ON iam.tenant_membership, iam.role_assignment TO rc_worker;   -- owner on platform.tenant-registered (US-011)
 RESET ROLE;

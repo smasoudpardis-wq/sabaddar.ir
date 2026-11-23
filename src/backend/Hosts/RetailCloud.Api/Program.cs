@@ -27,6 +27,7 @@ builder.Services.AddSingleton<ITenantSetupStep, RetailCloud.Accounting.Infrastru
 builder.Services.AddSingleton<IUserAdministration, PostgresUserAdministration>();
 builder.Services.AddSingleton<IBranchAdministration, PostgresBranchAdministration>();
 builder.Services.AddSingleton<IApprovals, PostgresApprovals>();
+builder.Services.AddSingleton<IPinStore, PostgresPinStore>();
 builder.Services.AddSingleton<PostgresTerminals>();
 builder.Services.AddSingleton<ITerminalAdministration>(sp => sp.GetRequiredService<PostgresTerminals>());
 builder.Services.AddSingleton<ITerminalDirectory>(sp => sp.GetRequiredService<PostgresTerminals>());
@@ -286,14 +287,54 @@ v1.MapGet("/approvals/{approvalId:guid}", async (Guid approvalId, RequestContext
             : Problems.NotFound(http))
     .RequireTenantMember();
 
-// decideApproval: approver ≠ requester, uncapped permission over the scope, second factor within 15 minutes.
-// (The same-device PIN path of F-14 arrives with the terminal PIN, US-023.)
+IResult PinProblem(HttpContext http, PinCheck result, int attemptsLeft) => result switch
+{
+    PinCheck.Locked => Problems.Create(http, StatusCodes.Status403Forbidden, "pin-locked", "PIN locked after 5 failed attempts; sign in again"),
+    PinCheck.NotSet => Problems.Create(http, StatusCodes.Status409Conflict, "pin-not-set", "No PIN has been set"),
+    _ => Results.Problem(statusCode: StatusCodes.Status403Forbidden, title: "Wrong PIN", type: "https://errors.retailcloud.example/pin-invalid",
+        extensions: new Dictionary<string, object?> { ["code"] = "pin-invalid", ["attemptsLeft"] = attemptsLeft, ["traceId"] = http.TraceIdentifier }),
+};
+
+// decideApproval (D08 F-14), two ways:
+//  - remote: the signed-in approver, with a second factor no older than 15 minutes (ABAC-05);
+//  - on the same device: approverId + the approver's PIN, only from a registered terminal of the request's branch.
+// Always: approver ≠ requester (SoD-01, also a DB CHECK) and an uncapped permission over the request scope.
 v1.MapPost("/approvals/{approvalId:guid}/decision", async (Guid approvalId, ApprovalDecisionInput body, RequestContext ctx, IUnitOfWork uow,
-        IApprovals approvals, HttpContext http, CancellationToken ct) =>
+        IApprovals approvals, IUserDirectory directory, IPinStore pins, HttpContext http, CancellationToken ct) =>
     {
         if (body.Decision is not ("Approve" or "Reject") || body.Comment is { Length: > 500 })
         {
             return Problems.Validation(http, new Dictionary<string, string[]> { ["decision"] = ["Approve|Reject"] });
+        }
+
+        bool onDevice = body.Pin is not null || body.ApproverId is not null;
+        IReadOnlyList<RoleGrant> approverGrants = ctx.ActiveMembership!.Assignments;
+        UserId approver = ctx.User!.Value;
+        if (onDevice)
+        {
+            if (body.Pin is null || body.ApproverId is not { } approverId)
+            {
+                return Problems.Validation(http, new Dictionary<string, string[]> { ["pin"] = ["pin-and-approverId-together"] });
+            }
+
+            if (ctx.Terminal is null)
+            {
+                return Problems.Create(http, StatusCodes.Status403Forbidden, "terminal-not-registered", "On-device approval needs a registered terminal");
+            }
+
+            approver = new UserId(approverId);
+            approverGrants = (await directory.ActiveMembershipsAsync(approver, ct)).FirstOrDefault(m => m.TenantId == ctx.ActiveTenant)?.Assignments ?? [];
+        }
+        else
+        {
+            DateTimeOffset now = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
+            bool fresh = ctx.MfaSatisfied && ctx.AuthTime is { } at && now - at <= MfaPolicy.SensitiveFreshness && at <= now.AddMinutes(1);
+            if (!fresh)
+            {
+                return Results.Problem(statusCode: StatusCodes.Status403Forbidden, title: "Re-authenticate with your second factor",
+                    type: "https://errors.retailcloud.example/step-up-required",
+                    extensions: new Dictionary<string, object?> { ["code"] = "step-up-required", ["maxAgeSeconds"] = (int)MfaPolicy.SensitiveFreshness.TotalSeconds, ["traceId"] = http.TraceIdentifier });
+            }
         }
 
         return await uow.ExecuteAsync(ctx, async (s, c) =>
@@ -304,17 +345,28 @@ v1.MapPost("/approvals/{approvalId:guid}/decision", async (Guid approvalId, Appr
                 return Problems.NotFound(http);
             }
 
-            if (a.RequestedBy == ctx.User!.Value.Value)
+            if (a.RequestedBy == approver.Value)
             {
                 return Problems.Create(http, StatusCodes.Status403Forbidden, "self-approval", "You cannot approve your own request");
             }
 
-            if (!AccessPolicy.CanApprove(ctx.ActiveMembership!.Assignments, a.Action, a.Scope))
+            var deviceBranch = ctx.Terminal is { } t ? new ScopeRef(ScopeType.Branch, t.BranchId, t.BranchId) : null;
+            if (!AccessPolicy.CanApprove(approverGrants, a.Action, a.Scope)
+                || (onDevice && (deviceBranch is null || !AccessPolicy.CanApprove(approverGrants, a.Action, deviceBranch))))
             {
                 return Forbidden(http);
             }
 
-            return await approvals.DecideAsync(s, approvalId, ctx.User!.Value, body.Decision == "Approve", body.Comment, c) switch
+            if (onDevice)
+            {
+                (PinCheck check, int left) = await pins.VerifyAsync(s, approver, body.Pin!, c);
+                if (check != PinCheck.Ok)
+                {
+                    return PinProblem(http, check, left); // the failure count is committed with this transaction
+                }
+            }
+
+            return await approvals.DecideAsync(s, approvalId, approver, body.Decision == "Approve", body.Comment, c) switch
             {
                 DecisionOutcome.Decided => Results.Ok(ApprovalJson((await approvals.GetAsync(s, approvalId, c))!)),
                 DecisionOutcome.Expired => Problems.Create(http, StatusCodes.Status409Conflict, "approval-expired", "The request has expired"),
@@ -324,8 +376,36 @@ v1.MapPost("/approvals/{approvalId:guid}/decision", async (Guid approvalId, Appr
             };
         }, ct);
     })
+    .RequireTenantMember();
+
+// ---------------- US-023: register PIN (IAM-004, AUTH-08)
+// setMyPin: only within 10 minutes of a full sign-in (the PIN replaces it for quick unlocks afterwards).
+v1.MapPut("/me/pin", async (SetPin body, RequestContext ctx, IUnitOfWork uow, IPinStore pins, HttpContext http, CancellationToken ct) =>
+    {
+        DateTimeOffset now = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
+        if (ctx.AuthTime is not { } at || now - at > TimeSpan.FromMinutes(10))
+        {
+            return Problems.Create(http, StatusCodes.Status403Forbidden, "reauth-required", "Sign in again to set a PIN");
+        }
+
+        if (!PinRules.IsValid(body.Pin))
+        {
+            return Problems.Validation(http, new Dictionary<string, string[]> { ["pin"] = ["4-6-digits"] });
+        }
+
+        await uow.ExecuteAsync(ctx, async (s, c) => { await pins.SetAsync(s, ctx.User!.Value, body.Pin!, c); return 0; }, ct);
+        return Results.NoContent();
+    })
+    .RequireTenantMember();
+
+// verifyMyPin: unlock a locked register; registered terminals only; 5 failures lock the PIN.
+v1.MapPost("/me/pin/verify", async (SetPin body, RequestContext ctx, IUnitOfWork uow, IPinStore pins, HttpContext http, CancellationToken ct) =>
+    {
+        (PinCheck check, int left) = await uow.ExecuteAsync(ctx, (s, c) => pins.VerifyAsync(s, ctx.User!.Value, body.Pin ?? "", c), ct);
+        return check == PinCheck.Ok ? Results.NoContent() : PinProblem(http, check, left);
+    })
     .RequireTenantMember()
-    .RequireRecentMfa();
+    .AddEndpointFilter<RequireTerminalFilter>();
 
 // listRoles: the system roles with their stable ids and permissions (custom roles: later story).
 v1.MapGet("/roles", () => Results.Ok(RoleCatalog.Roles.Select(r => new
@@ -499,7 +579,9 @@ await app.RunAsync();
 
 internal sealed record SelectTenant(Guid TenantId);
 
-internal sealed record ApprovalDecisionInput(string? Decision, string? Comment, string? Pin);
+internal sealed record ApprovalDecisionInput(string? Decision, string? Comment, string? Pin, Guid? ApproverId);
+
+internal sealed record SetPin(string? Pin);
 
 internal sealed record PairTerminal(string? PairingCode, string? DeviceName, string? UserAgent);
 

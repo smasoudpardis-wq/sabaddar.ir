@@ -209,6 +209,27 @@ try {
   await page.getByTestId('pair-submit').click();
   await page.getByTestId('terminal-error').waitFor();
   check('T03', 'a pairing code works only once', true);
+
+  // P01–P04 US-023: PIN on this registered terminal; lock; wrong PIN counts down; right PIN unlocks (AT-013)
+  await page.fill('input[name=newPin]', '4821');
+  await page.getByTestId('pin-submit').click();
+  await page.getByTestId('pin-saved').waitFor();
+  check('P01', 'PIN set right after a full sign-in', true);
+  await page.goto(BFF);
+  await page.getByTestId('lock').click();
+  await page.getByTestId('lock-screen').waitFor();
+  const whileLocked = await page.evaluate(async () => { const r = await fetch('/bff/tenant'); return { s: r.status, b: await r.json() }; });
+  check('P02', 'locked: the lock screen shows and the API is closed (423)', whileLocked.s === 423 && whileLocked.b.code === 'session-locked', `${whileLocked.s}`);
+  await page.fill('input[name=pin]', '0000');
+  await page.getByTestId('unlock').click();
+  await page.getByTestId('lock-error').waitFor();
+  check('P03', 'a wrong PIN shows the attempts left', (await page.getByTestId('lock-error').textContent()).includes('4'));
+  await page.fill('input[name=pin]', '4821');
+  await page.getByTestId('unlock').click();
+  await page.getByTestId('welcome').waitFor();
+  check('P04', 'the right PIN unlocks the register', true);
+  await page.goto(`${BFF}/terminals`);
+  await page.getByTestId('this-device').filter({ hasText: 'ثبت‌شده است' }).waitFor();
   await page.getByTestId('revoke-صندوق-آزمایشی').click();
   await page.getByTestId('this-device').filter({ hasText: 'نیست' }).waitFor();
   check('T04', 'after revocation the device is no longer a terminal (AT-003)', true);

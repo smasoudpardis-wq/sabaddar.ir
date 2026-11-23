@@ -167,7 +167,10 @@ schema("ApprovalRequest", id="uuid", action="str", resourceType="str", resourceI
        context={"_desc": "Condition that triggered approval (ABAC-02/03/06).", "condition": "str", "value?": "str", "limit?": "str"},
        expiresAt="dt", decidedBy="uuid?", decidedAt="dt?",
        **{"validUntil?": ("desc", "dt?", "Approved: usable once until then (5 minutes, D-61)")})
-schema("ApprovalDecision", decision=("enum", ["Approve", "Reject"]), **{"comment?": "str", "pin?": "str"})
+schema("ApprovalDecision", decision=("enum", ["Approve", "Reject"]),
+       **{"comment?": "str", "pin?": ("desc", "str", "On-device approval: the approver's PIN (with approverId), registered terminal only"),
+          "approverId?": "uuid"})
+schema("PinInput", pin=("desc", "str", "4-6 digits"))
 schema("SupportAccessRequestCreate", reason="str", durationMinutes="int")
 schema("SupportAccessRequest", id="uuid", requestedBy="str", reason="str", durationMinutes="int",
        status=("enum", ["Pending", "Approved", "Rejected", "Expired", "Revoked"]), grantedUntil="dt?")
@@ -508,6 +511,10 @@ ERROR_CATALOG = {
     "forbidden": (403, "The caller's roles do not grant the permission at this scope (IAM-006, D06 §6.1)"),
     "duplicate-assignment": (409, "The user already has this role at this scope"),
     "last-owner": (409, "A tenant must keep at least one TenantOwner"),
+    "pin-invalid": (403, "Wrong PIN; context attemptsLeft (AUTH-08)"),
+    "pin-locked": (403, "PIN locked after 5 failures; a full sign-in and a new PIN are needed"),
+    "pin-not-set": (409, "The user has not set a PIN"),
+    "reauth-required": (403, "Sign in again (setting a PIN needs a sign-in within 10 minutes)"),
     "self-approval": (403, "The requester cannot approve their own request (SoD-01)"),
     "approval-expired": (409, "The pending request expired (10 minutes)"),
     "approval-not-pending": (409, "The request was already decided"),
@@ -684,6 +691,10 @@ op("post", "/users/{userId}/role-assignments", "addRoleAssignment", "Access", "�
 op("delete", "/users/{userId}/role-assignments/{assignmentId}", "removeRoleAssignment", "Access", "حذف تخصیص نقش",
    perm="iam.users.manage", scope="Branch", no_content=True, reqs=["IAM-006"], audited=True)
 op("get", "/roles", "listRoles", "Access", "نقش‌های سیستمی و سفارشی", perm="iam.users.manage", scope="Tenant", resp="Role", list_of=True, reqs=["IAM-006"])
+op("put", "/me/pin", "setMyPin", "Access", "تعیین PIN صندوق (تا ۱۰ دقیقه پس از ورود کامل)", body="PinInput", no_content=True,
+   reqs=["IAM-004", "AUTH-08"], audited=True)
+op("post", "/me/pin/verify", "verifyMyPin", "Access", "باز کردن قفل صندوق با PIN (فقط Terminal ثبت‌شده؛ ۵ خطا = قفل)", body="PinInput",
+   no_content=True, reqs=["IAM-004", "AUTH-08"], audited=True)
 op("get", "/approvals", "listApprovals", "Access", "درخواست‌های تأیید باز: قابل تأیید توسط من و درخواست‌های خودم", resp="ApprovalRequest",
    list_of=True, reqs=["IAM-007"])
 op("get", "/approvals/{approvalId}", "getApproval", "Access", "وضعیت درخواست تأیید", resp="ApprovalRequest", reqs=["IAM-007"])

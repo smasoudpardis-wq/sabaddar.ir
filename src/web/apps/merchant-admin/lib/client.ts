@@ -24,6 +24,11 @@ export const MESSAGES: Record<string, string> = {
   'duplicate-code': 'این کد قبلاً استفاده شده است.',
   'rate-limited': 'تلاش‌های زیاد. چند دقیقه بعد دوباره امتحان کنید.',
   'self-approval': 'درخواست خودتان را نمی‌توانید تأیید کنید.',
+  'pin-invalid': 'PIN اشتباه است.',
+  'pin-locked': 'PIN پس از ۵ خطا قفل شد. دوباره کامل وارد شوید.',
+  'pin-not-set': 'هنوز PIN تعیین نکرده‌اید.',
+  'reauth-required': 'برای تعیین PIN دوباره وارد شوید.',
+  'session-locked': 'صندوق قفل است.',
   'approval-expired': 'مهلت این درخواست تمام شده است.',
   'approval-not-pending': 'این درخواست قبلاً بررسی شده است.',
 };

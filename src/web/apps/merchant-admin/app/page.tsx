@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Onboarding } from './onboarding';
 
 type Membership = { tenantId: string; tenantName: string; roles: string[]; mfaRequired: boolean };
-type Me = { displayName: string; memberships: Membership[]; activeTenantId: string | null; mfaSatisfied: boolean };
+type Me = { displayName: string; memberships: Membership[]; activeTenantId: string | null; mfaSatisfied: boolean; terminal: { id: string } | null };
 type Tenant = { id: string; legalName: string; status: string };
 
 const MESSAGES: Record<string, string> = { // D09 §10.1
@@ -22,7 +22,8 @@ const stepUp = (tenantId?: string) => {
 };
 
 export default function Home() {
-  const [me, setMe] = useState<Me | null | 'anonymous' | 'new-user'>(null);
+  const [me, setMe] = useState<Me | null | 'anonymous' | 'new-user' | 'locked'>(null);
+  const [pin, setPin] = useState('');
   const [tenant, setTenant] = useState<Tenant | null>(null);
   const [error, setError] = useState<string>('');
 
@@ -34,8 +35,9 @@ export default function Home() {
       if (code === 'user-not-provisioned') return setMe('new-user'); // first login: sign-up wizard (UC-10)
       return setError(code);
     }
-    const data: Me = await r.json();
-    setMe(data);
+    const data = await r.json();
+    if (data.locked) return setMe('locked');
+    setMe(data as Me);
     if (data.activeTenantId) {
       const t = await fetch('/bff/tenant', { cache: 'no-store' });
       if (t.ok) return setTenant(await t.json());
@@ -67,7 +69,33 @@ export default function Home() {
     setMe('anonymous');
   }
 
+  async function lock() {
+    await fetch('/bff/lock', { method: 'POST', headers: { 'x-csrf-token': csrf() } });
+    setMe('locked');
+  }
+
+  async function unlock(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    const r = await fetch('/bff/unlock', { method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf() }, body: JSON.stringify({ pin }) });
+    setPin('');
+    if (r.status === 204) return load();
+    const body = await r.json().catch(() => ({}));
+    if (body.code === 'pin-locked') { setMe('anonymous'); return setError(MESSAGES['pin-locked']); }
+    setError(body.code === 'pin-invalid' ? `PIN اشتباه است. ${body.attemptsLeft} تلاش باقی مانده.` : MESSAGES[body.code] ?? body.code);
+  }
+
   if (me === null) return <p>در حال بارگذاری…</p>;
+  if (me === 'locked')
+    return (
+      <form onSubmit={(e) => void unlock(e)} data-testid="lock-screen">
+        <h1>صندوق قفل است</h1>
+        <input name="pin" inputMode="numeric" autoComplete="off" pattern="[0-9]{4,6}" maxLength={6} required value={pin}
+          onChange={(e) => setPin(e.target.value)} aria-label="PIN" style={{ fontSize: 24, letterSpacing: 8 }} />
+        <button type="submit" data-testid="unlock" style={{ minHeight: 44 }}>باز کردن</button>
+        {error && <p role="alert" data-testid="lock-error">{error}</p>}
+      </form>
+    );
   if (me === 'new-user') return <Onboarding />;
   if (me === 'anonymous')
     return (
@@ -95,6 +123,7 @@ export default function Home() {
       {tenant && <p data-testid="active-tenant">فروشگاه فعال: {tenant.legalName}</p>}
       {error && <p role="alert" data-testid="error">{MESSAGES[error] ?? error}</p>}
       {tenant && <p><a href="/users" data-testid="users-link">کاربران و دعوت همکار</a> · <a href="/branches" data-testid="branches-link">شعب</a> · <a href="/terminals" data-testid="terminals-link">دستگاه‌ها</a> · <a href="/approvals" data-testid="approvals-link">تأییدها</a></p>}
+      {me.terminal && <button onClick={() => void lock()} data-testid="lock" style={{ minHeight: 44 }}>قفل صندوق</button>}
       <button onClick={() => void logout()} data-testid="logout" style={{ minHeight: 44 }}>خروج</button>
     </section>
   );

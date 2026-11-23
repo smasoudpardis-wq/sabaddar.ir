@@ -14,6 +14,8 @@ export default function TerminalsPage() {
   const [issued, setIssued] = useState('');
   const [pair, setPair] = useState({ code: '', name: '' });
   const [error, setError] = useState('');
+  const [myPin, setMyPin] = useState('');
+  const [pinSaved, setPinSaved] = useState(false);
 
   async function load() {
     const [t, b, me] = await Promise.all([fetch('/bff/terminals', { cache: 'no-store' }), fetch('/bff/branches'), fetch('/bff/me', { cache: 'no-store' })]);
@@ -64,6 +66,18 @@ export default function TerminalsPage() {
       </select>
       <button onClick={() => void issue()} data-testid="issue-code" style={{ minHeight: 44 }}>صدور کد</button>
       {issued && <p>کد: <strong data-testid="pairing-code">{issued}</strong></p>}
+      <h2>PIN من (برای باز کردن قفل صندوق)</h2>
+      <form onSubmit={(e) => { e.preventDefault(); void (async () => {
+        setError('');
+        const r = await fetch('/bff/pin', { method: 'PUT', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf() }, body: JSON.stringify({ pin: myPin }) });
+        setMyPin('');
+        if (r.status !== 204) return setError(await codeOf(r));
+        setPinSaved(true);
+      })(); }} data-testid="pin-form">
+        <input name="newPin" inputMode="numeric" pattern="[0-9]{4,6}" maxLength={6} required value={myPin} onChange={(e) => setMyPin(e.target.value)} aria-label="PIN جدید" />
+        <button type="submit" data-testid="pin-submit" style={{ minHeight: 44 }}>ذخیره PIN</button>
+        {pinSaved && <span data-testid="pin-saved"> ذخیره شد</span>}
+      </form>
       <h2>ثبت همین دستگاه</h2>
       <form onSubmit={(e) => void pairThis(e)} data-testid="pair-form">
         <label>کد <input name="pairingCode" required value={pair.code} onChange={(e) => setPair({ ...pair, code: e.target.value })} /></label>

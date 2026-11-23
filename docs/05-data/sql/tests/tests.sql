@@ -388,6 +388,15 @@ SELECT t.expect_error('T107 what was approved cannot be changed afterwards (vali
   $$UPDATE iam.approval_request SET status = 'Consumed', consumed_at = now(), binding_hash = sha256('other') WHERE id = 'd0000000-0000-0000-0000-000000000002'$$);
 RESET ROLE;
 
+-- US-023 PIN
+SET ROLE rc_app;
+SELECT set_config('app.tenant_id', :A, false);
+SELECT t.expect_error('T108 a PIN is stored only as Argon2id with the AUTH-08 parameters', '23514',
+  format($$INSERT INTO iam.user_pin (tenant_id, user_id, pin_hash) VALUES (%L, 'e0000000-0000-0000-0000-000000000001', '1234')$$, :A));
+SELECT t.expect_error('T109 the fifth failure must lock the PIN (failed_attempts and locked_at move together)', '23514',
+  format($$INSERT INTO iam.user_pin (tenant_id, user_id, pin_hash, failed_attempts) VALUES (%L, 'e0000000-0000-0000-0000-000000000001', '$argon2id$v=19$m=65536,t=3,p=1$c2FsdA$aGFzaA', 5)$$, :A));
+RESET ROLE;
+
 -- US-013 terminals
 SET ROLE rc_app;
 SELECT set_config('app.tenant_id', :A, false);
