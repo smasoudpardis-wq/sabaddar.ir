@@ -194,8 +194,22 @@ public sealed partial class MigrationRunner(NpgsqlDataSource dataSource, string 
 
     private static async Task<Dictionary<(string, string), string>> AppliedAsync(NpgsqlConnection conn, MigrationManifest m, CancellationToken ct)
     {
+        // every history table in the database, not only the manifest's modules: a module whose steps were all removed
+        // from the manifest must still be reported as applied-but-missing
+        var modules = new List<string>();
+        await using (NpgsqlCommand find = new(
+                         "SELECT n.nspname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace " +
+                         "WHERE c.relname = 'migration_history' AND c.relkind = 'r' ORDER BY 1", conn))
+        await using (NpgsqlDataReader r = await find.ExecuteReaderAsync(ct))
+        {
+            while (await r.ReadAsync(ct))
+            {
+                modules.Add(r.GetString(0));
+            }
+        }
+
         var applied = new Dictionary<(string, string), string>();
-        foreach (string module in m.Steps.Select(s => s.Module).Distinct())
+        foreach (string module in modules.Union(m.Steps.Select(s => s.Module)).Distinct())
         {
             await using NpgsqlCommand cmd = new($"SELECT id, checksum FROM {module}.migration_history", conn);
             await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct);

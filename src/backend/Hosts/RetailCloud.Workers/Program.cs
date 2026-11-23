@@ -26,6 +26,14 @@ builder.Services.AddSingleton<IIntegrationEventConsumer, RetailCloud.Inventory.I
 builder.Services.AddSingleton<IIntegrationEventConsumer, RetailCloud.Accounting.Infrastructure.TenantAccountingSetupConsumer>();
 builder.Services.AddSingleton<RetailCloud.Accounting.Application.IJournals, RetailCloud.Accounting.Infrastructure.PostgresJournals>();
 builder.Services.AddSingleton<IIntegrationEventConsumer, RetailCloud.Accounting.Infrastructure.ShiftCashVarianceConsumer>();   // ACC-004, UC-06
+builder.Services.AddSingleton<RetailCloud.Notifications.Infrastructure.NotificationDispatcher>();
+if (builder.Configuration.GetValue<bool>("Notifications:DevChannel"))
+{
+    // Development only: a logging SMS channel; the real SMS/Bale adapters come with the provider contracts (X-03)
+    builder.Services.AddSingleton<RetailCloud.Notifications.Application.INotificationChannel, RetailCloud.Notifications.Infrastructure.DevSmsChannel>();
+}
+
+builder.Services.AddHostedService<NotificationService>();
 builder.Services.AddHostedService<OutboxRelayService>();
 
 await builder.Build().RunAsync();

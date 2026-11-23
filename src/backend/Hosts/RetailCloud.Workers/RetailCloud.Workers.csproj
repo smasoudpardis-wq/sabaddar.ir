@@ -10,5 +10,6 @@
     <ProjectReference Include="../../Modules/Inventory/Inventory.Infrastructure/Inventory.Infrastructure.csproj" />
     <ProjectReference Include="../../Modules/Accounting/Accounting.Infrastructure/Accounting.Infrastructure.csproj" />
     <ProjectReference Include="../../Modules/Platform/Platform.Infrastructure/Platform.Infrastructure.csproj" />
+    <ProjectReference Include="../../Modules/Notifications/Notifications.Infrastructure/Notifications.Infrastructure.csproj" />
   </ItemGroup>
 </Project>

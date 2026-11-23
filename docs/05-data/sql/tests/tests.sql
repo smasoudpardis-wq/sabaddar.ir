@@ -553,6 +553,35 @@ SELECT t.expect_error('T155 a system account keeps its code, type and flags', 'R
   $$UPDATE acc.account SET account_type = 'Expense' WHERE code = '1101'$$);
 SELECT t.expect_error('T156 accounts are never deleted', '42501',
   $$DELETE FROM acc.account WHERE code = '1101'$$);
+-- US-151 notifications (NOT-005/006/007, DI-130/131)
+SELECT set_config('app.tenant_id', :A, false);
+SELECT t.expect_error('T157 no code path can queue a marketing message (NOT-007)', '23514',
+  format($$INSERT INTO notif.notification (tenant_id, id, purpose, channel, recipient_ref, template_code, template_version) VALUES (%L, gen_random_uuid(), 'Marketing', 'Sms', 'cust:1', 'promo', 1)$$, :A));
+INSERT INTO notif.notification (tenant_id, id, purpose, channel, recipient_ref, template_code, template_version, source_type, source_id)
+  VALUES (:A, 'f6000000-0000-0000-0000-000000000001', 'Receipt', 'Sms', 'cust:1', 'receipt', 1, 'Sale', 'a0000000-0000-0000-0000-000000000040');
+SELECT t.expect_error('T158 one notification per source, purpose and channel', '23505',
+  format($$INSERT INTO notif.notification (tenant_id, id, purpose, channel, recipient_ref, template_code, template_version, source_type, source_id) VALUES (%L, gen_random_uuid(), 'Receipt', 'Sms', 'cust:1', 'receipt', 1, 'Sale', 'a0000000-0000-0000-0000-000000000040')$$, :A));
+SELECT t.expect_error('T159 only the Workers send: the application cannot change a notification', '42501',
+  $$UPDATE notif.notification SET status = 'Sending'$$);
+RESET ROLE;
+SET ROLE rc_worker;
+SELECT set_config('app.tenant_id', :A, false);
+SELECT t.expect_error('T160 a queued notification cannot jump to Delivered (NOT-006)', 'RC019',
+  $$UPDATE notif.notification SET status = 'Delivered', delivered_at = now(), provider_message_id = 'p1' WHERE id = 'f6000000-0000-0000-0000-000000000001'$$);
+UPDATE notif.notification SET status = 'Sending', attempts = 1 WHERE id = 'f6000000-0000-0000-0000-000000000001';
+UPDATE notif.notification SET status = 'Sent', provider_message_id = 'p1' WHERE id = 'f6000000-0000-0000-0000-000000000001';
+SELECT t.expect_error('T161 Delivered only with a provider receipt time (DI-130)', '23514',
+  $$UPDATE notif.notification SET status = 'Delivered' WHERE id = 'f6000000-0000-0000-0000-000000000001'$$);
+UPDATE notif.notification SET attempts = attempts + 1 WHERE id = 'f6000000-0000-0000-0000-000000000001';   -- 2
+UPDATE notif.notification SET attempts = attempts + 1 WHERE id = 'f6000000-0000-0000-0000-000000000001';   -- 3
+UPDATE notif.notification SET attempts = attempts + 1 WHERE id = 'f6000000-0000-0000-0000-000000000001';   -- 4
+UPDATE notif.notification SET attempts = attempts + 1 WHERE id = 'f6000000-0000-0000-0000-000000000001';   -- 5
+SELECT t.expect_error('T162 never more than five attempts (DI-131)', '23514',
+  $$UPDATE notif.notification SET attempts = attempts + 1 WHERE id = 'f6000000-0000-0000-0000-000000000001'$$);
+SELECT t.expect_error('T163 attempts never jump or go back', 'RC019',
+  $$UPDATE notif.notification SET attempts = 1 WHERE id = 'f6000000-0000-0000-0000-000000000001'$$);
+RESET ROLE;
+SET ROLE rc_app;
 -- US-016 export jobs
 SELECT set_config('app.tenant_id', :A, false);
 SELECT t.expect_error('T129 an export cannot point at another tenant''s storage', '23514',

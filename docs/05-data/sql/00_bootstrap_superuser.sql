@@ -27,7 +27,7 @@ CREATE EXTENSION IF NOT EXISTS btree_gist;  -- exclusion constraints on (uuid, r
 DO $$
 DECLARE s text;
 BEGIN
-  FOREACH s IN ARRAY ARRAY['core','platform','iam','merch','inv','sales','acc','ar','cid','tax','audit'] LOOP
+  FOREACH s IN ARRAY ARRAY['core','platform','iam','merch','inv','sales','acc','ar','cid','tax','notif','audit'] LOOP
     EXECUTE format('CREATE SCHEMA IF NOT EXISTS %I AUTHORIZATION rc_migrator', s);
     EXECUTE format('REVOKE ALL ON SCHEMA %I FROM PUBLIC', s);
   END LOOP;

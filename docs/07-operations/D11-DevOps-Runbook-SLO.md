@@ -141,7 +141,7 @@ flowchart LR
 | `rc_tax_deadline_at_risk` | Gauge | `threshold` (`50`، `80`، `95`) |
 | `rc_tax_invoices_rejected_total` | Counter | — |
 | `rc_tax_sign_total` | Counter | `result`؛ و `rc_tax_sign_rate_ratio` (نسبت به میانگین ساعتی Tenant، Top-N) |
-| `rc_notification_attempts_total` | Counter | `channel`، `result` |
+| `rc_notification_attempts_total` | Counter | `channel`، `result` (`Sent`، `Retrying`، `Undeliverable`، `DeadLettered`؛ US-151 — هر DeadLettered در لاگ Workers با EventId 5101 هم ثبت می‌شود) |
 | `rc_otp_sent_total` | Counter | `purpose`، `result` |
 | `rc_sms_spend_ratio` | Gauge | — (مصرف روز ÷ سقف) |
 | `rc_payment_intents` | Gauge | `status`، `gateway` |

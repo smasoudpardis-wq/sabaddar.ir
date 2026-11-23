@@ -17,6 +17,8 @@ public sealed class MigrationRunnerTests : IAsyncLifetime
 
     private readonly string _db = "rc_mig_" + Guid.NewGuid().ToString("N")[..12];
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "rc-mig-" + Guid.NewGuid().ToString("N"));
+    private static int StepCount => JsonNode.Parse(File.ReadAllText(Path.Combine(RepoRoot(), "docs", "05-data", "sql", "migrations.json")))!["steps"]!.AsArray().Count;
+
     private NpgsqlDataSource? _ds;
 
     private NpgsqlDataSource Ds => _ds!;
@@ -91,11 +93,11 @@ public sealed class MigrationRunnerTests : IAsyncLifetime
     public async Task Fresh_database_gets_every_step_once_and_passes_fitness()
     {
         MigrationReport first = await Run(bootstrap: true);
-        Assert.Equal(12, first.Applied.Count);
+        Assert.Equal(StepCount, first.Applied.Count);
         Assert.True(first.Ok, string.Join("; ", first.FitnessViolations));
         MigrationReport second = await Run();
         Assert.Empty(second.Applied);
-        Assert.Equal(12, second.AlreadyApplied);
+        Assert.Equal(StepCount, second.AlreadyApplied);
         Assert.Equal(2, await Scalar("SELECT count(*) FROM core.migration_history"));
     }
 
@@ -148,10 +150,24 @@ public sealed class MigrationRunnerTests : IAsyncLifetime
         await Run(bootstrap: true);
         string path = Path.Combine(_dir, "migrations.json");
         JsonNode m = JsonNode.Parse(File.ReadAllText(path))!;
-        m["steps"]!.AsArray().RemoveAt(11);   // core/0002_oracles
+        JsonArray steps = m["steps"]!.AsArray();
+        steps.Remove(steps.Single(st => (string?)st!["module"] == "core" && (string?)st["id"] == "0002_oracles"));
         File.WriteAllText(path, m.ToJsonString());
         MigrationException e = await Assert.ThrowsAsync<MigrationException>(() => Run());
         Assert.Contains("core/0002_oracles", e.Message, StringComparison.Ordinal);
+    }
+
+    [DbFact]
+    public async Task A_module_removed_from_the_manifest_entirely_stops_the_run()
+    {
+        await Run(bootstrap: true);
+        string path = Path.Combine(_dir, "migrations.json");
+        JsonNode m = JsonNode.Parse(File.ReadAllText(path))!;
+        JsonArray steps = m["steps"]!.AsArray();
+        steps.Remove(steps.Single(st => (string?)st!["module"] == "audit"));   // the module's only step
+        File.WriteAllText(path, m.ToJsonString());
+        MigrationException e = await Assert.ThrowsAsync<MigrationException>(() => Run());
+        Assert.Contains("audit/0001_baseline", e.Message, StringComparison.Ordinal);
     }
 
     [DbFact]
@@ -169,7 +185,7 @@ public sealed class MigrationRunnerTests : IAsyncLifetime
     {
         await new MigrationRunner(Ds, _dir).RunAsync(bootstrap: true, dryRun: true, CancellationToken.None);   // bootstrap only
         MigrationReport[] reports = await Task.WhenAll(Enumerable.Range(0, 3).Select(_ => Run()));
-        Assert.Equal(12, reports.Sum(r => r.Applied.Count));
+        Assert.Equal(StepCount, reports.Sum(r => r.Applied.Count));
         Assert.All(reports, r => Assert.True(r.Ok));
     }
 }

@@ -13,6 +13,7 @@
     { "module": "ar",       "id": "0001_baseline", "file": "55_ar.sql" },
     { "module": "cid",      "id": "0001_baseline", "file": "60_cid.sql" },
     { "module": "tax",      "id": "0001_baseline", "file": "70_tax.sql" },
+    { "module": "notif",    "id": "0001_baseline", "file": "75_notif.sql" },
     { "module": "audit",    "id": "0001_baseline", "file": "80_audit.sql" },
     { "module": "core",     "id": "0002_oracles",  "file": "91_oracles.sql" }
   ]
