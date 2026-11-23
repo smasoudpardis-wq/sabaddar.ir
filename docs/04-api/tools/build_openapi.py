@@ -220,9 +220,11 @@ schema("Variant", id="uuid", sku="str", axisValues={"color?": "str", "size?": "s
        status=("enum", ["Active", "Inactive"]), barcodes=["#Barcode"], unitPrice="money?")
 schema("Product", id="uuid", name="str", brand="str?", baseUnit="str", taxCode="str?", taxRate="bp",
        status=("enum", ["Active", "Inactive", "Merged"]), variants=["#Variant"], version="int",
+       axes=("desc", [("enum", ["color", "size", "model"])], "CAT-008 matrix axes; every variant has a value for exactly these"),
        **{"costVisible?": ("desc", "money?", "Current WAC; only with catalog.product.manage or reports.view (TM-014)")})
 schema("ProductUpdate", expectedVersion="int", **{"name?": "str", "brand?": "str", "taxCode?": "str", "taxRate?": "bp",
                                                   "status?": ("enum", ["Active", "Inactive"])})
+schema("VariantUpdate", expectedVersion=("desc", "int", "The product's version"), status=("enum", ["Active", "Inactive"]))
 schema("ProductMerge", targetProductId="uuid", expectedVersion="int", reason="str")
 schema("PriceSet", items=[{"variantId": "uuid", "unitPrice": "money"}], validFrom="dt", **{"reason?": "str"})
 schema("PriceList", id="uuid", name="str", isDefault=("desc", "bool", "The tenant's list; created on first use"),
@@ -804,12 +806,19 @@ op("get", "/products", "listProducts", "Catalog", "جستجوی کالا (بار
         "Ordered by normalised name; keyset paging.")
 op("post", "/products", "createProduct", "Catalog", "تعریف کالا با Variant و بارکد (و موجودی افتتاحیه اختیاری)",
    perm="catalog.product.manage", scope="Tenant", idem=True, body="ProductCreate", resp="Product", resp_code="201",
-   reqs=["CAT-001", "CAT-002", "CAT-002.1", "CAT-004.1", "CAT-008", "UC-01"], audited=True)
+   reqs=["CAT-001", "CAT-002", "CAT-002.1", "CAT-004.1", "CAT-008", "UC-01"], audited=True,
+   desc="With axes (CAT-008) every variant has a value for exactly those axes; the panel builds the product of the values and "
+        "leaves out the combinations not sold. A variant's unitPrice becomes its first price in the default list from now "
+        "(catalog.price.manage store-wide; first prices are not a change, so no BR-041 approval). openingStock needs one variant "
+        "and inventory.receipt.create at the warehouse.")
 op("get", "/products/{productId}", "getProduct", "Catalog", "جزئیات کالا", resp="Product", reqs=["CAT-001"])
 op("patch", "/products/{productId}", "updateProduct", "Catalog", "ویرایش کالا", perm="catalog.product.manage", scope="Tenant",
    body="ProductUpdate", resp="Product", reqs=["CAT-001"], audited=True, conflict=True)
 op("post", "/products/{productId}/variants", "addVariant", "Catalog", "افزودن Variant", perm="catalog.product.manage",
    scope="Tenant", body="VariantInput", resp="Variant", resp_code="201", reqs=["CAT-008"], audited=True, conflict=True)
+op("patch", "/products/{productId}/variants/{variantId}", "updateVariant", "Catalog", "فعال/غیرفعال کردن یک ترکیب",
+   perm="catalog.product.manage", scope="Tenant", body="VariantUpdate", resp="Product", reqs=["CAT-008"], audited=True, conflict=True,
+   desc="An inactive variant is not resolved from its barcode and cannot be priced; its stock and history stay.")
 op("post", "/products/{productId}/variants/{variantId}/barcodes", "addBarcode", "Catalog", "افزودن بارکد به Variant",
    perm="catalog.product.manage", scope="Tenant", body="BarcodeInput", resp="Barcode", resp_code="201",
    reqs=["CAT-002", "CAT-002.1", "CAT-006"], audited=True, conflict=True)

@@ -511,6 +511,23 @@
   "idempotent": false
  },
  {
+  "operationId": "updateVariant",
+  "method": "PATCH",
+  "path": "/products/{productId}/variants/{variantId}",
+  "permission": "catalog.product.manage",
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [
+   "productId",
+   "variantId"
+  ],
+  "bodyProps": [
+   "expectedVersion",
+   "status"
+  ],
+  "idempotent": false
+ },
+ {
   "operationId": "addBarcode",
   "method": "POST",
   "path": "/products/{productId}/variants/{variantId}/barcodes",

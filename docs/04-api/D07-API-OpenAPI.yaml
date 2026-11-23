@@ -1557,6 +1557,10 @@ paths:
       tags:
       - Catalog
       summary: تعریف کالا با Variant و بارکد (و موجودی افتتاحیه اختیاری)
+      description: With axes (CAT-008) every variant has a value for exactly those axes; the panel builds the product of the
+        values and leaves out the combinations not sold. A variant's unitPrice becomes its first price in the default list
+        from now (catalog.price.manage store-wide; first prices are not a change, so no BR-041 approval). openingStock needs
+        one variant and inventory.receipt.create at the warehouse.
       security: *id001
       parameters:
       - $ref: '#/components/parameters/IdempotencyKey'
@@ -1725,6 +1729,66 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Variant'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: catalog.product.manage
+      x-scope: Tenant
+      x-idempotent: false
+      x-requirements:
+      - CAT-008
+      x-audited: true
+  /products/{productId}/variants/{variantId}:
+    patch:
+      operationId: updateVariant
+      tags:
+      - Catalog
+      summary: فعال/غیرفعال کردن یک ترکیب
+      description: An inactive variant is not resolved from its barcode and cannot be priced; its stock and history stay.
+      security: *id001
+      parameters:
+      - name: productId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: variantId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VariantUpdate'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -10796,6 +10860,15 @@ components:
         version:
           type: integer
           format: int32
+        axes:
+          type: array
+          items:
+            type: string
+            enum:
+            - color
+            - size
+            - model
+          description: CAT-008 matrix axes; every variant has a value for exactly these
         costVisible:
           anyOf:
           - $ref: '#/components/schemas/Money'
@@ -10811,6 +10884,7 @@ components:
       - status
       - variants
       - version
+      - axes
     ProductCreate:
       type: object
       additionalProperties: false
@@ -13001,6 +13075,22 @@ components:
             $ref: '#/components/schemas/BarcodeInput'
       required:
       - sku
+    VariantUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        expectedVersion:
+          type: integer
+          format: int32
+          description: The product's version
+        status:
+          type: string
+          enum:
+          - Active
+          - Inactive
+      required:
+      - expectedVersion
+      - status
     VersionOnly:
       type: object
       additionalProperties: false

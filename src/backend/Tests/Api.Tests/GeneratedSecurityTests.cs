@@ -42,6 +42,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
         ["updateUser"] = _ => new { expectedVersion = 1, status = "Disabled" },
         ["addVariant"] = _ => new { sku = "GEN-" + Guid.NewGuid().ToString("N")[..8], axisValues = new { size = Guid.NewGuid().ToString("N")[..8] } },
         ["addBarcode"] = _ => new { code = "96385074" },
+        ["updateVariant"] = _ => new { expectedVersion = 1, status = "Inactive" },
         ["recordCashMovement"] = _ => new { direction = "In", amount = "1000", reason = "آزمون" },
         ["closeShift"] = _ => new { countedCash = "0", expectedVersion = 1 },
         ["approveShiftVariance"] = _ => new { decision = "Approve" },

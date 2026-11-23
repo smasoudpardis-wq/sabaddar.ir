@@ -112,6 +112,24 @@ SELECT t.expect_error('T145 a standard barcode is stored only as GTIN-14', '2351
     VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000011', '6260000000017', '6260000000017')$$);
 SELECT t.expect_error('T146 barcode rows are never deleted', '42501',
   $$DELETE FROM merch.tenant_product_barcode WHERE code_normalized = '06260000000017'$$);
+-- US-051 variant matrix (CAT-008)
+INSERT INTO merch.tenant_product (tenant_id, id, name, base_unit_code, axes)
+  VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000080', 'تی‌شرت', 'EA', '{color,size}');
+INSERT INTO merch.tenant_variant (tenant_id, id, product_id, sku, axis_values)
+  VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000080', 'TEE-R-M', '{"color":"قرمز","size":"M"}');
+SELECT t.expect_error('T183 a matrix variant must name every axis of its product', 'RC024',
+  $$INSERT INTO merch.tenant_variant (tenant_id, id, product_id, sku, axis_values)
+    VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000080', 'TEE-R', '{"color":"قرمز"}')$$);
+SELECT t.expect_error('T184 and no axis the product does not have', 'RC024',
+  $$INSERT INTO merch.tenant_variant (tenant_id, id, product_id, sku, axis_values)
+    VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000080', 'TEE-R-M-X', '{"color":"قرمز","size":"M","model":"X"}')$$);
+SELECT t.expect_error('T185 an axis value is not blank', 'RC024',
+  $$INSERT INTO merch.tenant_variant (tenant_id, id, product_id, sku, axis_values)
+    VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000080', 'TEE-B', '{"color":" ","size":"L"}')$$);
+SELECT t.expect_error('T186 the axes are fixed once the product has variants', 'RC024',
+  $$UPDATE merch.tenant_product SET axes = '{color}' WHERE id = 'a0000000-0000-0000-0000-000000000080'$$);
+SELECT t.expect_error('T187 only color, size and model are axes', '23514',
+  $$INSERT INTO merch.tenant_product (tenant_id, id, name, base_unit_code, axes) VALUES (core.current_tenant(), gen_random_uuid(), 'x', 'EA', '{flavor}')$$);
 -- US-045 weighted barcode profiles (CAT-007, DI-084)
 INSERT INTO merch.weighted_barcode_profile (tenant_id, id, prefix, item_code_length, value_type, value_length, decimals)
   VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000070', '21', 5, 'Weight', 5, 3);

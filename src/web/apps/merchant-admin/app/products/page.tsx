@@ -3,8 +3,76 @@ import { useEffect, useState } from 'react';
 import { codeOf, csrf, MESSAGES } from '@/lib/client';
 
 type Barcode = { id: string; code: string; codeNormalized: string; packagingUnit: string; unitFactor: string; active: boolean };
-type Product = { id: string; name: string; brand: string | null; baseUnit: string; taxRate: number; status: string;
-  variants: { id: string; sku: string; barcodes: Barcode[]; unitPrice: string | null }[] };
+type Product = { id: string; name: string; brand: string | null; baseUnit: string; taxRate: number; status: string; version: number;
+  axes: string[];
+  variants: { id: string; sku: string; barcodes: Barcode[]; unitPrice: string | null; status: string; axisValues: Record<string, string> }[] };
+
+const split = (v: string) => v.split(/[,،]/).map((x) => x.trim()).filter(Boolean);
+const toLatin = (v: string) => v.replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d))).replace(/[,٬\s]/g, '');
+
+/**
+ * US-051 / CAT-008: colours × sizes, with the combinations the store does not sell left out. Each variant gets its own
+ * SKU (base-colour#-size#), an optional common first price, and later its own price, barcode and stock.
+ */
+function MatrixForm({ onCreated }: { onCreated: (name: string) => void }) {
+  const [m, setM] = useState({ name: '', sku: '', colors: '', sizes: '', price: '' });
+  const [off, setOff] = useState<Set<string>>(new Set());
+  const [key, setKey] = useState(() => crypto.randomUUID());
+  const [error, setError] = useState('');
+  const colors = split(m.colors), sizes = split(m.sizes);
+  const cell = (ci: number, si: number) => `${ci}-${si}`;
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    const variants = colors.flatMap((c, ci) => sizes.map((z, si) => ({ c, z, ci, si })))
+      .filter((x) => !off.has(cell(x.ci, x.si)))
+      .map((x) => ({ sku: `${m.sku}-${x.ci + 1}-${x.si + 1}`, axisValues: { color: x.c, size: x.z }, unitPrice: m.price ? toLatin(m.price) : undefined }));
+    const r = await fetch('/bff/products', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-csrf-token': csrf(), 'idempotency-key': key },
+      body: JSON.stringify({ name: m.name, baseUnit: 'EA', axes: ['color', 'size'], confirmation: { confirmed: true }, variants }),
+    });
+    if (!r.ok) return setError(await codeOf(r));
+    setKey(crypto.randomUUID());
+    setOff(new Set());
+    onCreated(m.name);
+    setM({ name: '', sku: '', colors: '', sizes: '', price: '' });
+  }
+
+  const set = (k: keyof typeof m) => (e: React.ChangeEvent<HTMLInputElement>) => setM({ ...m, [k]: e.target.value });
+  return (
+    <form onSubmit={(e) => void submit(e)} data-testid="matrix-form">
+      <label>نام <input required value={m.name} onChange={set('name')} data-testid="matrix-name" /></label>{' '}
+      <label>SKU پایه <input required value={m.sku} onChange={set('sku')} dir="ltr" size={10} data-testid="matrix-sku" /></label>{' '}
+      <label>رنگ‌ها (با ، جدا کنید) <input value={m.colors} onChange={set('colors')} data-testid="matrix-colors" /></label>{' '}
+      <label>سایزها <input value={m.sizes} onChange={set('sizes')} dir="ltr" data-testid="matrix-sizes" /></label>{' '}
+      <label>قیمت همه (ریال، اختیاری) <input value={m.price} onChange={set('price')} dir="ltr" inputMode="numeric" size={10} /></label>
+      {colors.length > 0 && sizes.length > 0 && (
+        <table data-testid="matrix-grid">
+          <thead><tr><th />{sizes.map((z) => <th key={z}>{z}</th>)}</tr></thead>
+          <tbody>
+            {colors.map((c, ci) => (
+              <tr key={c}><th>{c}</th>{sizes.map((z, si) => (
+                <td key={z}>
+                  <input type="checkbox" aria-label={`${c} ${z}`} checked={!off.has(cell(ci, si))} onChange={(e) => {
+                    const next = new Set(off);
+                    if (e.target.checked) next.delete(cell(ci, si)); else next.add(cell(ci, si));
+                    setOff(next);
+                  }} />
+                </td>
+              ))}</tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <button type="submit" style={{ minHeight: 44 }} data-testid="matrix-submit">
+        ساخت {colors.length * sizes.length - off.size > 0 ? colors.length * sizes.length - off.size : ''} ترکیب (اطلاعات را تأیید می‌کنم)
+      </button>
+      {error && <p role="alert" data-testid="matrix-error">{MESSAGES[error] ?? error}</p>}
+    </form>
+  );
+}
 
 const rial = (v: string) => Number(v).toLocaleString('fa-IR');
 
@@ -83,6 +151,16 @@ export default function ProductsPage() {
     });
   }, []);
 
+  async function toggle(p: Product, variantId: string, status: string) {
+    setError('');
+    const r = await fetch(`/bff/products/${p.id}/variants/${variantId}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf() },
+      body: JSON.stringify({ expectedVersion: p.version, status }),
+    });
+    if (!r.ok) return setError(await codeOf(r));
+    void find(search);
+  }
+
   async function create(e: React.FormEvent) {
     e.preventDefault();
     setError('');
@@ -119,10 +197,17 @@ export default function ProductsPage() {
           <li key={p.id} data-product={p.id}>
             {p.name}{p.brand ? ` (${p.brand})` : ''}
             {p.variants.map((v) => (
-              <div key={v.id} data-variant={v.sku}>
-                {v.sku}: {v.barcodes.filter((b) => b.active).map((b) => b.code).join('، ') || 'بدون بارکد'}
+              <div key={v.id} data-variant={v.sku} data-status={v.status}>
+                {v.sku}{Object.keys(v.axisValues ?? {}).length > 0 ? ` (${Object.values(v.axisValues).join(' / ')})` : ''}:{' '}
+                {v.barcodes.filter((b) => b.active).map((b) => b.code).join('، ') || 'بدون بارکد'}
+                {v.status === 'Inactive' && ' — غیرفعال'}
                 {' — '}<span data-testid={`price-${v.sku}`}>{v.unitPrice ? `${rial(v.unitPrice)} ریال` : 'بدون قیمت'}</span>{' '}
-                {listId && <PriceForm listId={listId} variantId={v.id} onDone={() => void find(search)} />}
+                {listId && v.status === 'Active' && <PriceForm listId={listId} variantId={v.id} onDone={() => void find(search)} />}
+                {p.axes?.length > 0 && (
+                  <button type="button" style={{ minHeight: 44 }} onClick={() => void toggle(p, v.id, v.status === 'Active' ? 'Inactive' : 'Active')}>
+                    {v.status === 'Active' ? 'غیرفعال کن' : 'فعال کن'}
+                  </button>
+                )}
               </div>
             ))}
           </li>
@@ -141,6 +226,8 @@ export default function ProductsPage() {
         <label>نرخ مالیات ٪ <input value={form.taxRate} onChange={set('taxRate')} dir="ltr" size={4} /></label>{' '}
         <button type="submit" style={{ minHeight: 44 }} data-testid="product-submit">ثبت کالا (اطلاعات را تأیید می‌کنم)</button>
       </form>
+      <h2>کالای چندحالته (رنگ × سایز)</h2>
+      <MatrixForm onCreated={(name) => { setCreated(name); setSearch(name); void find(name); }} />
       {created && <p role="status" data-testid="product-created">«{created}» ثبت شد.</p>}
       {error && <p role="alert" data-testid="product-error">{MESSAGES[error] ?? error}</p>}
       <p><a href="/">بازگشت</a></p>

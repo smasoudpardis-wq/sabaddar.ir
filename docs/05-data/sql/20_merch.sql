@@ -21,6 +21,7 @@ CREATE TABLE merch.tenant_product (
   tax_code         text,                    -- شناسه کالا/خدمت مالیاتی (TAX-003)
   tax_rate_bp      int  NOT NULL DEFAULT 0 CHECK (tax_rate_bp BETWEEN 0 AND 10000),
   catalog_product_id uuid,                  -- reference only (no FK into Global catalog)
+  axes             text[] NOT NULL DEFAULT '{}' CHECK (axes <@ ARRAY['color','size','model'] AND cardinality(axes) <= 3),   -- CAT-008
   status           text NOT NULL DEFAULT 'Active' CHECK (status IN ('Active','Inactive','Merged')),
   merged_into_id   uuid,
   version          int NOT NULL DEFAULT 1,
@@ -42,6 +43,32 @@ CREATE TABLE merch.tenant_variant (
   FOREIGN KEY (tenant_id, product_id) REFERENCES merch.tenant_product (tenant_id, id)
 );
 CALL core.enable_tenant_rls('merch.tenant_variant');
+
+-- CAT-008: a product with axes (a matrix) has variants that name exactly those axes, each with a value; the axes of a
+-- product never change once it has variants (its variants were built from them).
+CREATE OR REPLACE FUNCTION merch.variant_axes() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+DECLARE
+  want text[];
+BEGIN
+  SELECT axes INTO want FROM merch.tenant_product WHERE tenant_id = NEW.tenant_id AND id = NEW.product_id;
+  IF cardinality(want) > 0 AND (
+       ARRAY(SELECT k FROM jsonb_object_keys(NEW.axis_values) k ORDER BY k) IS DISTINCT FROM ARRAY(SELECT a FROM unnest(want) a ORDER BY a)
+       OR EXISTS (SELECT 1 FROM jsonb_each(NEW.axis_values) e WHERE jsonb_typeof(e.value) <> 'string' OR length(btrim(e.value #>> '{}')) = 0)) THEN
+    RAISE EXCEPTION 'variant % must have a value for exactly the axes %', NEW.sku, want USING ERRCODE = 'RC024';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER variant_axes BEFORE INSERT OR UPDATE OF axis_values, product_id ON merch.tenant_variant
+  FOR EACH ROW EXECUTE FUNCTION merch.variant_axes();
+
+CREATE OR REPLACE FUNCTION merch.product_axes_fixed() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  IF NEW.axes IS DISTINCT FROM OLD.axes AND EXISTS (SELECT 1 FROM merch.tenant_variant WHERE tenant_id = OLD.tenant_id AND product_id = OLD.id) THEN
+    RAISE EXCEPTION 'the axes of product % are fixed once it has variants', OLD.id USING ERRCODE = 'RC024';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER product_axes_fixed BEFORE UPDATE OF axes ON merch.tenant_product FOR EACH ROW EXECUTE FUNCTION merch.product_axes_fixed();
 
 CREATE TABLE merch.tenant_product_barcode (
   tenant_id        uuid NOT NULL,

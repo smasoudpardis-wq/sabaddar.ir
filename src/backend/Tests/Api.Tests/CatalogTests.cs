@@ -157,10 +157,10 @@ public sealed class CatalogTests : IClassFixture<ApiFactory>, IAsyncLifetime
         Assert.Equal("required: true (CAT-004.1)", (await Body(await Create(owner, noConfirmation))).GetProperty("errors").GetProperty("confirmation.confirmed")[0].GetString());
 
         var later = new { name = "کالا", baseUnit = "EA", categoryId = Guid.NewGuid(), confirmation = new { confirmed = true },
-            variants = new[] { new { sku = "N-2", unitPrice = "100000" } } };
+            variants = new[] { new { sku = "N-2", unitPrice = "0" } } };
         JsonElement errors = (await Body(await Create(owner, later))).GetProperty("errors");
         Assert.Equal("not-yet-supported", errors.GetProperty("categoryId")[0].GetString());
-        Assert.Equal("not-yet-supported", errors.GetProperty("variants[0].unitPrice")[0].GetString());
+        Assert.True(errors.TryGetProperty("variants[0].unitPrice", out _));   // a first price is positive (US-051)
 
         await Create(owner, Milk("DUP-1"));
         Assert.Equal("duplicate-code", (await Body(await Create(owner, Milk("DUP-1")))).GetProperty("code").GetString());
@@ -308,5 +308,52 @@ public sealed class CatalogTests : IClassFixture<ApiFactory>, IAsyncLifetime
         Assert.True(errors.TryGetProperty("profiles[0].prefix", out _));
         Assert.True(errors.TryGetProperty("profiles[0].decimals", out _));
         Assert.True(errors.TryGetProperty("profiles[0]", out _));
+    }
+    [DbFact]
+    public async Task AT031_a_colour_by_size_matrix_with_one_combination_left_out_and_one_switched_off_later()
+    {
+        HttpClient owner = Owner();
+        object V(string sku, string color, string size, string? price = null, string? code = null) => new
+        {
+            sku, axisValues = new Dictionary<string, string> { ["color"] = color, ["size"] = size }, unitPrice = price,
+            barcodes = code is null ? Array.Empty<object>() : [new { code, isInternal = true }],
+        };
+        HttpResponseMessage created = await Create(owner, new
+        {
+            name = "تی‌شرت نخی", baseUnit = "EA", axes = new[] { "color", "size" }, confirmation = new { confirmed = true },
+            variants = new[] { V("TEE-R-M", "قرمز", "M", "900000", "TEE-RM"), V("TEE-R-L", "قرمز", "L", null, "TEE-RL"), V("TEE-B-M", "آبی", "M") },
+        });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        JsonElement p = await Body(created);
+        Assert.Equal(["color", "size"], p.GetProperty("axes").EnumerateArray().Select(a => a.GetString()));
+        Dictionary<string, JsonElement> bySku = p.GetProperty("variants").EnumerateArray().ToDictionary(v => v.GetProperty("sku").GetString()!);
+        Assert.Equal(3, bySku.Count);
+        Assert.Equal("900000", bySku["TEE-R-M"].GetProperty("unitPrice").GetString());   // each variant its own price
+        Assert.Equal(JsonValueKind.Null, bySku["TEE-B-M"].GetProperty("unitPrice").ValueKind);
+        Guid id = p.GetProperty("id").GetGuid();
+
+        // every variant of a matrix names exactly its axes
+        HttpResponseMessage partial = await Create(owner, new
+        {
+            name = "شلوار", baseUnit = "EA", axes = new[] { "color", "size" }, confirmation = new { confirmed = true },
+            variants = new[] { new { sku = "PANT-1", axisValues = new Dictionary<string, string> { ["color"] = "مشکی" } } },
+        });
+        Assert.True((await Body(partial)).GetProperty("errors").TryGetProperty("variants[0].axisValues", out _));
+        Assert.Equal(HttpStatusCode.BadRequest, (await owner.PostAsJsonAsync($"/api/v1/products/{id}/variants",
+            new { sku = "TEE-B", axisValues = new { color = "آبی" } })).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await owner.PostAsJsonAsync($"/api/v1/products/{id}/variants",
+            new { sku = "TEE-B-L", axisValues = new { color = "آبی", size = "L" } })).StatusCode);   // the left-out combination, later
+
+        // switch red/L off: versioned on the product, and its barcode no longer sells
+        int version = (await Body(await owner.GetAsync($"/api/v1/products/{id}"))).GetProperty("version").GetInt32();
+        Guid redL = bySku["TEE-R-L"].GetProperty("id").GetGuid();
+        HttpResponseMessage off = await owner.PatchAsJsonAsync($"/api/v1/products/{id}/variants/{redL}", new { expectedVersion = version, status = "Inactive" });
+        Assert.Equal(HttpStatusCode.OK, off.StatusCode);
+        Assert.Equal("Inactive", (await Body(off)).GetProperty("variants").EnumerateArray().Single(v => v.GetProperty("id").GetGuid() == redL).GetProperty("status").GetString());
+        Assert.Equal(HttpStatusCode.Conflict, (await owner.PatchAsJsonAsync($"/api/v1/products/{id}/variants/{redL}", new { expectedVersion = version, status = "Active" })).StatusCode);
+        JsonElement resolved = await Body(await owner.PostAsJsonAsync("/api/v1/catalog/barcodes/resolve", new { barcode = "TEE-RL", branchId = Guid.NewGuid() }));
+        Assert.Equal("not_found", resolved.GetProperty("kind").GetString());
+        Assert.Equal("known", (await Body(await owner.PostAsJsonAsync("/api/v1/catalog/barcodes/resolve", new { barcode = "TEE-RM", branchId = Guid.NewGuid() })))
+            .GetProperty("kind").GetString());
     }
 }

@@ -309,6 +309,19 @@ try {
   const notYet = (await cola.getByRole('alert').textContent()) ?? '';
   check('Q03', 'applying before the approval is refused, not guessed', notYet.includes('هنوز تأیید نشده'), notYet);
   await shot(page, 'prices');
+  // M01–M02 US-051: a colour × size matrix with one combination left out; one combination switched off later
+  await page.getByTestId('matrix-name').fill('تی‌شرت آزمایشی');
+  await page.getByTestId('matrix-sku').fill('E2E-TEE');
+  await page.getByTestId('matrix-colors').fill('قرمز، آبی');
+  await page.getByTestId('matrix-sizes').fill('M, L');
+  await page.getByTestId('matrix-grid').getByLabel('آبی L').uncheck();
+  await page.getByTestId('matrix-submit').click();
+  await page.locator('[data-variant="E2E-TEE-1-1"]').waitFor();
+  const tees = await page.locator('[data-variant^="E2E-TEE-"]').count();
+  check('M01', 'a 2 × 2 matrix minus one combination makes 3 variants (CAT-008)', tees === 3, `${tees}`);
+  await page.locator('[data-variant="E2E-TEE-1-2"]').getByRole('button', { name: 'غیرفعال کن' }).click();
+  await page.locator('[data-variant="E2E-TEE-1-2"][data-status="Inactive"]').waitFor();
+  check('M02', 'one combination is switched off and stays listed as inactive', true);
   // W01–W03 US-045: the owner sets a scale label format; a printed label then decodes to the item and its weight
   await page.goto(`${BFF}/products`);
   await page.getByTestId('product-name').fill('پنیر فله آزمایشی');

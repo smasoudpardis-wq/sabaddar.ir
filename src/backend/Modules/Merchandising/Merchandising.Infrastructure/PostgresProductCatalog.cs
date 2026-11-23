@@ -32,9 +32,10 @@ public sealed class PostgresProductCatalog(IOutbox outbox) : IProductCatalog
         }
 
         Guid id = Guid.CreateVersion7();
-        await Exec(s, "INSERT INTO merch.tenant_product (tenant_id, id, name, brand, base_unit_code, tax_code, tax_rate_bp) " +
-                      "VALUES (core.current_tenant(), $1, $2, $3, $4, $5, $6)", cancellationToken,
-            id, spec.Name.Trim(), (object?)spec.Brand?.Trim() ?? DBNull.Value, spec.BaseUnit, (object?)spec.TaxCode ?? DBNull.Value, spec.TaxRate);
+        await Exec(s, "INSERT INTO merch.tenant_product (tenant_id, id, name, brand, base_unit_code, tax_code, tax_rate_bp, axes) " +
+                      "VALUES (core.current_tenant(), $1, $2, $3, $4, $5, $6, $7)", cancellationToken,
+            id, spec.Name.Trim(), (object?)spec.Brand?.Trim() ?? DBNull.Value, spec.BaseUnit, (object?)spec.TaxCode ?? DBNull.Value, spec.TaxRate,
+            (spec.Axes ?? []).ToArray());
         foreach (VariantSpec v in spec.Variants)
         {
             await InsertVariantAsync(s, id, v, cancellationToken);
@@ -129,12 +130,32 @@ public sealed class PostgresProductCatalog(IOutbox outbox) : IProductCatalog
             "AND l.is_default WHERE i.variant_id = v.id AND i.valid @> statement_timestamp()) FROM merch.tenant_product_barcode b " +
             "JOIN merch.tenant_variant v ON v.tenant_id = b.tenant_id AND v.id = b.variant_id " +
             "JOIN merch.tenant_product p ON p.tenant_id = v.tenant_id AND p.id = v.product_id " +
-            "WHERE b.active AND b.code_normalized = $1");
+            "WHERE b.active AND b.code_normalized = $1 AND v.status = 'Active' AND p.status = 'Active'");   // never sell what is switched off
         cmd.Parameters.Add(new NpgsqlParameter { Value = codeNormalized });
         await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(cancellationToken);
         return await r.ReadAsync(cancellationToken)
             ? new BarcodeMatch(r.GetGuid(0), r.GetGuid(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetBoolean(5), r.IsDBNull(6) ? null : r.GetInt64(6))
             : null;
+    }
+
+    public async Task<CatalogOutcome> SetVariantStatusAsync(IUnitOfWorkScope scope, Guid productId, Guid variantId, int expectedVersion, string status,
+        CancellationToken cancellationToken)
+    {
+        var s = (PostgresUnitOfWorkScope)scope;
+        if (!await VariantOfAsync(s, productId, variantId, cancellationToken))
+        {
+            return CatalogOutcome.NotFound;
+        }
+
+        await using NpgsqlCommand cmd = s.Command(
+            "WITH p AS (UPDATE merch.tenant_product SET version = version + 1 WHERE id = $1 AND version = $3 AND status <> 'Merged' RETURNING id) " +
+            "UPDATE merch.tenant_variant SET status = $4 WHERE id = $2 AND product_id IN (SELECT id FROM p)");
+        foreach (object v in new object[] { productId, variantId, expectedVersion, status })
+        {
+            cmd.Parameters.Add(new NpgsqlParameter { Value = v });
+        }
+
+        return await cmd.ExecuteNonQueryAsync(cancellationToken) == 1 ? CatalogOutcome.Done : CatalogOutcome.VersionConflict;
     }
 
     public async Task<CatalogResult<ProductView>> UpdateAsync(IUnitOfWorkScope scope, Guid productId, ProductChange change, CancellationToken cancellationToken)
@@ -167,6 +188,16 @@ public sealed class PostgresProductCatalog(IOutbox outbox) : IProductCatalog
         if (!await ProductExistsAsync(s, productId, cancellationToken))
         {
             return new(CatalogOutcome.NotFound, null);
+        }
+
+        await using (NpgsqlCommand axes = s.Command("SELECT axes FROM merch.tenant_product WHERE id = $1"))
+        {
+            axes.Parameters.Add(new NpgsqlParameter { Value = productId });
+            string[] want = (string[])(await axes.ExecuteScalarAsync(cancellationToken))!;
+            if (want.Length > 0 && !want.Order(StringComparer.Ordinal).SequenceEqual(spec.AxisValues.Keys.Order(StringComparer.Ordinal)))
+            {
+                return new(CatalogOutcome.AxesMismatch, null);
+            }
         }
 
         if (await FirstTakenBarcodeAsync(s, spec.Barcodes, cancellationToken) is { } taken)
@@ -314,16 +345,16 @@ public sealed class PostgresProductCatalog(IOutbox outbox) : IProductCatalog
             return [];
         }
 
-        var products = new List<(Guid Id, string Name, string? Brand, string Unit, string? TaxCode, int TaxRate, string Status, int Version)>();
+        var products = new List<(Guid Id, string Name, string? Brand, string Unit, string? TaxCode, int TaxRate, string Status, int Version, string[] Axes)>();
         await using (NpgsqlCommand cmd = s.Command(
-                         "SELECT id, name, brand, base_unit_code, tax_code, tax_rate_bp, status, version FROM merch.tenant_product WHERE id = ANY($1)"))
+                         "SELECT id, name, brand, base_unit_code, tax_code, tax_rate_bp, status, version, axes FROM merch.tenant_product WHERE id = ANY($1)"))
         {
             cmd.Parameters.Add(new NpgsqlParameter { Value = ids });
             await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
             {
                 products.Add((r.GetGuid(0), r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), r.GetString(3), r.IsDBNull(4) ? null : r.GetString(4),
-                    r.GetInt32(5), r.GetString(6), r.GetInt32(7)));
+                    r.GetInt32(5), r.GetString(6), r.GetInt32(7), r.GetFieldValue<string[]>(8)));
             }
         }
 
@@ -362,7 +393,7 @@ public sealed class PostgresProductCatalog(IOutbox outbox) : IProductCatalog
         var order = ids.Select((id, i) => (id, i)).ToDictionary(x => x.id, x => x.i);
         return [.. products.OrderBy(p => order[p.Id]).Select(p => new ProductView(p.Id, p.Name, p.Brand, p.Unit, p.TaxCode, p.TaxRate, p.Status,
             [.. variants.Where(v => v.ProductId == p.Id).Select(v => new VariantView(v.Id, v.Sku, v.Axes, v.Status,
-                [.. barcodes.Where(b => b.VariantId == v.Id).Select(b => b.View)], v.Price))], p.Version))];
+                [.. barcodes.Where(b => b.VariantId == v.Id).Select(b => b.View)], v.Price))], p.Version, p.Axes))];
     }
 
     /// <summary>D07 Quantity: invariant decimal string without trailing zeros ("12", "0.5").</summary>

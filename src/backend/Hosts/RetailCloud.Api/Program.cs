@@ -757,7 +757,7 @@ v1.MapPost("/shifts/{shiftId:guid}/variance-approval", async (Guid shiftId, Appr
 // and are refused explicitly (not-yet-supported) instead of being ignored.
 object ProductJson(ProductView p) => new
 {
-    p.Id, p.Name, p.Brand, baseUnit = p.BaseUnit, p.TaxCode, taxRate = p.TaxRate, p.Status, p.Version,
+    p.Id, p.Name, p.Brand, baseUnit = p.BaseUnit, p.TaxCode, taxRate = p.TaxRate, p.Status, p.Version, axes = p.Axes ?? [],
     variants = p.Variants.Select(VariantJson),
 };
 object VariantJson(VariantView v) => new { v.Id, v.Sku, axisValues = v.AxisValues, v.Status, barcodes = v.Barcodes,
@@ -766,6 +766,7 @@ object VariantJson(VariantView v) => new { v.Id, v.Sku, axisValues = v.AxisValue
 IResult CatalogProblem(HttpContext http, CatalogOutcome outcome, Guid? conflictProduct) => outcome switch
 {
     CatalogOutcome.NotFound => Problems.NotFound(http),
+    CatalogOutcome.AxesMismatch => Problems.Validation(http, new Dictionary<string, string[]> { ["axisValues"] = ["a value for each axis of the product, and no other"] }),
     CatalogOutcome.VersionConflict => Problems.Create(http, StatusCodes.Status409Conflict, "version-conflict", "The product changed; reload and retry"),
     CatalogOutcome.DuplicateSku => Problems.Create(http, StatusCodes.Status409Conflict, "duplicate-code", "This SKU is already used"),
     CatalogOutcome.DuplicateAxes => Problems.Create(http, StatusCodes.Status409Conflict, "duplicate-code",
@@ -796,7 +797,7 @@ IResult CatalogProblem(HttpContext http, CatalogOutcome outcome, Guid? conflictP
     var errors = new Dictionary<string, string[]>();
     bool invalid = false;
     if (v is null || !ProductRules.ValidSku(v.Sku)) errors[$"{at}.sku"] = ["1-64 of letters, digits, . _ / -"];
-    if (v?.UnitPrice is not null) errors[$"{at}.unitPrice"] = ["not-yet-supported"];   // price lists (US-043)
+    if (v?.UnitPrice is not null && !TryMoney(v.UnitPrice, positive: true, out _)) errors[$"{at}.unitPrice"] = ["positive rial amount as a whole-number string"];
     var axes = new Dictionary<string, string>(StringComparer.Ordinal);
     foreach ((string axis, string? value) in v?.AxisValues ?? [])
     {
@@ -865,7 +866,22 @@ v1.MapIdempotentPost<ProductCreate>("/products", "catalog.create-product", async
             if (body.Variants is not { Length: 1 }) errors["openingStock"] = ["only for a product with one variant"];
         }
 
-        if (body.Axes is { Length: > 0 }) errors["axes"] = ["not-yet-supported"];                     // variant matrix (US-046)
+        // CAT-008: a matrix names its axes; each variant then has a value for exactly those axes (the panel builds the product of the values)
+        string[] axesWanted = body.Axes ?? [];
+        if (axesWanted.Any(a => !ProductRules.Axes.Contains(a)) || axesWanted.Distinct(StringComparer.Ordinal).Count() != axesWanted.Length)
+        {
+            errors["axes"] = ["distinct of color|size|model"];
+        }
+        else if (axesWanted.Length > 0)
+        {
+            for (int i = 0; i < (body.Variants?.Length ?? 0); i++)
+            {
+                if (!((IEnumerable<string>?)body.Variants![i]?.AxisValues?.Keys ?? []).Order(StringComparer.Ordinal).SequenceEqual(axesWanted.Order(StringComparer.Ordinal)))
+                {
+                    errors[$"variants[{i}].axisValues"] = [$"a value for each of: {string.Join(", ", axesWanted)}"];
+                }
+            }
+        }
         if (body.Confirmation?.Confirmed != true) errors["confirmation.confirmed"] = ["required: true (CAT-004.1)"];
         var variants = new List<VariantSpec>();
         if (body.Variants is not { Length: >= 1 and <= 100 }) errors["variants"] = ["1-100 variants"];
@@ -890,8 +906,21 @@ v1.MapIdempotentPost<ProductCreate>("/products", "catalog.create-product", async
 
         if (errors.Count > 0) return CommandResult.Fail(InputProblem(http, errors, invalidBarcode && errors.Values.All(v => v[0] != "required: true (CAT-004.1)")));
         var result = await http.RequestServices.GetRequiredService<IProductCatalog>().CreateAsync(scope,
-            new ProductSpec(body.Name!, body.Brand, body.BaseUnit!, body.TaxCode, body.TaxRate ?? 0, variants), ct);
+            new ProductSpec(body.Name!, body.Brand, body.BaseUnit!, body.TaxCode, body.TaxRate ?? 0, variants, axesWanted), ct);
         if (result.Outcome != CatalogOutcome.Done) return CommandResult.Fail(CatalogProblem(http, result.Outcome, result.ConflictProductId));
+        // CAT-008/009: first prices of a new product go to the default list from now. Not a price change, so no BR-041 approval.
+        PriceItem[] firstPrices = [.. body.Variants!.Where(v => v.UnitPrice is not null)
+            .Select(v => new PriceItem(result.Value!.Variants.Single(x => x.Sku == v.Sku).Id, long.Parse(v.UnitPrice!, System.Globalization.CultureInfo.InvariantCulture)))];
+        if (firstPrices.Length > 0)
+        {
+            IPriceLists priceLists = http.RequestServices.GetRequiredService<IPriceLists>();
+            Guid defaultList = (await priceLists.ListAsync(scope, ct)).Single(l => l.IsDefault).Id;
+            if (!AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.CatalogPriceManage, ScopeRef.Tenant)) return CommandResult.Fail(Forbidden(http));
+            await priceLists.PreviewAsync(scope, defaultList, firstPrices, DateTimeOffset.UtcNow, ct);   // locks the list
+            await priceLists.SetAsync(scope, defaultList, firstPrices, DateTimeOffset.UtcNow, "قیمت اولیه کالا", ctx.User!.Value.Value, ct);
+            result = result with { Value = await http.RequestServices.GetRequiredService<IProductCatalog>().GetAsync(scope, result.Value!.Id, ct) };
+        }
+
         if (body.OpeningStock is { WarehouseId: Guid warehouseId })
         {
             ScopeRef? warehouse = await ResolveScope(scope, http.RequestServices.GetServices<IScopeLookup>(), ScopeType.Warehouse, warehouseId, ct);
@@ -909,7 +938,8 @@ v1.MapIdempotentPost<ProductCreate>("/products", "catalog.create-product", async
         await Audit(http, scope, ActorOf(ctx, http), new AuditEntry("catalog.product.created", "Product", result.Value!.Id.ToString(),
             Details: new
             {
-                result.Value.Name, variants = variants.Count, barcodes = variants.Sum(v => v.Barcodes.Count),
+                result.Value.Name, variants = variants.Count, barcodes = variants.Sum(v => v.Barcodes.Count), axes = axesWanted,
+                prices = firstPrices.Length,
                 openingStock = body.OpeningStock is null ? null : new { body.OpeningStock.WarehouseId, qty = openingQty, cost = openingCost },
             }), ct);
         return CommandResult.Created(ProductJson(result.Value));
@@ -961,6 +991,30 @@ v1.MapPost("/products/{productId:guid}/variants", async (Guid productId, Variant
         return result.Outcome == CatalogOutcome.Done
             ? Results.Created($"/api/v1/products/{productId}", VariantJson(result.Value!))
             : CatalogProblem(http, result.Outcome, result.ConflictProductId);
+    })
+    .RequirePermission(Permissions.CatalogProductManage);
+
+v1.MapPatch("/products/{productId:guid}/variants/{variantId:guid}", async (Guid productId, Guid variantId, VariantUpdate body, RequestContext ctx,
+        IUnitOfWork uow, IProductCatalog catalog, HttpContext http, CancellationToken ct) =>
+    {
+        var errors = new Dictionary<string, string[]>();
+        if (body.ExpectedVersion is null) errors["expectedVersion"] = ["required (the product's version)"];
+        if (body.Status is not ("Active" or "Inactive")) errors["status"] = ["Active|Inactive"];
+        if (errors.Count > 0) return Problems.Validation(http, errors);
+        CatalogOutcome outcome = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            CatalogOutcome o = await catalog.SetVariantStatusAsync(s, productId, variantId, body.ExpectedVersion!.Value, body.Status!, c);
+            if (o == CatalogOutcome.Done)
+            {
+                await Audit(http, s, ActorOf(ctx, http), new AuditEntry("catalog.variant.updated", "Product", productId.ToString(),
+                    Details: new { variantId, body.Status }), c);
+            }
+
+            return o;
+        }, ct);
+        return outcome == CatalogOutcome.Done
+            ? Results.Ok(ProductJson((await uow.ExecuteAsync(ctx, (s, c) => catalog.GetAsync(s, productId, c), ct))!))
+            : CatalogProblem(http, outcome, null);
     })
     .RequirePermission(Permissions.CatalogProductManage);
 
@@ -1974,6 +2028,7 @@ internal sealed record ProductConfirmation(bool? Confirmed, int? SourceCandidate
 internal sealed record OpeningStock(Guid? WarehouseId, string? Qty, string? UnitCost);
 internal sealed record ProductCreate(string? Name, string? BaseUnit, string? Brand, Guid? CategoryId, Guid? CatalogProductId, string? TaxCode,
     int? TaxRate, string[]? Axes, VariantInput[]? Variants, ProductConfirmation? Confirmation, OpeningStock? OpeningStock);
+internal sealed record VariantUpdate(int? ExpectedVersion, string? Status);
 internal sealed record ProductUpdate(int? ExpectedVersion, string? Name, string? Brand, string? TaxCode, int? TaxRate, string? Status);
 internal sealed record ExportCreate(string[]? Categories, DateTimeOffset? From, DateTimeOffset? To, bool? IncludeFullPhone);
 

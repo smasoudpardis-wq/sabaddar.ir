@@ -11,7 +11,7 @@ public sealed record VariantView(Guid Id, string Sku, IReadOnlyDictionary<string
     long? UnitPrice = null);
 
 public sealed record ProductView(Guid Id, string Name, string? Brand, string BaseUnit, string? TaxCode, int TaxRate, string Status,
-    IReadOnlyList<VariantView> Variants, int Version);
+    IReadOnlyList<VariantView> Variants, int Version, IReadOnlyList<string>? Axes = null);
 
 /// <summary>
 /// A barcode as stored: <paramref name="Normalized"/> is GTIN-14 for every GS1 code (CAT-003) and the code itself for a
@@ -37,7 +37,9 @@ public sealed record BarcodeMatch(Guid ProductId, Guid VariantId, string Name, s
 
 public sealed record VariantSpec(string Sku, IReadOnlyDictionary<string, string> AxisValues, IReadOnlyList<BarcodeSpec> Barcodes);
 
-public sealed record ProductSpec(string Name, string? Brand, string BaseUnit, string? TaxCode, int TaxRate, IReadOnlyList<VariantSpec> Variants);
+/// <summary><paramref name="Axes"/>: CAT-008 matrix axes; when present every variant names exactly these axes.</summary>
+public sealed record ProductSpec(string Name, string? Brand, string BaseUnit, string? TaxCode, int TaxRate, IReadOnlyList<VariantSpec> Variants,
+    IReadOnlyList<string>? Axes = null);
 
 public sealed record ProductChange(int ExpectedVersion, string? Name, string? Brand, string? TaxCode, int? TaxRate, string? Status);
 
@@ -50,6 +52,8 @@ public enum CatalogOutcome
     DuplicateSku,
     DuplicateAxes,
     BarcodeAssigned,
+    /// <summary>CAT-008: the variant does not name exactly the product's axes.</summary>
+    AxesMismatch,
 }
 
 public sealed record CatalogResult<T>(CatalogOutcome Outcome, T? Value, Guid? ConflictProductId = null);
@@ -69,6 +73,10 @@ public interface IProductCatalog
     Task<CatalogResult<VariantView>> AddVariantAsync(IUnitOfWorkScope scope, Guid productId, VariantSpec spec, CancellationToken cancellationToken);
 
     Task<CatalogResult<BarcodeView>> AddBarcodeAsync(IUnitOfWorkScope scope, Guid productId, Guid variantId, BarcodeSpec spec,
+        CancellationToken cancellationToken);
+
+    /// <summary>CAT-008: switch one combination of a matrix off (or back on); versioned on the product.</summary>
+    Task<CatalogOutcome> SetVariantStatusAsync(IUnitOfWorkScope scope, Guid productId, Guid variantId, int expectedVersion, string status,
         CancellationToken cancellationToken);
 
     /// <summary>The variant an active barcode (GTIN-14, or an internal code) currently belongs to (CAT-003, CAT-007).</summary>
