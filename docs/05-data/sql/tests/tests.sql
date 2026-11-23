@@ -92,6 +92,24 @@ SELECT set_config('app.tenant_id', :A, false);
 SELECT t.expect_error('T10 duplicate active barcode in a tenant (DI-080)', '23505',
   $$INSERT INTO merch.tenant_product_barcode (tenant_id, id, variant_id, code_normalized, code_original)
     VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000011', '06260000000017', '6260000000017')$$);
+-- US-041 catalog (CAT-001/002, CAT-011)
+SELECT t.ok('T140 Persian search key: Arabic yeh/kaf, Persian digits and half-spaces normalise',
+  merch.normalize_fa('شير  ي‌ك ۱ ليتري') = merch.normalize_fa('شیر یک 1 لیتری'));
+SELECT t.ok('T141 the stored search key follows the name', (SELECT name_normalized FROM merch.tenant_product WHERE id = 'a0000000-0000-0000-0000-000000000010') = 'شیر 1 لیتری');
+SELECT t.expect_error('T142 a barcode cannot be moved to another variant (history kept)', 'RC016',
+  $$UPDATE merch.tenant_product_barcode SET packaging_unit = 'CT' WHERE code_normalized = '06260000000017'$$);
+UPDATE merch.tenant_product_barcode SET active = false, removed_at = now() WHERE code_normalized = '06260000000017';
+SELECT t.expect_error('T143 a removed barcode cannot be revived (add it again instead)', 'RC016',
+  $$UPDATE merch.tenant_product_barcode SET active = true, removed_at = NULL WHERE code_normalized = '06260000000017'$$);
+INSERT INTO merch.tenant_product_barcode (tenant_id, id, variant_id, code_normalized, code_original)
+  VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000011', '06260000000017', '6260000000017');
+SELECT t.ok('T144 after removal the code can be assigned again; both rows stay (CAT-002 history)',
+  (SELECT count(*) FROM merch.tenant_product_barcode WHERE code_normalized = '06260000000017') = 2);
+SELECT t.expect_error('T145 a standard barcode is stored only as GTIN-14', '23514',
+  $$INSERT INTO merch.tenant_product_barcode (tenant_id, id, variant_id, code_normalized, code_original)
+    VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000011', '6260000000017', '6260000000017')$$);
+SELECT t.expect_error('T146 barcode rows are never deleted', '42501',
+  $$DELETE FROM merch.tenant_product_barcode WHERE code_normalized = '06260000000017'$$);
 SELECT t.expect_error('T11 overlapping price validity (DI-083)', '23P01',
   $$INSERT INTO merch.price_list_item (tenant_id, id, price_list_id, variant_id, unit_price, valid)
     VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000020',

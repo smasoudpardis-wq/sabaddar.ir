@@ -43,6 +43,7 @@ public static class Permissions
     public const string AuditView = "audit.view";
     public const string DataExport = "data.export";
     public const string CustomersPiiView = "customers.pii.view";
+    public const string CatalogProductManage = "catalog.product.manage";
 
     public static readonly IReadOnlyList<string> All =
     [

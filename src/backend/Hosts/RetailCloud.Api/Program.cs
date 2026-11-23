@@ -8,6 +8,8 @@ using RetailCloud.IdentityAccess.Application;
 using RetailCloud.IdentityAccess.Infrastructure;
 using RetailCloud.Platform.Application;
 using RetailCloud.Platform.Infrastructure;
+using RetailCloud.Merchandising.Application;
+using RetailCloud.Merchandising.Infrastructure;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -20,6 +22,7 @@ builder.Services.AddSingleton<ITenantProfileQuery, PostgresTenantProfileQuery>()
 builder.Services.AddSingleton<ITenantReadOnlyQuery, PostgresTenantReadOnlyQuery>();
 builder.Services.AddSingleton<IExportJobs, PostgresExportJobs>();
 builder.Services.AddSingleton<ISupportAccess, PostgresSupportAccess>();
+builder.Services.AddSingleton<IProductCatalog, PostgresProductCatalog>();
 ObjectStorageOptions? storage = builder.Configuration.GetSection("Storage").Get<ObjectStorageOptions>();
 builder.Services.AddSingleton<IObjectStorage>(storage is { ServiceUrl.Length: > 0 } ? new S3ObjectStorage(storage) : new UnconfiguredObjectStorage());
 builder.Services.AddSingleton<IIdempotencyStore, PostgresIdempotencyStore>();
@@ -405,6 +408,228 @@ v1.MapGet("/audit", async (HttpContext http, RequestContext ctx, IUnitOfWork uow
         });
     })
     .RequirePermission(Permissions.AuditView);
+
+// Catalog (US-041, CAT-001/002/002.1/003): products, variants and barcodes. Reads for every member; writes need
+// catalog.product.manage. Price lists, opening stock, categories and the variant matrix arrive with their own stories
+// and are refused explicitly (not-yet-supported) instead of being ignored.
+object ProductJson(ProductView p) => new
+{
+    p.Id, p.Name, p.Brand, baseUnit = p.BaseUnit, p.TaxCode, taxRate = p.TaxRate, p.Status, p.Version,
+    variants = p.Variants.Select(VariantJson),
+};
+object VariantJson(VariantView v) => new { v.Id, v.Sku, axisValues = v.AxisValues, v.Status, barcodes = v.Barcodes, unitPrice = (string?)null };
+
+IResult CatalogProblem(HttpContext http, CatalogOutcome outcome, Guid? conflictProduct) => outcome switch
+{
+    CatalogOutcome.NotFound => Problems.NotFound(http),
+    CatalogOutcome.VersionConflict => Problems.Create(http, StatusCodes.Status409Conflict, "version-conflict", "The product changed; reload and retry"),
+    CatalogOutcome.DuplicateSku => Problems.Create(http, StatusCodes.Status409Conflict, "duplicate-code", "This SKU is already used"),
+    CatalogOutcome.DuplicateAxes => Problems.Create(http, StatusCodes.Status409Conflict, "duplicate-code",
+        "Another variant of this product has the same axis values (DI-081)"),
+    _ => Results.Problem(statusCode: StatusCodes.Status409Conflict, title: "This barcode already belongs to a product",
+        type: "https://errors.retailcloud.example/barcode-already-assigned",
+        extensions: new Dictionary<string, object?>
+        {
+            ["code"] = "barcode-already-assigned", ["context"] = new { productId = conflictProduct }, ["traceId"] = http.TraceIdentifier,
+        }),
+};
+
+// a barcode from input, or why not: (spec, field-error) — invalid GS1 codes are 422 invalid-barcode (CAT-003)
+(BarcodeSpec? Spec, string? Error, bool Invalid) ParseBarcode(BarcodeInput? b)
+{
+    if (b is null || string.IsNullOrWhiteSpace(b.Code)) return (null, "code required", false);
+    string unit = b.PackagingUnit ?? "EA";
+    if (!ProductRules.ValidUnit(unit)) return (null, "packagingUnit: 1-10 of A-Z 0-9 (EA, PK, CT)", false);
+    if (!ProductRules.TryFactor(b.UnitFactor, out decimal factor)) return (null, "unitFactor: positive decimal, up to 6 places", false);
+    bool freeInternal = b.IsInternal ?? false;
+    return BarcodeSpec.From(b.Code, unit, factor, freeInternal) is { } spec
+        ? (spec, null, false)
+        : (null, freeInternal ? "internal code: 1-32 of letters, digits, -" : "not a valid EAN-8, UPC-A, EAN-13 or GTIN-14", !freeInternal);
+}
+
+(VariantSpec? Spec, Dictionary<string, string[]> Errors, bool Invalid) ParseVariant(VariantInput? v, string at)
+{
+    var errors = new Dictionary<string, string[]>();
+    bool invalid = false;
+    if (v is null || !ProductRules.ValidSku(v.Sku)) errors[$"{at}.sku"] = ["1-64 of letters, digits, . _ / -"];
+    if (v?.UnitPrice is not null) errors[$"{at}.unitPrice"] = ["not-yet-supported"];   // price lists (US-043)
+    var axes = new Dictionary<string, string>(StringComparer.Ordinal);
+    foreach ((string axis, string? value) in v?.AxisValues ?? [])
+    {
+        if (!ProductRules.Axes.Contains(axis) || value is not { Length: >= 1 and <= 50 }) errors[$"{at}.axisValues"] = ["color|size|model, 1-50 characters"];
+        else axes[axis] = value.Trim();
+    }
+
+    var barcodes = new List<BarcodeSpec>();
+    for (int i = 0; i < (v?.Barcodes?.Length ?? 0); i++)
+    {
+        (BarcodeSpec? b, string? error, bool bad) = ParseBarcode(v!.Barcodes![i]);
+        if (b is null) { errors[$"{at}.barcodes[{i}]"] = [error!]; invalid |= bad; }
+        else barcodes.Add(b);
+    }
+
+    if (barcodes.Select(b => b.Normalized).Distinct(StringComparer.Ordinal).Count() != barcodes.Count) errors[$"{at}.barcodes"] = ["duplicate barcode"];
+    return (errors.Count == 0 ? new VariantSpec(v!.Sku!, axes, barcodes) : null, errors, invalid);
+}
+
+IResult InputProblem(HttpContext http, Dictionary<string, string[]> errors, bool invalidBarcode) =>
+    invalidBarcode
+        ? Results.Problem(statusCode: StatusCodes.Status422UnprocessableEntity, title: "Invalid barcode", type: "https://errors.retailcloud.example/invalid-barcode",
+            extensions: new Dictionary<string, object?> { ["code"] = "invalid-barcode", ["errors"] = errors, ["traceId"] = http.TraceIdentifier })
+        : Problems.Validation(http, errors);
+
+v1.MapGet("/products", async (RequestContext ctx, IUnitOfWork uow, IProductCatalog catalog, HttpContext http, string? q, string? barcode,
+        string? cursor, int? limit, Guid? branchId, CancellationToken ct) =>
+    {
+        int size = limit ?? 50;
+        if (size is < 1 or > 200 || q is { Length: > 100 } || barcode is { Length: > 32 })
+        {
+            return Problems.Validation(http, new Dictionary<string, string[]> { ["query"] = ["limit 1-200, q up to 100, barcode up to 32"] });
+        }
+
+        var (items, next) = await uow.ExecuteAsync(ctx, (s, c) => catalog.SearchAsync(s, q, barcode, cursor, size, c), ct);
+        return Results.Ok(new { items = items.Select(ProductJson), page = new { nextCursor = next, hasMore = next is not null } });
+    })
+    .RequireTenantMember();
+
+v1.MapGet("/products/{productId:guid}", async (Guid productId, RequestContext ctx, IUnitOfWork uow, IProductCatalog catalog, HttpContext http,
+        CancellationToken ct) =>
+        await uow.ExecuteAsync(ctx, (s, c) => catalog.GetAsync(s, productId, c), ct) is { } p ? Results.Ok(ProductJson(p)) : Problems.NotFound(http))
+    .RequireTenantMember();
+
+v1.MapIdempotentPost<ProductCreate>("/products", "catalog.create-product", async (body, scope, http, ct) =>
+    {
+        RequestContext ctx = http.RequestServices.GetRequiredService<RequestContext>();
+        var errors = new Dictionary<string, string[]>();
+        bool invalidBarcode = false;
+        ProductRules.Name(errors, "name", body.Name);
+        if (!ProductRules.ValidUnit(body.BaseUnit)) errors["baseUnit"] = ["1-10 of A-Z 0-9 (EA, KG, L)"];
+        if (body.Brand is { Length: > 100 }) errors["brand"] = ["up to 100 characters"];
+        if (body.TaxRate is < 0 or > 10000) errors["taxRate"] = ["0-10000 basis points"];
+        if (body.TaxCode is { Length: > 32 }) errors["taxCode"] = ["up to 32 characters"];
+        if (body.CategoryId is not null) errors["categoryId"] = ["not-yet-supported"];
+        if (body.CatalogProductId is not null) errors["catalogProductId"] = ["not-yet-supported"];   // global catalog (US-044)
+        if (body.OpeningStock is not null) errors["openingStock"] = ["not-yet-supported"];           // inventory ledger (US-051)
+        if (body.Axes is { Length: > 0 }) errors["axes"] = ["not-yet-supported"];                     // variant matrix (US-046)
+        if (body.Confirmation?.Confirmed != true) errors["confirmation.confirmed"] = ["required: true (CAT-004.1)"];
+        var variants = new List<VariantSpec>();
+        if (body.Variants is not { Length: >= 1 and <= 100 }) errors["variants"] = ["1-100 variants"];
+        for (int i = 0; i < (body.Variants?.Length ?? 0); i++)
+        {
+            var (spec, verrors, bad) = ParseVariant(body.Variants![i], $"variants[{i}]");
+            foreach (var e in verrors) errors[e.Key] = e.Value;
+            invalidBarcode |= bad;
+            if (spec is not null) variants.Add(spec);
+        }
+
+        if (variants.Select(v => v.Sku).Distinct(StringComparer.Ordinal).Count() != variants.Count) errors["variants"] = ["duplicate sku"];
+        if (variants.Select(v => string.Join("|", v.AxisValues.OrderBy(a => a.Key, StringComparer.Ordinal).Select(a => a.Key + "=" + a.Value)))
+                .Distinct(StringComparer.Ordinal).Count() != variants.Count)
+        {
+            errors["variants"] = ["variants must differ by axisValues (DI-081)"];
+        }
+        if (variants.SelectMany(v => v.Barcodes).Select(b => b.Normalized).Distinct(StringComparer.Ordinal).Count() != variants.Sum(v => v.Barcodes.Count))
+        {
+            errors["variants"] = ["the same barcode twice"];
+        }
+
+        if (errors.Count > 0) return CommandResult.Fail(InputProblem(http, errors, invalidBarcode && errors.Values.All(v => v[0] != "required: true (CAT-004.1)")));
+        var result = await http.RequestServices.GetRequiredService<IProductCatalog>().CreateAsync(scope,
+            new ProductSpec(body.Name!, body.Brand, body.BaseUnit!, body.TaxCode, body.TaxRate ?? 0, variants), ct);
+        if (result.Outcome != CatalogOutcome.Done) return CommandResult.Fail(CatalogProblem(http, result.Outcome, result.ConflictProductId));
+        await Audit(http, scope, ActorOf(ctx, http), new AuditEntry("catalog.product.created", "Product", result.Value!.Id.ToString(),
+            Details: new { result.Value.Name, variants = variants.Count, barcodes = variants.Sum(v => v.Barcodes.Count) }), ct);
+        return CommandResult.Created(ProductJson(result.Value));
+    })
+    .RequirePermission(Permissions.CatalogProductManage);
+
+v1.MapPatch("/products/{productId:guid}", async (Guid productId, ProductUpdate body, RequestContext ctx, IUnitOfWork uow, IProductCatalog catalog,
+        HttpContext http, CancellationToken ct) =>
+    {
+        var errors = new Dictionary<string, string[]>();
+        if (body.ExpectedVersion is null) errors["expectedVersion"] = ["required"];
+        if (body.Name is not null) ProductRules.Name(errors, "name", body.Name);
+        if (body.Brand is { Length: > 100 }) errors["brand"] = ["up to 100 characters"];
+        if (body.TaxRate is < 0 or > 10000) errors["taxRate"] = ["0-10000 basis points"];
+        if (body.TaxCode is { Length: > 32 }) errors["taxCode"] = ["up to 32 characters"];
+        if (body.Status is not (null or "Active" or "Inactive")) errors["status"] = ["Active|Inactive"];
+        if (errors.Count > 0) return Problems.Validation(http, errors);
+        var result = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            var r = await catalog.UpdateAsync(s, productId, new ProductChange(body.ExpectedVersion!.Value, body.Name, body.Brand, body.TaxCode, body.TaxRate, body.Status), c);
+            if (r.Outcome == CatalogOutcome.Done)
+            {
+                await Audit(http, s, ActorOf(ctx, http), new AuditEntry("catalog.product.updated", "Product", productId.ToString(),
+                    Details: new { body.Name, body.Brand, body.TaxCode, body.TaxRate, body.Status }), c);
+            }
+
+            return r;
+        }, ct);
+        return result.Outcome == CatalogOutcome.Done ? Results.Ok(ProductJson(result.Value!)) : CatalogProblem(http, result.Outcome, null);
+    })
+    .RequirePermission(Permissions.CatalogProductManage);
+
+v1.MapPost("/products/{productId:guid}/variants", async (Guid productId, VariantInput body, RequestContext ctx, IUnitOfWork uow, IProductCatalog catalog,
+        HttpContext http, CancellationToken ct) =>
+    {
+        var (spec, errors, invalid) = ParseVariant(body, "variant");
+        if (spec is null) return InputProblem(http, errors, invalid);
+        var result = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            var r = await catalog.AddVariantAsync(s, productId, spec, c);
+            if (r.Outcome == CatalogOutcome.Done)
+            {
+                await Audit(http, s, ActorOf(ctx, http), new AuditEntry("catalog.variant.added", "Product", productId.ToString(),
+                    Details: new { spec.Sku, barcodes = spec.Barcodes.Count }), c);
+            }
+
+            return r;
+        }, ct);
+        return result.Outcome == CatalogOutcome.Done
+            ? Results.Created($"/api/v1/products/{productId}", VariantJson(result.Value!))
+            : CatalogProblem(http, result.Outcome, result.ConflictProductId);
+    })
+    .RequirePermission(Permissions.CatalogProductManage);
+
+v1.MapPost("/products/{productId:guid}/variants/{variantId:guid}/barcodes", async (Guid productId, Guid variantId, BarcodeInput body,
+        RequestContext ctx, IUnitOfWork uow, IProductCatalog catalog, HttpContext http, CancellationToken ct) =>
+    {
+        var (spec, error, invalid) = ParseBarcode(body);
+        if (spec is null) return InputProblem(http, new Dictionary<string, string[]> { ["code"] = [error!] }, invalid);
+        var result = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            var r = await catalog.AddBarcodeAsync(s, productId, variantId, spec, c);
+            if (r.Outcome == CatalogOutcome.Done)
+            {
+                await Audit(http, s, ActorOf(ctx, http), new AuditEntry("catalog.barcode.added", "Product", productId.ToString(),
+                    Details: new { variantId, code = spec.Normalized, spec.PackagingUnit }), c);
+            }
+
+            return r;
+        }, ct);
+        return result.Outcome == CatalogOutcome.Done
+            ? Results.Created($"/api/v1/products/{productId}", result.Value)
+            : CatalogProblem(http, result.Outcome, result.ConflictProductId);
+    })
+    .RequirePermission(Permissions.CatalogProductManage);
+
+v1.MapDelete("/products/{productId:guid}/variants/{variantId:guid}/barcodes/{barcodeId:guid}", async (Guid productId, Guid variantId, Guid barcodeId,
+        RequestContext ctx, IUnitOfWork uow, IProductCatalog catalog, HttpContext http, CancellationToken ct) =>
+    {
+        CatalogOutcome outcome = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            CatalogOutcome o = await catalog.RemoveBarcodeAsync(s, productId, variantId, barcodeId, c);
+            if (o == CatalogOutcome.Done)
+            {
+                await Audit(http, s, ActorOf(ctx, http), new AuditEntry("catalog.barcode.removed", "Product", productId.ToString(),
+                    Details: new { variantId, barcodeId }), c);
+            }
+
+            return o;
+        }, ct);
+        return outcome == CatalogOutcome.Done ? Results.NoContent() : CatalogProblem(http, outcome, null);
+    })
+    .RequirePermission(Permissions.CatalogProductManage);
 
 // Support JIT access (US-027, IAM-008, SoD-05): the store owner sees, approves, rejects and ends platform support
 // access. Deciding and ending need TenantOwner (not just tenant.settings.manage) and a fresh second factor.
@@ -908,6 +1133,13 @@ v1.MapDelete("/users/{userId:guid}/role-assignments/{assignmentId:guid}", async 
 await app.RunAsync();
 
 internal sealed record SelectTenant(Guid TenantId);
+internal sealed record BarcodeInput(string? Code, string? PackagingUnit, string? UnitFactor, bool? IsInternal);
+internal sealed record VariantInput(string? Sku, Dictionary<string, string?>? AxisValues, string? UnitPrice, BarcodeInput[]? Barcodes);
+internal sealed record ProductConfirmation(bool? Confirmed, int? SourceCandidate);
+internal sealed record OpeningStock(Guid? WarehouseId, string? Qty, string? UnitCost);
+internal sealed record ProductCreate(string? Name, string? BaseUnit, string? Brand, Guid? CategoryId, Guid? CatalogProductId, string? TaxCode,
+    int? TaxRate, string[]? Axes, VariantInput[]? Variants, ProductConfirmation? Confirmation, OpeningStock? OpeningStock);
+internal sealed record ProductUpdate(int? ExpectedVersion, string? Name, string? Brand, string? TaxCode, int? TaxRate, string? Status);
 internal sealed record ExportCreate(string[]? Categories, DateTimeOffset? From, DateTimeOffset? To, bool? IncludeFullPhone);
 
 internal sealed record ApprovalDecisionInput(string? Decision, string? Comment, string? Pin, Guid? ApproverId);

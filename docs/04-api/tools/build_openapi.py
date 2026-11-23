@@ -210,7 +210,11 @@ schema("ProductCreate", name="str", baseUnit="str", **{"brand?": "str", "categor
        variants=["#VariantInput"], confirmation={"_desc": "Explicit user confirmation of suggested data (CAT-004.1).",
                                                   "confirmed": "bool", "sourceCandidate?": "int"},
        **{"openingStock?": {"warehouseId": "uuid", "qty": "qty", "unitCost": "money"}})
-schema("Barcode", id="uuid", code="str", codeNormalized="str", packagingUnit="str", unitFactor="qty", active="bool")
+schema("Barcode", id="uuid", code=("desc", "str", "As entered or scanned (CAT-003 keeps the original)"),
+       codeNormalized=("desc", "str", "GTIN-14 for every GS1 code; the code itself for a free internal code"),
+       packagingUnit="str", unitFactor="qty",
+       isInternal=("desc", "bool", "Store-only: free code or GS1 restricted circulation (02, 20-29); never sent to the global catalog (CAT-003.1)"),
+       active=("desc", "bool", "false once removed; removed barcodes stay as history (CAT-002)"))
 schema("Variant", id="uuid", sku="str", axisValues={"color?": "str", "size?": "str", "model?": "str"},
        status=("enum", ["Active", "Inactive"]), barcodes=["#Barcode"], unitPrice="money?")
 schema("Product", id="uuid", name="str", brand="str?", baseUnit="str", taxCode="str?", taxRate="bp",
@@ -536,7 +540,7 @@ ERROR_CATALOG = {
     "self-approval": (403, "The requester cannot approve their own request (SoD-01)"),
     "approval-expired": (409, "The pending request expired (10 minutes)"),
     "approval-not-pending": (409, "The request was already decided"),
-    "duplicate-code": (409, "Branch code (per tenant) or register code (per branch) already used"),
+    "duplicate-code": (409, "Branch code (per tenant), register code (per branch), product SKU (per tenant) or variant axis values (per product, DI-081) already used"),
 }
 
 # ----------------------------------------------------------------------------- operations

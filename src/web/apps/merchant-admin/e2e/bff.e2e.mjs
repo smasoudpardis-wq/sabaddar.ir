@@ -275,6 +275,21 @@ try {
   await page.getByTestId(`support-revoke-${supportId}`).click();
   await page.locator(`[data-testid="support-${supportId}"][data-status="Revoked"]`).waitFor();
   check('S02', 'the owner ends support access early (AB-17)', true);
+  // C01–C02 US-041: the owner defines a product with a carton barcode, then finds it by scan and by Arabic-typed name
+  await page.goto(`${BFF}/products`);
+  await page.getByTestId('product-name').fill('نوشابه آزمایشی');
+  await page.getByTestId('product-sku').fill('E2E-COLA');
+  await page.getByTestId('product-barcode').fill('4006381333931');
+  await page.getByTestId('product-submit').click();
+  await page.getByTestId('product-created').waitFor();
+  check('C01', 'the owner defines a product with variant and barcode (CAT-001/002)', true);
+  await page.getByTestId('product-search').fill('04006381333931');
+  await page.getByTestId('product-search-submit').click();
+  await page.getByTestId('products').filter({ hasText: 'نوشابه آزمایشی' }).waitFor();
+  await page.getByTestId('product-search').fill('نوشابه آزمايشي');   // Arabic yeh
+  await page.getByTestId('product-search-submit').click();
+  await page.getByTestId('products').filter({ hasText: 'E2E-COLA' }).waitFor();
+  check('C02', 'found by the scanned GTIN-14 and by a name typed with Arabic letters (CAT-003, CAT-011)', true);
   // X01 US-016: the owner (fresh MFA) requests a full export; the job is recorded and its status is shown
   await page.goto(`${BFF}/exports`);
   await page.getByTestId('export-submit').click();

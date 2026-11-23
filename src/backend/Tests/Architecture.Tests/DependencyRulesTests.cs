@@ -20,6 +20,7 @@ public class DependencyRulesTests
         typeof(RetailCloud.Platform.Application.ITenantProfileQuery).Assembly,
         typeof(RetailCloud.Inventory.Application.InventoryModule).Assembly,
         typeof(RetailCloud.Accounting.Application.ChartOfAccountsTemplate).Assembly,
+        typeof(RetailCloud.Merchandising.Application.IProductCatalog).Assembly,
     ];
 
     private static readonly Assembly[] ModuleInfrastructures =
@@ -28,6 +29,7 @@ public class DependencyRulesTests
         typeof(RetailCloud.Platform.Infrastructure.PostgresTenantProfileQuery).Assembly,
         typeof(RetailCloud.Inventory.Infrastructure.DefaultWarehouseConsumer).Assembly,
         typeof(RetailCloud.Accounting.Infrastructure.TenantAccountingSetupConsumer).Assembly,
+        typeof(RetailCloud.Merchandising.Infrastructure.PostgresProductCatalog).Assembly,
     ];
 
     private static readonly string[] InfrastructureNamespaces =

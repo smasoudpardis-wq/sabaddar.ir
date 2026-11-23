@@ -36,6 +36,9 @@ export const MESSAGES: Record<string, string> = {
   // D09 §10.1: «سقف پلن شما ({مورد}) پر شده است.» — action: upgrade the plan
   'entitlement-exceeded': 'سقف پلن شما پر شده است. برای افزودن بیشتر، پلن را ارتقا دهید.',
   // D09 §10.1: «حساب فروشگاه در حالت فقط‌خواندنی است.» — action: contact support or renew
+  'barcode-already-assigned': 'این بارکد قبلاً به کالای دیگری داده شده است.',
+  'invalid-barcode': 'بارکد معتبر نیست (رقم کنترل یا طول نادرست).',
+  'version-conflict': 'این اطلاعات هم‌زمان تغییر کرده است؛ دوباره بارگذاری کنید.',
   'owner-only': 'این کار فقط با مالک فروشگاه است.',
   'support-access-not-open': 'این درخواست دیگر باز نیست (تصمیم گرفته شده یا منقضی شده است).',
   'export-in-progress': 'یک خروجی در حال تهیه است؛ پس از پایان آن دوباره درخواست دهید.',

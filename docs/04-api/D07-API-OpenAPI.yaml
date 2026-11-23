@@ -8419,20 +8419,28 @@ components:
           format: uuid
         code:
           type: string
+          description: As entered or scanned (CAT-003 keeps the original)
         codeNormalized:
           type: string
+          description: GTIN-14 for every GS1 code; the code itself for a free internal code
         packagingUnit:
           type: string
         unitFactor:
           $ref: '#/components/schemas/Quantity'
+        isInternal:
+          type: boolean
+          description: 'Store-only: free code or GS1 restricted circulation (02, 20-29); never sent to the global catalog
+            (CAT-003.1)'
         active:
           type: boolean
+          description: false once removed; removed barcodes stay as history (CAT-002)
       required:
       - id
       - code
       - codeNormalized
       - packagingUnit
       - unitFactor
+      - isInternal
       - active
     BarcodeCandidate:
       type: object
@@ -12945,4 +12953,5 @@ x-error-catalog:
     meaning: The request was already decided
   duplicate-code:
     status: 409
-    meaning: Branch code (per tenant) or register code (per branch) already used
+    meaning: Branch code (per tenant), register code (per branch), product SKU (per tenant) or variant axis values (per product,
+      DI-081) already used

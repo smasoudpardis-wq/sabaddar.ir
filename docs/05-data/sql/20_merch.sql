@@ -1,10 +1,20 @@
 SET ROLE rc_migrator;
 
+-- CAT-011: Persian search key — Arabic yeh/kaf to Persian, digits to ASCII, ZWNJ/tatweel/extra spaces removed, lower case.
+CREATE OR REPLACE FUNCTION merch.normalize_fa(p text) RETURNS text
+LANGUAGE sql IMMUTABLE PARALLEL SAFE SET search_path = pg_catalog AS $$
+  SELECT btrim(regexp_replace(
+           translate(lower(p), 'يكىۀةأإآ٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹' || chr(8204) || chr(1600), 'یکیههاا' || 'ا' || '01234567890123456789'),
+           '\s+', ' ', 'g'))
+$$;
+
 CREATE TABLE merch.tenant_product (
   tenant_id        uuid NOT NULL,
   id               uuid NOT NULL,
-  name             text NOT NULL,
-  base_unit_code   text NOT NULL,
+  name             text NOT NULL CHECK (length(btrim(name)) BETWEEN 1 AND 200),
+  name_normalized  text GENERATED ALWAYS AS (merch.normalize_fa(name)) STORED,
+  brand            text CHECK (length(brand) <= 100),
+  base_unit_code   text NOT NULL CHECK (base_unit_code ~ '^[A-Z0-9]{1,10}$'),
   tax_code         text,                    -- شناسه کالا/خدمت مالیاتی (TAX-003)
   tax_rate_bp      int  NOT NULL DEFAULT 0 CHECK (tax_rate_bp BETWEEN 0 AND 10000),
   catalog_product_id uuid,                  -- reference only (no FK into Global catalog)
@@ -20,7 +30,7 @@ CREATE TABLE merch.tenant_variant (
   tenant_id   uuid NOT NULL,
   id          uuid NOT NULL,
   product_id  uuid NOT NULL,
-  sku         text NOT NULL,
+  sku         text NOT NULL CHECK (sku ~ '^[A-Za-z0-9._/-]{1,64}$'),
   axis_values jsonb NOT NULL DEFAULT '{}'::jsonb,   -- {"color":"red","size":"42"}
   status      text NOT NULL DEFAULT 'Active' CHECK (status IN ('Active','Inactive')),
   PRIMARY KEY (tenant_id, id),
@@ -37,18 +47,33 @@ CREATE TABLE merch.tenant_product_barcode (
   code_normalized  text NOT NULL,            -- GTIN-14 for standard codes; raw for internal
   code_original    text NOT NULL,
   is_internal      boolean NOT NULL DEFAULT false,
-  packaging_unit   text NOT NULL DEFAULT 'EA',
+  packaging_unit   text NOT NULL DEFAULT 'EA' CHECK (packaging_unit ~ '^[A-Z0-9]{1,10}$'),
   unit_factor      numeric(18,6) NOT NULL DEFAULT 1 CHECK (unit_factor > 0),
   active           boolean NOT NULL DEFAULT true,
   added_at         timestamptz NOT NULL DEFAULT now(),
   removed_at       timestamptz,
   PRIMARY KEY (tenant_id, id),
   FOREIGN KEY (tenant_id, variant_id) REFERENCES merch.tenant_variant (tenant_id, id),
-  CHECK (is_internal OR code_normalized ~ '^[0-9]{14}$')
+  CHECK (is_internal OR code_normalized ~ '^[0-9]{14}$'),
+  CHECK (NOT is_internal OR code_normalized ~ '^[A-Za-z0-9-]{1,32}$'),
+  CHECK (active = (removed_at IS NULL))
 );
 -- DI-080 / CAT-002.1: one active assignment per barcode per tenant.
 CREATE UNIQUE INDEX ux_barcode_active ON merch.tenant_product_barcode (tenant_id, code_normalized) WHERE active;
 CALL core.enable_tenant_rls('merch.tenant_product_barcode');
+
+-- CAT-002: the history of a barcode is kept — a row is only ever deactivated (with removed_at), never edited or revived.
+CREATE OR REPLACE FUNCTION merch.barcode_history() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  IF NOT (OLD.active AND NOT NEW.active)
+     OR (NEW.variant_id, NEW.code_normalized, NEW.code_original, NEW.is_internal, NEW.packaging_unit, NEW.unit_factor, NEW.added_at)
+        IS DISTINCT FROM (OLD.variant_id, OLD.code_normalized, OLD.code_original, OLD.is_internal, OLD.packaging_unit, OLD.unit_factor, OLD.added_at) THEN
+    RAISE EXCEPTION 'barcode % can only be deactivated', OLD.id USING ERRCODE = 'RC016';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER barcode_history BEFORE UPDATE ON merch.tenant_product_barcode FOR EACH ROW EXECUTE FUNCTION merch.barcode_history();
+CREATE INDEX ix_product_name ON merch.tenant_product (tenant_id, name_normalized);
 
 CREATE TABLE merch.price_list (
   tenant_id uuid NOT NULL,
