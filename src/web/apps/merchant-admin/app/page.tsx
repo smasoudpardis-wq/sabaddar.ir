@@ -146,7 +146,7 @@ export default function Home() {
         </p>
       )}
       {error && <p role="alert" data-testid="error">{MESSAGES[error] ?? error}</p>}
-      {tenant && <p><a href="/users" data-testid="users-link">کاربران و دعوت همکار</a> · <a href="/branches" data-testid="branches-link">شعب</a> · <a href="/terminals" data-testid="terminals-link">دستگاه‌ها</a> · <a href="/approvals" data-testid="approvals-link">تأییدها</a> · <a href="/audit" data-testid="audit-link">سابقه ممیزی</a> · <a href="/exports" data-testid="exports-link">خروجی داده‌ها</a></p>}
+      {tenant && <p><a href="/users" data-testid="users-link">کاربران و دعوت همکار</a> · <a href="/branches" data-testid="branches-link">شعب</a> · <a href="/terminals" data-testid="terminals-link">دستگاه‌ها</a> · <a href="/approvals" data-testid="approvals-link">تأییدها</a> · <a href="/audit" data-testid="audit-link">سابقه ممیزی</a> · <a href="/exports" data-testid="exports-link">خروجی داده‌ها</a> · <a href="/support-access" data-testid="support-link">دسترسی پشتیبانی</a></p>}
       {me.terminal && <button onClick={() => void lock()} data-testid="lock" style={{ minHeight: 44 }}>قفل صندوق</button>}
       <button onClick={() => void logout()} data-testid="logout" style={{ minHeight: 44 }}>خروج</button>
     </section>

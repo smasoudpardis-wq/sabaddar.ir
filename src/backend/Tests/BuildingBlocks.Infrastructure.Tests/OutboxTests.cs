@@ -13,6 +13,7 @@ namespace RetailCloud.BuildingBlocks.Infrastructure.Tests;
 /// dead-letter, competing relays, ordering, retention, LISTEN/NOTIFY wake-up. The producer connects as rc_app, the relay
 /// as rc_worker — the production roles.
 /// </summary>
+[Collection(WorkerJobs.Name)]   // the relay service runs tenant-wide jobs (export retention) that these tests also exercise
 public sealed class OutboxTests
 {
     private static string AppCs => Environment.GetEnvironmentVariable("RC_TEST_PG")!;

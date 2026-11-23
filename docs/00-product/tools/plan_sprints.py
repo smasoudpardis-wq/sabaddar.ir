@@ -27,7 +27,8 @@ VELOCITY = int(sys.argv[1]) if len(sys.argv) > 1 else 40
 START = dt.date(2026, 11, 22)
 DONE = {"US-001", "US-002", "SP-07", "SP-01", "US-003", "US-021", "US-022", "US-006", "US-005", "US-011", "US-025", "US-012", "US-013", "US-026", "US-023", "US-031", "US-032", "US-004", "US-014", "US-015", "US-016", "US-010"}  # D12 §0.1
 AS_OF = "2026-11-23"                           # date of the progress snapshot (update with DONE)
-PARTIAL = {"US-007": "Compose برای Dev هست؛ Staging و Mirrorها منتظر زیرساخت (X-07)"}
+PARTIAL = {"US-007": "Compose برای Dev هست؛ Staging و Mirrorها منتظر زیرساخت (X-07)",
+           "US-027": "سمت فروشگاه کامل؛ درخواست Support و استفاده از دسترسی با Masking با هویت پلتفرم (US-171)"}
 BLOCKER = {                                    # external input each item waits for (D13 §2, D12 §4.2)
     "SP-02": "X-06 مجوز ODbL + فهرست بارکدهای واقعی", "SP-06": "X-08 دستگاه‌های پایلوت", "SP-08": "پرینتر حرارتی (P1)",
     "SP-04": "X-01 Sandbox مؤدیان", "SP-03": "X-02 قرارداد PSP", "US-141": "X-03 قرارداد SMS", "US-152": "X-03 قرارداد SMS",

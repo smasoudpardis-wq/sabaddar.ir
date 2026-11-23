@@ -27,7 +27,7 @@ done
 
 # 2. Seed: the owner is TenantOwner of store A (MFA required, IAM-003), Cashier of store B (no MFA), and a foreign store.
 T1=0194f000-0000-7000-8000-0000000000a1; T2=0194f000-0000-7000-8000-0000000000a2; TF=0194f000-0000-7000-8000-0000000000af
-U=0194f000-0000-7000-8000-0000000000b1; APPROVAL=0194f000-0000-7000-8000-0000000000c1
+U=0194f000-0000-7000-8000-0000000000b1; APPROVAL=0194f000-0000-7000-8000-0000000000c1; SUPPORT=0194f000-0000-7000-8000-0000000000d1
 psql -v ON_ERROR_STOP=1 -q -d "$DB" <<SQL
 -- Clean-up of earlier runs: as superuser with triggers off (the last-owner rule would refuse it; FK order irrelevant).
 SET session_replication_role = replica;
@@ -37,6 +37,7 @@ DELETE FROM iam.tenant_membership WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM iam.merchant_user WHERE id = '$U' OR (idp_issuer = '$ISSUER' AND idp_subject = '$SUB');
 DELETE FROM iam.invitation WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM iam.approval_request WHERE tenant_id IN ('$T1','$T2','$TF');
+DELETE FROM iam.support_access_request WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM iam.role_assignment WHERE user_id IN (SELECT id FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$CASHIER_SUB');
 DELETE FROM iam.tenant_membership WHERE user_id IN (SELECT id FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$CASHIER_SUB');
 DELETE FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$CASHIER_SUB';
@@ -57,6 +58,8 @@ UPDATE platform.tenant SET status = 'Suspended' WHERE id = '$T2';   -- US-015: s
 INSERT INTO platform.branch (tenant_id, id, code, name) VALUES ('$T1', gen_random_uuid(), 'B1', 'مرکزی');
 INSERT INTO iam.approval_request (tenant_id, id, action, resource_type, resource_id, scope_type, condition, value, limit_value, reason, binding_hash, requested_by, expires_at)
   VALUES ('$T1', '$APPROVAL', 'pos.discount.apply', 'SaleLine', 'sale-e2e/1', 'Tenant', 'amount-limit', '20', '0', 'مشتری ثابت', sha256('e2e'), gen_random_uuid(), now() + interval '30 minutes');
+INSERT INTO iam.support_access_request (tenant_id, id, requested_by, reason, duration_minutes)
+  VALUES ('$T1', '$SUPPORT', 'https://platform.test|support-e2e', 'بررسی خطای گزارش فروش', 60);
 INSERT INTO iam.merchant_user (id, idp_issuer, idp_subject, display_name) VALUES ('$U','$ISSUER','$SUB','مالک آزمایشی');
 INSERT INTO iam.tenant_membership (tenant_id, user_id) VALUES ('$T1','$U'), ('$T2','$U');
 INSERT INTO iam.role_assignment (tenant_id, id, user_id, role, scope_type) VALUES
@@ -103,5 +106,5 @@ for i in $(seq 1 180); do curl -sf http://127.0.0.1:5080/health >/dev/null && br
 curl -sf http://127.0.0.1:5080/health >/dev/null || { echo "API did not start"; tail -30 "$LOGS/api.log"; exit 1; }
 
 # 4. Browser checks.
-T1=$T1 T2=$T2 TF=$TF APPROVAL_ID=$APPROVAL APP_DIR="$APP" RESTART_BFF="$LOGS/restart-bff.sh" node "$HERE/bff.e2e.mjs" \
+T1=$T1 T2=$T2 TF=$TF APPROVAL_ID=$APPROVAL SUPPORT_ID=$SUPPORT APP_DIR="$APP" RESTART_BFF="$LOGS/restart-bff.sh" node "$HERE/bff.e2e.mjs" \
   || { echo "--- api.log"; tail -30 "$LOGS/api.log"; echo "--- workers.log"; tail -30 "$LOGS/workers.log"; echo "--- bff.log"; tail -30 "$LOGS/bff.log"; exit 1; }

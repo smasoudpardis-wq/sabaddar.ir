@@ -133,6 +133,58 @@ BEGIN
 END $$;
 CREATE TRIGGER approval_transition BEFORE UPDATE ON iam.approval_request FOR EACH ROW EXECUTE FUNCTION iam.approval_transition();
 
+-- Support JIT access (IAM-008, US-027, SoD-05). Platform Support asks with a reason for at most 4 hours; only a
+-- TenantOwner of this tenant may decide (never a platform identity, never the requester); approval opens a window of
+-- exactly the requested length from the decision; the owner may end it early. Facts are immutable.
+CREATE TABLE iam.support_access_request (
+  tenant_id        uuid NOT NULL,
+  id               uuid NOT NULL,
+  requested_by     text NOT NULL CHECK (length(requested_by) BETWEEN 1 AND 200),   -- platform identity (issuer|subject)
+  reason           text NOT NULL CHECK (length(reason) BETWEEN 10 AND 500),
+  duration_minutes int  NOT NULL CHECK (duration_minutes BETWEEN 15 AND 240),       -- IAM-008: at most 4 h
+  requested_at     timestamptz NOT NULL DEFAULT now(),
+  expires_at       timestamptz NOT NULL DEFAULT now() + interval '24 hours',        -- a pending request lapses
+  status           text NOT NULL DEFAULT 'Pending' CHECK (status IN ('Pending','Approved','Rejected','Expired','Revoked')),
+  decided_by       uuid,
+  decided_at       timestamptz,
+  granted_until    timestamptz,
+  revoked_by       uuid,
+  revoked_at       timestamptz,
+  PRIMARY KEY (tenant_id, id),
+  FOREIGN KEY (tenant_id, decided_by) REFERENCES iam.tenant_membership (tenant_id, user_id),
+  FOREIGN KEY (tenant_id, revoked_by) REFERENCES iam.tenant_membership (tenant_id, user_id),
+  CHECK ((status IN ('Approved','Rejected','Revoked')) = (decided_by IS NOT NULL AND decided_at IS NOT NULL)),
+  CHECK ((granted_until IS NOT NULL) = (status IN ('Approved','Revoked') OR (status = 'Expired' AND decided_by IS NOT NULL))),
+  CHECK (granted_until IS NULL OR granted_until = decided_at + make_interval(mins => duration_minutes)),
+  CHECK ((status = 'Revoked') = (revoked_by IS NOT NULL AND revoked_at IS NOT NULL))
+);
+CALL core.enable_tenant_rls('iam.support_access_request');
+
+CREATE OR REPLACE FUNCTION iam.support_access_transition() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  IF NOT ((OLD.status = 'Pending' AND NEW.status IN ('Approved','Rejected','Expired'))
+       OR (OLD.status = 'Approved' AND NEW.status IN ('Revoked','Expired'))) THEN
+    RAISE EXCEPTION 'support access % cannot go from % to %', OLD.id, OLD.status, NEW.status USING ERRCODE = 'RC015';
+  END IF;
+  IF (NEW.requested_by, NEW.reason, NEW.duration_minutes, NEW.requested_at, NEW.expires_at)
+     IS DISTINCT FROM (OLD.requested_by, OLD.reason, OLD.duration_minutes, OLD.requested_at, OLD.expires_at)
+     OR (OLD.decided_by IS NOT NULL AND (NEW.decided_by, NEW.decided_at, NEW.granted_until) IS DISTINCT FROM (OLD.decided_by, OLD.decided_at, OLD.granted_until)) THEN
+    RAISE EXCEPTION 'support access facts are immutable' USING ERRCODE = 'RC015';
+  END IF;
+  -- SoD-05: the decider (and whoever ends it) holds TenantOwner in this tenant
+  IF NEW.decided_by IS NOT NULL AND OLD.decided_by IS NULL AND NOT EXISTS (
+       SELECT 1 FROM iam.role_assignment r WHERE r.tenant_id = NEW.tenant_id AND r.user_id = NEW.decided_by AND r.role = 'TenantOwner') THEN
+    RAISE EXCEPTION 'only a TenantOwner decides support access (SoD-05)' USING ERRCODE = 'RC015';
+  END IF;
+  IF NEW.revoked_by IS NOT NULL AND OLD.revoked_by IS NULL AND NOT EXISTS (
+       SELECT 1 FROM iam.role_assignment r WHERE r.tenant_id = NEW.tenant_id AND r.user_id = NEW.revoked_by AND r.role = 'TenantOwner') THEN
+    RAISE EXCEPTION 'only a TenantOwner ends support access (SoD-05)' USING ERRCODE = 'RC015';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER support_access_transition BEFORE UPDATE ON iam.support_access_request
+  FOR EACH ROW EXECUTE FUNCTION iam.support_access_transition();
+
 -- Register PIN (IAM-004, AUTH-08, US-023): per user and tenant, Argon2id (m=64MB, t=3, p=1) in PHC format. Only usable
 -- on a registered terminal; 5 consecutive failures lock it until the user sets a new PIN after a full login.
 CREATE TABLE iam.user_pin (
@@ -151,6 +203,7 @@ CALL core.enable_tenant_rls('iam.user_pin');
 GRANT USAGE ON SCHEMA iam TO rc_app, rc_worker;
 GRANT SELECT, INSERT, UPDATE ON iam.merchant_user TO rc_app;
 GRANT SELECT, INSERT, UPDATE ON iam.tenant_membership TO rc_app;
+GRANT SELECT, INSERT, UPDATE ON iam.support_access_request TO rc_app;   -- IAM-008 (no DELETE: the history stays)
 GRANT SELECT, INSERT, DELETE ON iam.role_assignment TO rc_app;
 GRANT UPDATE ON iam.role_assignment TO rc_app;   -- only for the row lock in keep_last_owner; the no_role_update trigger rejects every UPDATE
 GRANT SELECT, INSERT, UPDATE ON iam.invitation TO rc_app;

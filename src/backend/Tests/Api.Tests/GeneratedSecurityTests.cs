@@ -37,10 +37,11 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
         ["createRegister"] = _ => new { code = "R9" },
         ["decideApproval"] = _ => new { decision = "Approve" },
         ["addRoleAssignment"] = f => new { roleId = RoleCatalog.IdOf("Cashier"), scopeType = "Branch", scopeId = f.Branch },
+        ["decideSupportAccess"] = _ => new { decision = "Reject" },
     };
 
     private sealed record Fixture(Guid Tenant, Guid Branch, Guid Branch2, Guid Terminal, Guid Terminal2, Guid User, Guid Assignment,
-        Guid Approval, Guid Export)
+        Guid Approval, Guid Export, Guid SupportRequest)
     {
         public Guid Id(string param) => param switch
         {
@@ -50,6 +51,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
             "assignmentId" => Assignment,
             "approvalId" => Approval,
             "exportId" => Export,
+            "requestId" => SupportRequest,
             _ => throw new InvalidOperationException($"No fixture for path parameter '{param}': add one to GeneratedSecurityTests (US-010)"),
         };
     }
@@ -115,7 +117,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
     {
         Guid t = Guid.CreateVersion7(), b1 = Guid.CreateVersion7(), b2 = Guid.CreateVersion7(), term = Guid.CreateVersion7(), term2 = Guid.CreateVersion7(),
             owner = Guid.CreateVersion7(), member = Guid.CreateVersion7(), assignment = Guid.CreateVersion7(), approval = Guid.CreateVersion7(),
-            export = Guid.CreateVersion7();
+            export = Guid.CreateVersion7(), support = Guid.CreateVersion7();
         await using var ds = NpgsqlDataSource.Create(Cs);
         var uow = new PostgresUnitOfWork(ds);
         await uow.ExecuteWithoutTenantAsync(null, async (s, ct) =>
@@ -142,10 +144,11 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
             await Exec(s, ct, "INSERT INTO iam.approval_request (tenant_id, id, action, resource_type, resource_id, scope_type, condition, value, limit_value, reason, binding_hash, requested_by, expires_at) " +
                               "VALUES ($1, $2, 'pos.discount.apply', 'SaleLine', 'gen/1', 'Tenant', 'amount-limit', '20', '0', 'آزمون', sha256('gen'::bytea), $3, now() + interval '30 minutes')",
                 t, approval, member);
+            await Exec(s, ct, "INSERT INTO iam.support_access_request (tenant_id, id, requested_by, reason, duration_minutes) VALUES ($1, $2, 'https://p|sup', 'بررسی گزارش فروش', 60)", t, support);
             return await Exec(s, ct, "INSERT INTO platform.export_job (tenant_id, id, requested_by, categories) VALUES ($1, $2, $3, '{Products}')", t, export, owner);
         });
         _roleSubjects[$"owner-{t}"] = $"gen-{_run}-owner-{t}";
-        return new Fixture(t, b1, b2, term, term2, member, assignment, approval, export);
+        return new Fixture(t, b1, b2, term, term2, member, assignment, approval, export, support);
     }
 
     private static async Task<int> Exec(IUnitOfWorkScope s, CancellationToken ct, string sql, params object[] args)

@@ -12,6 +12,7 @@ using RetailCloud.TestSupport;
 namespace RetailCloud.BuildingBlocks.Infrastructure.Tests;
 
 /// <summary>US-016 / TEN-005 / AT-006 / SEC-T-066: the export job, run as the Workers run it (rc_worker under RLS).</summary>
+[Collection(WorkerJobs.Name)]   // the relay service runs tenant-wide jobs (export retention) that these tests also exercise
 public sealed class DataExportTests
 {
     private static string App => Environment.GetEnvironmentVariable("RC_TEST_PG")!;
@@ -161,4 +162,11 @@ public sealed class DataExportTests
         Assert.Contains("X-Amz-Signature=", url.Query, StringComparison.Ordinal);
         Assert.NotEqual(ObjectKeys.NewExportKey(Guid.Empty), ObjectKeys.NewExportKey(Guid.Empty));
     }
+}
+
+/// <summary>Tests that run tenant-wide Workers jobs must not run in parallel with each other.</summary>
+[CollectionDefinition(Name)]
+public sealed class WorkerJobs
+{
+    public const string Name = "worker-jobs";
 }

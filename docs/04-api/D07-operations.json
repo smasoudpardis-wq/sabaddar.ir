@@ -398,6 +398,19 @@
   "idempotent": false
  },
  {
+  "operationId": "revokeSupportAccess",
+  "method": "DELETE",
+  "path": "/support-access-requests/{requestId}",
+  "permission": "tenant.settings.manage",
+  "allowedWhenReadOnly": true,
+  "scope": "Tenant",
+  "pathParams": [
+   "requestId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
+ },
+ {
   "operationId": "resolveBarcode",
   "method": "POST",
   "path": "/catalog/barcodes/resolve",

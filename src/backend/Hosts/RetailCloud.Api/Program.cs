@@ -19,6 +19,7 @@ builder.Services.AddSingleton<IUserDirectory, PostgresUserDirectory>();
 builder.Services.AddSingleton<ITenantProfileQuery, PostgresTenantProfileQuery>();
 builder.Services.AddSingleton<ITenantReadOnlyQuery, PostgresTenantReadOnlyQuery>();
 builder.Services.AddSingleton<IExportJobs, PostgresExportJobs>();
+builder.Services.AddSingleton<ISupportAccess, PostgresSupportAccess>();
 ObjectStorageOptions? storage = builder.Configuration.GetSection("Storage").Get<ObjectStorageOptions>();
 builder.Services.AddSingleton<IObjectStorage>(storage is { ServiceUrl.Length: > 0 } ? new S3ObjectStorage(storage) : new UnconfiguredObjectStorage());
 builder.Services.AddSingleton<IIdempotencyStore, PostgresIdempotencyStore>();
@@ -404,6 +405,76 @@ v1.MapGet("/audit", async (HttpContext http, RequestContext ctx, IUnitOfWork uow
         });
     })
     .RequirePermission(Permissions.AuditView);
+
+// Support JIT access (US-027, IAM-008, SoD-05): the store owner sees, approves, rejects and ends platform support
+// access. Deciding and ending need TenantOwner (not just tenant.settings.manage) and a fresh second factor.
+bool IsOwner(RequestContext ctx) => ctx.ActiveMembership!.Assignments.Any(a => a.Role == "TenantOwner");
+
+IResult SupportOutcome(HttpContext http, SupportAccessOutcome outcome, SupportAccessView? view) => outcome switch
+{
+    SupportAccessOutcome.Done => Results.Ok(view),
+    SupportAccessOutcome.NotFound => Problems.NotFound(http),
+    _ => Problems.Create(http, StatusCodes.Status409Conflict, "support-access-not-open", "This support request is no longer open"),
+};
+
+v1.MapGet("/support-access-requests", async (RequestContext ctx, IUnitOfWork uow, ISupportAccess support, CancellationToken ct) =>
+        Results.Ok(await uow.ExecuteAsync(ctx, (s, c) => support.ListAsync(s, c), ct)))
+    .RequirePermission(Permissions.TenantSettingsManage);
+
+v1.MapPost("/support-access-requests/{requestId:guid}/decision", async (Guid requestId, ApprovalDecisionInput body, RequestContext ctx,
+        IUnitOfWork uow, ISupportAccess support, HttpContext http, CancellationToken ct) =>
+    {
+        if (body.Decision is not ("Approve" or "Reject") || body.Pin is not null || body.ApproverId is not null || body.Comment is { Length: > 500 })
+        {
+            return Problems.Validation(http, new Dictionary<string, string[]> { ["decision"] = ["Approve|Reject (no on-device approval)"] });
+        }
+
+        if (!IsOwner(ctx))
+        {
+            return Problems.Create(http, StatusCodes.Status403Forbidden, "owner-only", "Only the store owner decides support access (SoD-05)");
+        }
+
+        (SupportAccessOutcome outcome, SupportAccessView? view) = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            var result = await support.DecideAsync(s, requestId, body.Decision == "Approve", ctx.User!.Value.Value, c);
+            if (result.Outcome == SupportAccessOutcome.Done)
+            {
+                await Audit(http, s, ActorOf(ctx, http), new AuditEntry(body.Decision == "Approve" ? "iam.support-access.approved" : "iam.support-access.rejected",
+                    "SupportAccess", requestId.ToString(), body.Comment, new { result.View!.RequestedBy, result.View.DurationMinutes, result.View.GrantedUntil }), c);
+            }
+
+            return result;
+        }, ct);
+        return SupportOutcome(http, outcome, view);
+    })
+    .RequirePermission(Permissions.TenantSettingsManage)
+    .RequireRecentMfa()
+    .AllowWhenReadOnly();
+
+v1.MapDelete("/support-access-requests/{requestId:guid}", async (Guid requestId, RequestContext ctx, IUnitOfWork uow, ISupportAccess support,
+        HttpContext http, CancellationToken ct) =>
+    {
+        if (!IsOwner(ctx))
+        {
+            return Problems.Create(http, StatusCodes.Status403Forbidden, "owner-only", "Only the store owner ends support access (SoD-05)");
+        }
+
+        (SupportAccessOutcome outcome, SupportAccessView? view) = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            var result = await support.RevokeAsync(s, requestId, ctx.User!.Value.Value, c);
+            if (result.Outcome == SupportAccessOutcome.Done)
+            {
+                await Audit(http, s, ActorOf(ctx, http), new AuditEntry("iam.support-access.revoked", "SupportAccess", requestId.ToString(),
+                    Details: new { result.View!.RequestedBy }), c);
+            }
+
+            return result;
+        }, ct);
+        return SupportOutcome(http, outcome, view);
+    })
+    .RequirePermission(Permissions.TenantSettingsManage)
+    .RequireRecentMfa()
+    .AllowWhenReadOnly();
 
 // createExport / getExport (US-016, TEN-005): asynchronous export of the tenant's data; the file is only reachable
 // through a presigned link issued here after authorization (5 minutes, D-49), and every request and link is audited.

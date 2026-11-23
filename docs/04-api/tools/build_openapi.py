@@ -185,7 +185,9 @@ schema("ApprovalDecision", decision=("enum", ["Approve", "Reject"]),
 schema("PinInput", pin=("desc", "str", "4-6 digits"))
 schema("SupportAccessRequestCreate", reason="str", durationMinutes="int")
 schema("SupportAccessRequest", id="uuid", requestedBy="str", reason="str", durationMinutes="int",
-       status=("enum", ["Pending", "Approved", "Rejected", "Expired", "Revoked"]), grantedUntil="dt?")
+       status=("desc", ("enum", ["Pending", "Approved", "Rejected", "Expired", "Revoked"]),
+               "Expired: a pending request after 24 h, or an approved one after grantedUntil"),
+       requestedAt="dt", decidedAt="dt?", grantedUntil="dt?", revokedAt="dt?")
 
 # Catalog / Merchandising
 schema("BarcodeResolveRequest", barcode="str", branchId="uuid",
@@ -508,6 +510,8 @@ ERROR_CATALOG = {
     "mfa-required": (403, "IAM-003"),
     "step-up-required": (403, "ABAC-05"),
     "entitlement-exceeded": (403, "TEN-003"),
+    "owner-only": (403, "Only a TenantOwner may do this, even with the permission (SoD-05: support access)"),
+    "support-access-not-open": (409, "The support request is no longer pending, or the grant already ended (IAM-008)"),
     "export-in-progress": (409, "One export at a time per store (TEN-005, TM-015)"),
     "tenant-read-only": (403, "Suspended, closed or trial-expired tenant: writes refused except x-allowed-when-read-only (TEN-004)"),
     "terminal-not-registered": (403, "ABAC-04"),
@@ -559,7 +563,7 @@ SEC = {
 # be reduced (revoke a device, remove a role) and the register unlocked to read; support can be let in to help.
 READ_ONLY_ALLOWED = {
     "selectActiveTenant", "verifyMyPin", "revokeTerminal", "removeRoleAssignment", "createExport",
-    "recordCollection", "portalPayBalance", "portalExportMyData", "retryTaxInvoice", "decideSupportAccess",
+    "recordCollection", "portalPayBalance", "portalExportMyData", "retryTaxInvoice", "decideSupportAccess", "revokeSupportAccess",
 }
 
 
@@ -733,6 +737,9 @@ op("get", "/support-access-requests", "listSupportAccessRequests", "Access", "د
 op("post", "/support-access-requests/{requestId}/decision", "decideSupportAccess", "Access", "تأیید یا رد JIT پشتیبانی (فقط Owner)",
    perm="tenant.settings.manage", scope="Tenant", body="ApprovalDecision", resp="SupportAccessRequest",
    reqs=["IAM-008", "SoD-05"], audited=True, conflict=True)
+op("delete", "/support-access-requests/{requestId}", "revokeSupportAccess", "Access", "پایان زودهنگام دسترسی پشتیبانی (فقط Owner)",
+   perm="tenant.settings.manage", scope="Tenant", resp="SupportAccessRequest", reqs=["IAM-008", "SoD-05", "AB-17"], audited=True,
+   desc="Only a TenantOwner with MFA in the last 15 minutes; only an Approved, unexpired grant. Allowed while read-only.")
 
 # ---------------- Catalog & merchandising
 tag("Catalog", "Resolve بارکد، کالا، Variant، قیمت و تخفیف (CAT)")

@@ -480,6 +480,28 @@ SELECT set_config('app.tenant_id', :C, false);
 SELECT t.expect_error('T127 a store cannot lift its own suspension', '42501', $$UPDATE platform.tenant SET status = 'Active'$$);
 UPDATE platform.tenant SET legal_name = 'پلن ۲';
 SELECT t.ok('T128 a store still edits its own settings', (SELECT legal_name FROM platform.tenant) = 'پلن ۲');
+-- US-027 support JIT access (IAM-008, SoD-05)
+SELECT set_config('app.tenant_id', :A, false);
+SELECT t.expect_error('T133 support access is at most 4 hours', '23514',
+  format($$INSERT INTO iam.support_access_request (tenant_id, id, requested_by, reason, duration_minutes) VALUES (%L, gen_random_uuid(), 'https://p|sup', 'بررسی خطای گزارش', 241)$$, :A));
+INSERT INTO iam.support_access_request (tenant_id, id, requested_by, reason, duration_minutes)
+  VALUES (:A, 'f5000000-0000-0000-0000-000000000001', 'https://p|sup', 'بررسی خطای گزارش فروش', 60);
+SELECT t.expect_error('T134 a non-owner cannot approve (SoD-05)', 'RC015',
+  $$UPDATE iam.support_access_request SET status = 'Approved', decided_by = 'e0000000-0000-0000-0000-000000000002', decided_at = now(), granted_until = now() + interval '60 minutes' WHERE id = 'f5000000-0000-0000-0000-000000000001'$$);
+SELECT t.expect_error('T135 the window is exactly the requested length', '23514',
+  $$UPDATE iam.support_access_request SET status = 'Approved', decided_by = 'e0000000-0000-0000-0000-000000000001', decided_at = now(), granted_until = now() + interval '8 hours' WHERE id = 'f5000000-0000-0000-0000-000000000001'$$);
+UPDATE iam.support_access_request SET status = 'Approved', decided_by = 'e0000000-0000-0000-0000-000000000001', decided_at = now(), granted_until = now() + interval '60 minutes'
+  WHERE id = 'f5000000-0000-0000-0000-000000000001';
+SELECT t.expect_error('T136 the reason and length are immutable after the request', 'RC015',
+  $$UPDATE iam.support_access_request SET duration_minutes = 240, reason = 'دلیل دیگری برای دسترسی' WHERE id = 'f5000000-0000-0000-0000-000000000001'$$);
+SELECT t.expect_error('T137 a decided request cannot be re-decided', 'RC015',
+  $$UPDATE iam.support_access_request SET status = 'Rejected' WHERE id = 'f5000000-0000-0000-0000-000000000001'$$);
+UPDATE iam.support_access_request SET status = 'Revoked', revoked_by = 'e0000000-0000-0000-0000-000000000001', revoked_at = now()
+  WHERE id = 'f5000000-0000-0000-0000-000000000001';
+SELECT t.expect_error('T138 ended access cannot be reopened', 'RC015',
+  $$UPDATE iam.support_access_request SET status = 'Approved', revoked_by = NULL, revoked_at = NULL WHERE id = 'f5000000-0000-0000-0000-000000000001'$$);
+SELECT t.expect_error('T139 the history cannot be deleted', '42501',
+  $$DELETE FROM iam.support_access_request WHERE id = 'f5000000-0000-0000-0000-000000000001'$$);
 -- US-016 export jobs
 SELECT set_config('app.tenant_id', :A, false);
 SELECT t.expect_error('T129 an export cannot point at another tenant''s storage', '23514',

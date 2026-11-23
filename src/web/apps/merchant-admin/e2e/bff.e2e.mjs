@@ -266,6 +266,15 @@ try {
   await page.locator('[data-testid="audit-rows"] tbody tr[data-action^="iam."]').first().waitFor({ state: 'detached' });
   const shown = await page.locator('[data-testid="audit-rows"] tbody tr').evaluateAll((trs) => trs.map((t) => t.getAttribute('data-action')));
   check('U02', 'filtering by group shows only that group', shown.length > 0 && shown.every((a) => a.startsWith('platform.')), shown.join(','));
+  // S01–S02 US-027: the owner approves platform support for the requested time, then ends it early
+  const supportId = process.env.SUPPORT_ID;
+  await page.goto(`${BFF}/support-access`);
+  await page.getByTestId(`support-approve-${supportId}`).click();
+  await page.locator(`[data-testid="support-${supportId}"][data-status="Approved"]`).waitFor();
+  check('S01', 'the owner approves support access for the requested time (IAM-008)', true);
+  await page.getByTestId(`support-revoke-${supportId}`).click();
+  await page.locator(`[data-testid="support-${supportId}"][data-status="Revoked"]`).waitFor();
+  check('S02', 'the owner ends support access early (AB-17)', true);
   // X01 US-016: the owner (fresh MFA) requests a full export; the job is recorded and its status is shown
   await page.goto(`${BFF}/exports`);
   await page.getByTestId('export-submit').click();

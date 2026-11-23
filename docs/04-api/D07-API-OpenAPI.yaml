@@ -1349,6 +1349,51 @@ paths:
       - SoD-05
       x-audited: true
       x-allowed-when-read-only: true
+  /support-access-requests/{requestId}:
+    delete:
+      operationId: revokeSupportAccess
+      tags:
+      - Access
+      summary: پایان زودهنگام دسترسی پشتیبانی (فقط Owner)
+      description: Only a TenantOwner with MFA in the last 15 minutes; only an Approved, unexpired grant. Allowed while read-only.
+      security: *id001
+      parameters:
+      - name: requestId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportAccessRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: tenant.settings.manage
+      x-scope: Tenant
+      x-idempotent: false
+      x-requirements:
+      - IAM-008
+      - SoD-05
+      - AB-17
+      x-audited: true
+      x-allowed-when-read-only: true
   /catalog/barcodes/resolve:
     post:
       operationId: resolveBarcode
@@ -11906,7 +11951,21 @@ components:
           - Rejected
           - Expired
           - Revoked
+          description: 'Expired: a pending request after 24 h, or an approved one after grantedUntil'
+        requestedAt:
+          type: string
+          format: date-time
+        decidedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
         grantedUntil:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        revokedAt:
           type:
           - string
           - 'null'
@@ -11917,7 +11976,10 @@ components:
       - reason
       - durationMinutes
       - status
+      - requestedAt
+      - decidedAt
       - grantedUntil
+      - revokedAt
     SupportAccessRequestCreate:
       type: object
       additionalProperties: false
@@ -12803,6 +12865,12 @@ x-error-catalog:
   entitlement-exceeded:
     status: 403
     meaning: TEN-003
+  owner-only:
+    status: 403
+    meaning: 'Only a TenantOwner may do this, even with the permission (SoD-05: support access)'
+  support-access-not-open:
+    status: 409
+    meaning: The support request is no longer pending, or the grant already ended (IAM-008)
   export-in-progress:
     status: 409
     meaning: One export at a time per store (TEN-005, TM-015)
