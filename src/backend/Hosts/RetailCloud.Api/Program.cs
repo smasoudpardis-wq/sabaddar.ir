@@ -391,7 +391,7 @@ v1.MapGet("/audit", async (HttpContext http, RequestContext ctx, IUnitOfWork uow
             items = items.Select(r => new
             {
                 r.Seq, r.OccurredAt, r.ActorKind, r.ActorId, r.ActorRoles, r.ImpersonatedBy, r.Action, r.ResourceType, r.ResourceId, r.Reason,
-                r.BranchId, r.TerminalId, r.ClientIp, details = System.Text.Json.JsonDocument.Parse(r.DetailsJson).RootElement,
+                r.BranchId, r.TerminalId, r.ClientIp, details = System.Text.Json.JsonElement.Parse(r.DetailsJson),
             }),
             page = new { nextCursor = hasMore ? AuditCursor.Encode(items[^1].Seq) : null, hasMore },
         });
