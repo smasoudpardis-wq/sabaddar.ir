@@ -72,6 +72,12 @@ groups:
         annotations:
           summary: "Daily audit chain verification found a broken hash chain (AUD-002, Sev-1)"
           runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-22"
+      - alert: RCExportLarge
+        expr: sum by (reason) (increase(rc_export_large_total[1h])) > 0
+        labels: {severity: ticket}
+        annotations:
+          summary: "A store exported over 100k rows or more than 3 times in a day (DET-08, reason {{ $labels.reason }})"
+          runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-23"
       - alert: RCPartitionDefaultRows
         expr: max by (table) (rc_partition_default_rows) > 0
         for: 15m

@@ -15,6 +15,7 @@ public sealed partial class OutboxRelayService(
     OutboxRelay relay,
     MessagingRetention retention,
     AuditChainVerifier auditVerifier,
+    RetailCloud.Platform.Infrastructure.ExportRetention exportRetention,
     IUnitOfWork unitOfWork,
     ILogger<OutboxRelayService> logger) : BackgroundService
 {
@@ -48,6 +49,7 @@ public sealed partial class OutboxRelayService(
                     if (DateTimeOffset.UtcNow >= nextRetention)
                     {
                         await retention.PurgeAsync(stoppingToken);
+                        await exportRetention.PurgeAsync(stoppingToken);   // TEN-005: export files live 24 h
                         nextRetention = DateTimeOffset.UtcNow + RetentionEvery;
                     }
 

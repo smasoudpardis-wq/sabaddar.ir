@@ -266,6 +266,12 @@ try {
   await page.locator('[data-testid="audit-rows"] tbody tr[data-action^="iam."]').first().waitFor({ state: 'detached' });
   const shown = await page.locator('[data-testid="audit-rows"] tbody tr').evaluateAll((trs) => trs.map((t) => t.getAttribute('data-action')));
   check('U02', 'filtering by group shows only that group', shown.length > 0 && shown.every((a) => a.startsWith('platform.')), shown.join(','));
+  // X01 US-016: the owner (fresh MFA) requests a full export; the job is recorded and its status is shown
+  await page.goto(`${BFF}/exports`);
+  await page.getByTestId('export-submit').click();
+  await page.getByTestId('export-status').waitFor();
+  check('X01', 'the owner requests a full data export and sees its status (TEN-005)',
+    ['Queued', 'Running', 'Completed', 'Failed'].includes(await page.getByTestId('export-status').getAttribute('data-status')));
   await page.goto(BFF);
   await page.getByTestId('logout').waitFor();
 

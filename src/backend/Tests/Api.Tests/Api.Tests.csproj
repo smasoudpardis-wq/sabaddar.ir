@@ -10,5 +10,6 @@
   <ItemGroup><Using Include="Xunit" /></ItemGroup>
   <ItemGroup>
     <Compile Include="../BuildingBlocks.Infrastructure.Tests/TestPlans.cs" Link="TestPlans.cs" />
+    <Compile Include="../BuildingBlocks.Infrastructure.Tests/InMemoryObjectStorage.cs" Link="InMemoryObjectStorage.cs" />
   </ItemGroup>
 </Project>

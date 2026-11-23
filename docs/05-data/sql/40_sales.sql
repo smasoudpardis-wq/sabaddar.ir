@@ -141,5 +141,5 @@ CALL core.enable_tenant_rls('sales.sale_tender');
 GRANT USAGE ON SCHEMA sales TO rc_app, rc_worker, rc_reporting;
 GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA sales TO rc_app;
 GRANT DELETE ON sales.sale_line TO rc_app;            -- draft line removal (guard blocks finalized)
-GRANT SELECT ON sales.sale, sales.sale_line, sales.sale_tender TO rc_worker, rc_reporting;
+GRANT SELECT ON sales.sale, sales.sale_line, sales.sale_tender, sales.shift TO rc_worker, rc_reporting;   -- shift: data export (TEN-005)
 RESET ROLE;

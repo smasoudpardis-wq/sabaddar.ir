@@ -480,6 +480,21 @@ SELECT set_config('app.tenant_id', :C, false);
 SELECT t.expect_error('T127 a store cannot lift its own suspension', '42501', $$UPDATE platform.tenant SET status = 'Active'$$);
 UPDATE platform.tenant SET legal_name = 'پلن ۲';
 SELECT t.ok('T128 a store still edits its own settings', (SELECT legal_name FROM platform.tenant) = 'پلن ۲');
+-- US-016 export jobs
+SELECT set_config('app.tenant_id', :A, false);
+SELECT t.expect_error('T129 an export cannot point at another tenant''s storage', '23514',
+  format($$INSERT INTO platform.export_job (tenant_id, id, requested_by, categories, status, object_key, completed_at, expires_at) VALUES (%L, gen_random_uuid(), gen_random_uuid(), '{Products}', 'Completed', 'tenants/' || %L || '/exports/abcdefghijklmnopqrstuvwxyz012345.zip', now(), now())$$, :A, :C));
+INSERT INTO platform.export_job (tenant_id, id, requested_by, categories) VALUES (:A, 'e1000000-0000-0000-0000-000000000001', gen_random_uuid(), '{Products,Sales}');
+SELECT t.expect_error('T130 the API cannot complete or alter an export', '42501',
+  $$UPDATE platform.export_job SET status = 'Failed' WHERE id = 'e1000000-0000-0000-0000-000000000001'$$);
+SELECT t.expect_error('T131 only known categories can be exported', '23514',
+  format($$INSERT INTO platform.export_job (tenant_id, id, requested_by, categories) VALUES (%L, gen_random_uuid(), gen_random_uuid(), '{Passwords}')$$, :A));
+RESET ROLE;
+SET ROLE rc_worker;
+SELECT set_config('app.tenant_id', :C, false);
+SELECT t.ok('T132 the worker sees no other tenant''s export jobs (RLS)', (SELECT count(*) FROM platform.export_job) = 0);
+RESET ROLE;
+SET ROLE rc_app;
 RESET ROLE;
 SELECT set_config('app.tenant_id', '', false);
 INSERT INTO platform.tenant (id, legal_name, industry_code) VALUES ('c1000000-0000-0000-0000-000000000002', 'عملیاتی', 'general');

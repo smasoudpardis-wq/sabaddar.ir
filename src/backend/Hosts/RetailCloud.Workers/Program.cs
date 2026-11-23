@@ -15,6 +15,11 @@ builder.Services.AddSingleton(new OutboxRelayOptions());
 builder.Services.AddSingleton<OutboxRelay>();
 builder.Services.AddSingleton<MessagingRetention>();
 builder.Services.AddSingleton<AuditChainVerifier>();
+builder.Services.AddSingleton<IAuditLog, PostgresAuditLog>();
+ObjectStorageOptions? storage = builder.Configuration.GetSection("Storage").Get<ObjectStorageOptions>();
+builder.Services.AddSingleton<IObjectStorage>(storage is { ServiceUrl.Length: > 0 } ? new S3ObjectStorage(storage) : new UnconfiguredObjectStorage());
+builder.Services.AddSingleton<IIntegrationEventConsumer, RetailCloud.Platform.Infrastructure.DataExportConsumer>();   // TEN-005
+builder.Services.AddSingleton<RetailCloud.Platform.Infrastructure.ExportRetention>();
 // Consumers (IIntegrationEventConsumer), one per module and purpose. Never rename a deployed consumer (inbox key).
 builder.Services.AddSingleton<IIntegrationEventConsumer, RetailCloud.IdentityAccess.Infrastructure.OwnerMembershipConsumer>();
 builder.Services.AddSingleton<IIntegrationEventConsumer, RetailCloud.Inventory.Infrastructure.DefaultWarehouseConsumer>();

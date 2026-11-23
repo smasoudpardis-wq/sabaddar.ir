@@ -21,6 +21,8 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     private static readonly RSA Rsa = RSA.Create(2048);
     public static readonly RsaSecurityKey SigningKey = new(Rsa) { KeyId = "test-key" };
 
+    public RetailCloud.TestSupport.InMemoryObjectStorage Storage { get; } = new();
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
@@ -29,6 +31,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
         builder.UseSetting("Auth:Merchant:Audience", Audience);
         builder.UseSetting("Network:TrustedProxies", "*"); // TestServer has no peer address; the tests act as the BFF
         builder.ConfigureTestServices(services =>
+        {
             services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, o =>
             {
                 o.Authority = null;
@@ -36,7 +39,9 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
                 config.SigningKeys.Add(SigningKey);
                 o.Configuration = config;
                 o.TokenValidationParameters.IssuerSigningKey = SigningKey;
-            }));
+            });
+            services.AddSingleton<RetailCloud.BuildingBlocks.Application.IObjectStorage>(Storage);   // US-016: links without a real bucket
+        });
     }
 
     public static string Token(string subject, string issuer = Issuer, string audience = Audience,

@@ -262,7 +262,8 @@ public sealed class OutboxTests
         TenantId t = await NewTenant();
         var rec = new Recorder("test.o10");
         OutboxRelay relay = Relay(null, rec);
-        var service = new OutboxRelayService(WorkerDs, relay, new MessagingRetention(Worker), new AuditChainVerifier(Worker), Worker, NullLogger<OutboxRelayService>.Instance);
+        var service = new OutboxRelayService(WorkerDs, relay, new MessagingRetention(Worker), new AuditChainVerifier(Worker),
+            new RetailCloud.Platform.Infrastructure.ExportRetention(Worker, new RetailCloud.TestSupport.InMemoryObjectStorage()), Worker, NullLogger<OutboxRelayService>.Instance);
         using var cts = new CancellationTokenSource();
         await service.StartAsync(cts.Token);
         try

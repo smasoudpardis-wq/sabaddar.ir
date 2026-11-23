@@ -18,6 +18,9 @@ builder.Services.AddSingleton<IUnitOfWork, PostgresUnitOfWork>();
 builder.Services.AddSingleton<IUserDirectory, PostgresUserDirectory>();
 builder.Services.AddSingleton<ITenantProfileQuery, PostgresTenantProfileQuery>();
 builder.Services.AddSingleton<ITenantReadOnlyQuery, PostgresTenantReadOnlyQuery>();
+builder.Services.AddSingleton<IExportJobs, PostgresExportJobs>();
+ObjectStorageOptions? storage = builder.Configuration.GetSection("Storage").Get<ObjectStorageOptions>();
+builder.Services.AddSingleton<IObjectStorage>(storage is { ServiceUrl.Length: > 0 } ? new S3ObjectStorage(storage) : new UnconfiguredObjectStorage());
 builder.Services.AddSingleton<IIdempotencyStore, PostgresIdempotencyStore>();
 builder.Services.AddSingleton<IOutbox>(_ => new PostgresOutbox());
 builder.Services.AddSingleton<ITenantRegistration, PostgresTenantRegistration>();
@@ -402,6 +405,94 @@ v1.MapGet("/audit", async (HttpContext http, RequestContext ctx, IUnitOfWork uow
     })
     .RequirePermission(Permissions.AuditView);
 
+// createExport / getExport (US-016, TEN-005): asynchronous export of the tenant's data; the file is only reachable
+// through a presigned link issued here after authorization (5 minutes, D-49), and every request and link is audited.
+object ExportJson(ExportJobView j, Uri? link) => new
+{
+    j.Id,
+    status = j.Status == "Completed" && j.ExpiresAt <= DateTimeOffset.UtcNow ? "Expired" : j.Status,
+    j.Categories,
+    from = j.From,
+    to = j.To,
+    j.RowCount,
+    j.CreatedAt,
+    j.CompletedAt,
+    j.ExpiresAt,
+    downloadUrl = link?.ToString(),
+    downloadUrlExpiresAt = link is null ? (DateTimeOffset?)null : DateTimeOffset.UtcNow + ObjectKeys.LinkLifetime,
+};
+
+v1.MapPost("/exports", async (ExportCreate body, RequestContext ctx, IUnitOfWork uow, IExportJobs exports, HttpContext http, CancellationToken ct) =>
+    {
+        var errors = new Dictionary<string, string[]>();
+        string[] categories = body.Categories ?? [];
+        if (categories.Length == 0 || categories.Length != categories.Distinct(StringComparer.Ordinal).Count()
+            || categories.Any(c => !ExportCategories.All.Contains(c)))
+        {
+            errors["categories"] = ["1-7 distinct of: " + string.Join(", ", ExportCategories.All)];
+        }
+
+        if (body.From is not null && body.To is not null && body.From >= body.To)
+        {
+            errors["to"] = ["Must be after 'from'"];
+        }
+
+        if (body.IncludeFullPhone == true)
+        {
+            // full numbers need customers.pii.view (TEN-005); decrypting them arrives with the customer identity module
+            if (!AccessPolicy.HasAnywhere(ctx.ActiveMembership!.Assignments, Permissions.CustomersPiiView))
+            {
+                return Problems.Create(http, StatusCodes.Status403Forbidden, "forbidden", "Full phone numbers need customers.pii.view");
+            }
+
+            errors["includeFullPhone"] = ["not-yet-supported"];
+        }
+
+        if (errors.Count > 0)
+        {
+            return Problems.Validation(http, errors);
+        }
+
+        ExportJobView? job = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            if (await exports.HasActiveAsync(s, c))
+            {
+                return null;
+            }
+
+            ExportJobView created = await exports.CreateAsync(s, ctx.User!.Value.Value, new ExportRequest(categories, body.From, body.To), c);
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry("platform.export.requested", "Export", created.Id.ToString(),
+                Details: new { categories, body.From, body.To }), c);
+            return created;
+        }, ct);
+        return job is null
+            ? Problems.Create(http, StatusCodes.Status409Conflict, "export-in-progress", "An export of this store is already running")
+            : Results.Accepted($"/api/v1/exports/{job.Id}", ExportJson(job, null));
+    })
+    .RequirePermission(Permissions.DataExport)
+    .RequireRecentMfa()
+    .AllowWhenReadOnly();
+
+v1.MapGet("/exports/{exportId:guid}", async (Guid exportId, RequestContext ctx, IUnitOfWork uow, IExportJobs exports, IObjectStorage storage,
+        HttpContext http, CancellationToken ct) =>
+    {
+        (ExportJobView? job, Uri? link) = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            ExportJobView? j = await exports.GetAsync(s, exportId, c);
+            if (j is not { Status: "Completed", ObjectKey: { } key } || j.ExpiresAt <= DateTimeOffset.UtcNow)
+            {
+                return (j, (Uri?)null);
+            }
+
+            Uri url = storage.PresignGet(key, ObjectKeys.LinkLifetime, $"retailcloud-export-{j.CreatedAt:yyyyMMdd}.zip");
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry("platform.export.link-issued", "Export", j.Id.ToString()), c);
+            return (j, url);
+        }, ct);
+        return job is null ? Problems.NotFound(http) : Results.Ok(ExportJson(job, link));
+    })
+    .RequirePermission(Permissions.DataExport)
+    .RequireRecentMfa();
+
 IResult PinProblem(HttpContext http, PinCheck result, int attemptsLeft) => result switch
 {
     PinCheck.Locked => Problems.Create(http, StatusCodes.Status403Forbidden, "pin-locked", "PIN locked after 5 failed attempts; sign in again"),
@@ -746,6 +837,7 @@ v1.MapDelete("/users/{userId:guid}/role-assignments/{assignmentId:guid}", async 
 await app.RunAsync();
 
 internal sealed record SelectTenant(Guid TenantId);
+internal sealed record ExportCreate(string[]? Categories, DateTimeOffset? From, DateTimeOffset? To, bool? IncludeFullPhone);
 
 internal sealed record ApprovalDecisionInput(string? Decision, string? Comment, string? Pin, Guid? ApproverId);
 

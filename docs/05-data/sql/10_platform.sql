@@ -183,6 +183,33 @@ CREATE TRIGGER branch_entitlement AFTER INSERT OR UPDATE OF status ON platform.b
 CREATE TRIGGER register_entitlement AFTER INSERT ON platform.register
   FOR EACH ROW EXECUTE FUNCTION platform.enforce_entitlement('registers');
 
+-- TEN-005 / US-016: asynchronous data export. The API records the request (and an outbox event), the Workers build a
+-- ZIP of CSVs under tenants/<tenant>/exports/<random>.zip and complete the row; links are presigned per request (D-49).
+CREATE TABLE platform.export_job (
+  tenant_id     uuid NOT NULL REFERENCES platform.tenant(id),
+  id            uuid NOT NULL,
+  requested_by  uuid NOT NULL,
+  categories    text[] NOT NULL CHECK (cardinality(categories) BETWEEN 1 AND 7 AND categories <@
+                  ARRAY['Products','Customers','Sales','Inventory','Journals','Receivables','TaxInvoices']),
+  period_from   timestamptz,
+  period_to     timestamptz,
+  status        text NOT NULL DEFAULT 'Queued' CHECK (status IN ('Queued','Running','Completed','Failed')),
+  object_key    text CHECK (object_key ~ '^tenants/[0-9a-f-]{36}/exports/[A-Za-z0-9_-]{32,}\.zip$'),
+  row_count     bigint CHECK (row_count >= 0),
+  sha256        bytea CHECK (length(sha256) = 32),
+  error         text,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  completed_at  timestamptz,
+  expires_at    timestamptz,
+  purged_at     timestamptz,                 -- the file was deleted from storage after expires_at
+  PRIMARY KEY (tenant_id, id),
+  CHECK (purged_at IS NULL OR purged_at >= expires_at),
+  CHECK (period_from IS NULL OR period_to IS NULL OR period_from < period_to),
+  CHECK ((status = 'Completed') = (object_key IS NOT NULL AND completed_at IS NOT NULL AND expires_at IS NOT NULL)),
+  CHECK (object_key IS NULL OR object_key LIKE 'tenants/' || tenant_id || '/%')    -- a job can only point at its own tenant
+);
+CALL core.enable_tenant_rls('platform.export_job');
+
 -- TEN-004 / US-015: why the context tenant is read-only, or NULL when it is not. Suspended and closed tenants, and a
 -- trial whose end has passed, keep every row and can still read; the API refuses their writes (403 tenant-read-only).
 CREATE OR REPLACE FUNCTION platform.read_only_reason() RETURNS text
@@ -205,4 +232,6 @@ REVOKE INSERT, UPDATE ON platform.plan, platform.subscription FROM rc_app;   -- 
 REVOKE UPDATE ON platform.tenant FROM rc_app;
 GRANT UPDATE (legal_name, time_zone, pricing_mode, version) ON platform.tenant TO rc_app;
 GRANT EXECUTE ON FUNCTION platform.entitlement_cap(text), platform.read_only_reason() TO rc_app, rc_worker;
+REVOKE UPDATE ON platform.export_job FROM rc_app;            -- the API only requests; the Workers run and complete
+GRANT UPDATE (status, object_key, row_count, sha256, error, completed_at, expires_at, purged_at) ON platform.export_job TO rc_worker;
 RESET ROLE;

@@ -136,6 +136,7 @@ flowchart LR
 | `rc_oracle_violations` | Gauge | `oracle` (O-2..O-14) — خروجی `core.run_oracles()` |
 | `rc_db_rls_denied_total` | Counter | `table` (از Log خطای 42501 نقش App) |
 | `rc_audit_chain_broken_total` | Counter | — (وارسی روزانه `AuditChainVerifier` در Workers؛ هر افزایش = Alert `RCAuditChainBroken`، Sev-1) |
+| `rc_export_large_total` | Counter | `reason` (`rows` بیش از ۱۰۰ هزار ردیف، `frequency` بیش از ۳ خروجی در روز؛ DET-08، US-016) |
 | `rc_tax_invoices` | Gauge | `status` |
 | `rc_tax_deadline_at_risk` | Gauge | `threshold` (`50`، `80`، `95`) |
 | `rc_tax_invoices_rejected_total` | Counter | — |
@@ -441,3 +442,9 @@ flowchart LR
 | OpsQ-04 | OQ | Status Page عمومی یا فقط درون‌برنامه‌ای؟ |
 | OpsQ-05 | OQ | قرارداد SLA با Tenantها (اعتبار جبرانی) — حقوقی و بازرگانی |
 | OpsQ-06 | OQ | افزودن `promtool check rules` و `amtool` به CI (نیاز به Mirror باینری Prometheus) |
+
+### RB-23 — خروجی بزرگ یا پرتکرار داده (DET-08)
+- **محرک:** `RCExportLarge` (Ticket) یا Log `export.large` با `tenant`، `export`، `reason`، `rows`، `today` · **اثر:** احتمال استخراج انبوه داده (AB-16).
+- **تشخیص:** سابقه ممیزی همان فروشگاه با `action=platform.export.` (درخواست، تکمیل و صدور لینک، با کاربر و IP)؛ آیا کاربر تازه نقش گرفته یا در حال ترک است؟
+- **کاهش اثر:** اطلاع به مالک فروشگاه؛ در صورت سوءاستفاده، حذف نقش آن کاربر (حتی در حالت فقط‌خواندنی مجاز است) و IR-01 (D06 §13.2). فایل‌ها پس از ۲۴ ساعت خودکار حذف می‌شوند.
+- **وارسی:** نبود خروجی تازه از همان کاربر؛ ثبت تصمیم در سابقه ممیزی.

@@ -41,6 +41,8 @@ public static class Permissions
     public const string UsersManage = "iam.users.manage";
     public const string TerminalsManage = "terminals.manage";
     public const string AuditView = "audit.view";
+    public const string DataExport = "data.export";
+    public const string CustomersPiiView = "customers.pii.view";
 
     public static readonly IReadOnlyList<string> All =
     [

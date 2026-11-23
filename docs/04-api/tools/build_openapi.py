@@ -150,8 +150,11 @@ schema("Terminal", id="uuid", branchId="uuid", deviceName="str", pairedAt="dt", 
        **{"deviceSecret?": ("desc", "str", "Only in the pairTerminal response; kept by the BFF, never by page scripts")})
 schema("ExportCreate", categories=[("enum", ["Products", "Customers", "Sales", "Inventory", "Journals", "Receivables", "TaxInvoices"])],
        **{"from?": "dt", "to?": "dt", "includeFullPhone?": "bool"})
-schema("ExportJob", id="uuid", status=("enum", ["Queued", "Running", "Completed", "Failed"]), downloadUrl="str?",
-       downloadUrlExpiresAt="dt?", createdAt="dt")
+schema("ExportJob", id="uuid", status=("desc", ("enum", ["Queued", "Running", "Completed", "Failed", "Expired"]),
+                                       "Expired: the file is deleted 24 h after completion (TEN-005)"),
+       categories=["str"], **{"from": "dt?", "to": "dt?"}, rowCount="long?", createdAt="dt", completedAt="dt?", expiresAt="dt?",
+       downloadUrl=("desc", "str?", "Presigned, valid 5 minutes (D-49); issued (and audited) on every getExport of a Completed export"),
+       downloadUrlExpiresAt="dt?")
 schema("Me", userId="uuid", displayName="str", activeTenantId="uuid?",
        memberships=[{"tenantId": "uuid", "tenantName": "str", "roles": ["str"], "mfaRequired": "bool"}],
        permissions=[{"permission": "str", "scopeType": ("enum", ["Tenant", "Branch", "Warehouse", "Register"]), "scopeId": "uuid?"}],
@@ -504,6 +507,7 @@ ERROR_CATALOG = {
     "mfa-required": (403, "IAM-003"),
     "step-up-required": (403, "ABAC-05"),
     "entitlement-exceeded": (403, "TEN-003"),
+    "export-in-progress": (409, "One export at a time per store (TEN-005, TM-015)"),
     "tenant-read-only": (403, "Suspended, closed or trial-expired tenant: writes refused except x-allowed-when-read-only (TEN-004)"),
     "terminal-not-registered": (403, "ABAC-04"),
     "qr-expired": (401, "Customer QR expired or already used (CUS-005)"),
@@ -685,7 +689,9 @@ op("delete", "/terminals/{terminalId}", "revokeTerminal", "Tenant", "ابطال 
    no_content=True, reqs=["TEN-002.1"], audited=True)
 op("post", "/exports", "createExport", "Tenant", "Export ناهمگام داده", perm="data.export", scope="Tenant", body="ExportCreate",
    resp="ExportJob", resp_code="202", reqs=["TEN-005", "RPT-003"], audited=True,
-   desc="includeFullPhone=true requires customers.pii.view and fresh MFA (ABAC-05). Raises DET-08 when large.")
+   desc="Requires MFA within 15 minutes (ABAC-05). includeFullPhone=true requires customers.pii.view (403) and is refused "
+        "with validation 'not-yet-supported' until customer contact decryption ships. One export at a time (409 "
+        "export-in-progress). ZIP of UTF-8 CSVs + manifest.json; formula cells escaped (AB-18). Raises DET-08 when large.")
 op("get", "/exports/{exportId}", "getExport", "Tenant", "وضعیت Export و لینک Presigned (۵ دقیقه)", perm="data.export",
    scope="Tenant", resp="ExportJob", reqs=["TEN-005", "D-49"])
 
