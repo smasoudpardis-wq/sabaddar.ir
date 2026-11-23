@@ -67,7 +67,7 @@ public sealed class EntitlementTests : IClassFixture<ApiFactory>, IAsyncLifetime
         return c;
     }
 
-    private static async Task<JsonElement> Body(HttpResponseMessage r) => JsonDocument.Parse(await r.Content.ReadAsStringAsync()).RootElement;
+    private static async Task<JsonElement> Body(HttpResponseMessage r) => JsonElement.Parse(await r.Content.ReadAsStringAsync());
 
     private static async Task AssertExceeded(HttpResponseMessage r, string resource, int limit)
     {
