@@ -325,7 +325,7 @@ SELECT t.expect_error('T86 an unknown role is rejected', '23514',
   format($$INSERT INTO iam.role_assignment (tenant_id, id, user_id, role, scope_type) VALUES (%L, gen_random_uuid(), 'e0000000-0000-0000-0000-000000000001', 'SuperUser', 'Tenant')$$, :A));
 SELECT t.expect_error('T97 tenant-wide roles cannot be narrowed to a branch', '23514',
   format($$INSERT INTO iam.role_assignment (tenant_id, id, user_id, role, scope_type, scope_id) VALUES (%L, gen_random_uuid(), 'e0000000-0000-0000-0000-000000000001', 'Accountant', 'Branch', 'a0000000-0000-0000-0000-000000000001')$$, :A));
-SELECT t.expect_error('T98 the last TenantOwner cannot be removed', 'RC010',
+SELECT t.expect_error('T98 the last TenantOwner cannot be removed', 'RC004',
   $$DELETE FROM iam.role_assignment WHERE role = 'TenantOwner'$$);
 SELECT t.expect_error('T99 role assignments are immutable (remove and re-add)', 'RC001',
   $$UPDATE iam.role_assignment SET scope_type = 'Tenant'$$);
@@ -379,12 +379,12 @@ INSERT INTO iam.approval_request (tenant_id, id, action, resource_type, scope_ty
 SELECT t.expect_error('T105 the requester can never approve their own request (SoD-01)', '23514',
   $$UPDATE iam.approval_request SET status = 'Approved', decided_by = requested_by, decided_at = now() WHERE id = 'd0000000-0000-0000-0000-000000000001'$$);
 UPDATE iam.approval_request SET status = 'Rejected', decided_by = 'e0000000-0000-0000-0000-000000000001', decided_at = now() WHERE id = 'd0000000-0000-0000-0000-000000000001';
-SELECT t.expect_error('T106 a decided approval cannot be re-decided', 'RC012',
+SELECT t.expect_error('T106 a decided approval cannot be re-decided', 'RC005',
   $$UPDATE iam.approval_request SET status = 'Approved' WHERE id = 'd0000000-0000-0000-0000-000000000001'$$);
 INSERT INTO iam.approval_request (tenant_id, id, action, resource_type, scope_type, condition, binding_hash, requested_by, expires_at, status, decided_by, decided_at)
   VALUES (:A, 'd0000000-0000-0000-0000-000000000002', 'pos.discount.apply', 'Sale', 'Tenant', 'amount-limit', sha256('b'), 'e0000000-0000-0000-0000-000000000002', now() + interval '10 minutes',
           'Approved', 'e0000000-0000-0000-0000-000000000001', now());
-SELECT t.expect_error('T107 what was approved cannot be changed afterwards (valid transition, changed binding)', 'RC012',
+SELECT t.expect_error('T107 what was approved cannot be changed afterwards (valid transition, changed binding)', 'RC005',
   $$UPDATE iam.approval_request SET status = 'Consumed', consumed_at = now(), binding_hash = sha256('other') WHERE id = 'd0000000-0000-0000-0000-000000000002'$$);
 RESET ROLE;
 
@@ -403,7 +403,7 @@ SELECT set_config('app.tenant_id', :A, false);
 INSERT INTO platform.terminal (tenant_id, id, branch_id, device_name, secret_hash, paired_by)
   VALUES (:A, 'f0000000-0000-0000-0000-000000000001', 'a0000000-0000-0000-0000-000000000001', 'صندوق ۱', sha256('dev-secret'), 'e0000000-0000-0000-0000-000000000001');
 UPDATE platform.terminal SET status = 'Revoked', revoked_at = now() WHERE id = 'f0000000-0000-0000-0000-000000000001';
-SELECT t.expect_error('T102 a revoked terminal cannot be re-activated', 'RC011',
+SELECT t.expect_error('T102 a revoked terminal cannot be re-activated', 'RC003',
   $$UPDATE platform.terminal SET status = 'Active', revoked_at = NULL WHERE id = 'f0000000-0000-0000-0000-000000000001'$$);
 SELECT t.expect_error('T103 a terminal cannot be attached to a branch of another tenant (composite FK)', '23503',
   format($$INSERT INTO platform.terminal (tenant_id, id, branch_id, device_name, secret_hash, paired_by) VALUES (%L, gen_random_uuid(), 'b0000000-0000-0000-0000-000000000001', 'x', sha256('y'), gen_random_uuid())$$, :A));

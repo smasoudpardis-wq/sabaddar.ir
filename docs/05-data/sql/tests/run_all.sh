@@ -3,6 +3,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 DB=rc_d05_test
+echo "--- RC code registry (01_core.sql): one meaning per code, every raised code registered ---"
+REG=$(grep -oE '^--   RC[0-9]{3} ' 01_core.sql | awk '{print $2}' | sort)
+DUP=$(uniq -d <<<"$REG")
+UNREG=$(comm -23 <(grep -ohE "ERRCODE = 'RC[0-9]{3}'" ./*.sql | grep -oE 'RC[0-9]{3}' | sort -u) <(uniq <<<"$REG"))
+if [ -n "$DUP$UNREG" ]; then echo "REGISTRY FAILED: listed twice: ${DUP:-none}; raised but not listed: ${UNREG:-none}"; exit 1; fi
+echo "REGISTRY PASS ($(wc -l <<<"$REG") codes)"
 PGOPTIONS="-c client_min_messages=warning" psql -v ON_ERROR_STOP=1 -q -d postgres -c "DROP DATABASE IF EXISTS $DB" -c "CREATE DATABASE $DB"
 for f in 00_bootstrap_superuser.sql 01_core.sql 10_platform.sql 15_iam.sql 20_merch.sql 30_inv.sql 40_sales.sql \
          50_acc.sql 55_ar.sql 60_cid.sql 70_tax.sql 80_audit.sql; do

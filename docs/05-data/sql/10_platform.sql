@@ -73,10 +73,10 @@ CALL core.enable_tenant_rls('platform.terminal');
 CREATE OR REPLACE FUNCTION platform.terminal_no_unrevoke() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF OLD.status = 'Revoked' THEN
-    RAISE EXCEPTION 'a revoked terminal cannot change' USING ERRCODE = 'RC011';
+    RAISE EXCEPTION 'a revoked terminal cannot change' USING ERRCODE = 'RC003';
   END IF;
   IF NEW.secret_hash <> OLD.secret_hash OR NEW.branch_id <> OLD.branch_id THEN
-    RAISE EXCEPTION 'terminal identity is immutable' USING ERRCODE = 'RC011';
+    RAISE EXCEPTION 'terminal identity is immutable' USING ERRCODE = 'RC003';
   END IF;
   RETURN NEW;
 END $$;

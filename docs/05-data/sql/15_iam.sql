@@ -55,7 +55,7 @@ BEGIN
   IF OLD.role = 'TenantOwner' THEN
     PERFORM 1 FROM iam.role_assignment WHERE tenant_id = OLD.tenant_id AND role = 'TenantOwner' FOR UPDATE;
     IF (SELECT count(*) FROM iam.role_assignment WHERE tenant_id = OLD.tenant_id AND role = 'TenantOwner' AND id <> OLD.id) = 0 THEN
-      RAISE EXCEPTION 'the last TenantOwner of a tenant cannot be removed' USING ERRCODE = 'RC010';
+      RAISE EXCEPTION 'the last TenantOwner of a tenant cannot be removed' USING ERRCODE = 'RC004';
     END IF;
   END IF;
   RETURN OLD;
@@ -122,12 +122,12 @@ CREATE OR REPLACE FUNCTION iam.approval_transition() RETURNS trigger LANGUAGE pl
 BEGIN
   IF NOT ((OLD.status = 'Pending' AND NEW.status IN ('Approved','Rejected','Expired'))
        OR (OLD.status = 'Approved' AND NEW.status IN ('Consumed','Expired'))) THEN
-    RAISE EXCEPTION 'approval % cannot go from % to %', OLD.id, OLD.status, NEW.status USING ERRCODE = 'RC012';
+    RAISE EXCEPTION 'approval % cannot go from % to %', OLD.id, OLD.status, NEW.status USING ERRCODE = 'RC005';
   END IF;
   IF (NEW.action, NEW.resource_type, NEW.resource_id, NEW.binding_hash, NEW.requested_by, NEW.requested_at, NEW.scope_type, NEW.scope_id)
      IS DISTINCT FROM (OLD.action, OLD.resource_type, OLD.resource_id, OLD.binding_hash, OLD.requested_by, OLD.requested_at, OLD.scope_type, OLD.scope_id)
      OR (OLD.decided_by IS NOT NULL AND NEW.decided_by IS DISTINCT FROM OLD.decided_by) THEN
-    RAISE EXCEPTION 'approval facts are immutable' USING ERRCODE = 'RC012';
+    RAISE EXCEPTION 'approval facts are immutable' USING ERRCODE = 'RC005';
   END IF;
   RETURN NEW;
 END $$;

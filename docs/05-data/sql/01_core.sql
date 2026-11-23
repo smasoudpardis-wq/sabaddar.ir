@@ -1,7 +1,20 @@
--- Application SQLSTATE codes (class RC). RC001-RC029 are LOCAL: their meaning depends on the table (e.g. RC012 is
--- "approval transition" in iam and "posted journal immutable" in acc), so code may only catch them around the one
--- statement it issued. RC030+ are GLOBAL, unique across the schema, and may be mapped centrally:
---   RC030  entitlement-exceeded:<resource>:<cap>  (platform.enforce_entitlement; PostgresUnitOfWork -> 403, TEN-003)
+-- Application SQLSTATE codes (class RC). Every code has exactly ONE meaning across the whole schema: never reuse a
+-- number for something else, add a new line here instead (tests/run_all.sh fails on a raised code missing below).
+-- RC001-RC029 are LOCAL: not mapped centrally, so code catches them only around the statement that can raise them.
+-- RC030+ are GLOBAL and may be mapped centrally (PostgresUnitOfWork).
+--   RC001  append-only row cannot change             (core.forbid_update_delete; ar receivable guard)
+--   RC002  finalized/cancelled sale is immutable     (sales.guard_finalized_sale/line)
+--   RC003  terminal is revoked or identity immutable (platform.terminal_no_unrevoke)
+--   RC004  last TenantOwner cannot be removed        (iam.keep_last_owner; PostgresUserAdministration -> LastOwner)
+--   RC005  approval transition/facts not allowed     (iam.approval_transition)
+--   RC010  journal is unbalanced                     (acc.check_entry, deferred to commit)
+--   RC011  journal line lacks required detail acct   (acc.check_entry, deferred to commit)
+--   RC012  posted journal is immutable               (acc.guard_entry/line)
+--   RC013  period is closed: posting not allowed     (acc.guard_entry)
+--   RC014  effective_at outside the period span      (acc.guard_entry)
+--   RC020  tax invoice deleted or content changed    (tax.guard_invoice)
+--   RC021  tax invoice content_hash mismatch         (tax.guard_invoice)
+--   RC030  entitlement-exceeded:<resource>:<cap>     (platform.enforce_entitlement; PostgresUnitOfWork -> 403, TEN-003)
 -- Run as rc_migrator.  Shared helpers used by every module schema.
 SET ROLE rc_migrator;
 

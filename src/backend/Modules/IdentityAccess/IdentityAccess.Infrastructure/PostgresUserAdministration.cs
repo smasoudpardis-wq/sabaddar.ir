@@ -174,7 +174,7 @@ public sealed class PostgresUserAdministration(IUnitOfWork unitOfWork, TimeProvi
         {
             await Exec((PostgresUnitOfWorkScope)scope, "DELETE FROM iam.role_assignment WHERE user_id = $1 AND id = $2", cancellationToken, user.Value, assignmentId);
         }
-        catch (PostgresException e) when (e.SqlState == "RC010")
+        catch (PostgresException e) when (e.SqlState == "RC004")
         {
             throw new LastOwnerException();
         }
