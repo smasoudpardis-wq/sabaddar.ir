@@ -1488,6 +1488,9 @@ paths:
       tags:
       - Catalog
       summary: جستجوی کالا (بارکد، SKU، نام نرمال‌شده فارسی)
+      description: '`q`: an exact SKU or barcode, or up to 5 terms each matching the start of a word of the Persian-normalised
+        name (Arabic yeh/kaf, digits, half-spaces and diacritics folded), in any order. Merged products are not returned.
+        Ordered by normalised name; keyset paging.'
       security: *id001
       parameters:
       - $ref: '#/components/parameters/Cursor'

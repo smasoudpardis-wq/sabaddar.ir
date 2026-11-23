@@ -1,10 +1,13 @@
 SET ROLE rc_migrator;
 
--- CAT-011: Persian search key — Arabic yeh/kaf to Persian, digits to ASCII, ZWNJ/tatweel/extra spaces removed, lower case.
+-- CAT-011: Persian search key — Arabic yeh/kaf to Persian, digits to ASCII, lower case; ZWNJ, tatweel and diacritics
+-- (U+064B..U+065F fathatan..wavy hamza, U+0670 superscript alef) removed; runs of spaces collapsed.
 CREATE OR REPLACE FUNCTION merch.normalize_fa(p text) RETURNS text
 LANGUAGE sql IMMUTABLE PARALLEL SAFE SET search_path = pg_catalog AS $$
   SELECT btrim(regexp_replace(
-           translate(lower(p), 'يكىۀةأإآ٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹' || chr(8204) || chr(1600), 'یکیههاا' || 'ا' || '01234567890123456789'),
+           translate(lower(p), 'يكىۀةأإآ٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹' || chr(8204) || chr(1600)
+                               || (SELECT string_agg(chr(c), '') FROM generate_series(1611, 1631) c) || chr(1648),
+                     'یکیههاا' || 'ا' || '01234567890123456789'),
            '\s+', ' ', 'g'))
 $$;
 
@@ -74,6 +77,8 @@ BEGIN
 END $$;
 CREATE TRIGGER barcode_history BEFORE UPDATE ON merch.tenant_product_barcode FOR EACH ROW EXECUTE FUNCTION merch.barcode_history();
 CREATE INDEX ix_product_name ON merch.tenant_product (tenant_id, name_normalized);
+-- CAT-011 word-prefix search: each query term is also matched as '%term%', which this trigram index serves (D05)
+CREATE INDEX ix_product_name_trgm ON merch.tenant_product USING gin (name_normalized public.gin_trgm_ops);
 
 CREATE TABLE merch.price_list (
   tenant_id uuid NOT NULL,

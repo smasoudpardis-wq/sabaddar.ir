@@ -23,6 +23,7 @@ END $$;
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;    -- digest() for audit hash chain
 CREATE EXTENSION IF NOT EXISTS btree_gist;  -- exclusion constraints on (uuid, range)
+CREATE EXTENSION IF NOT EXISTS pg_trgm;     -- product name search (CAT-011, D05 §indexes)
 
 DO $$
 DECLARE s text;

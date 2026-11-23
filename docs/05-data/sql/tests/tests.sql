@@ -95,6 +95,8 @@ SELECT t.expect_error('T10 duplicate active barcode in a tenant (DI-080)', '2350
 -- US-041 catalog (CAT-001/002, CAT-011)
 SELECT t.ok('T140 Persian search key: Arabic yeh/kaf, Persian digits and half-spaces normalise',
   merch.normalize_fa('شير  ي‌ك ۱ ليتري') = merch.normalize_fa('شیر یک 1 لیتری'));
+SELECT t.ok('T164 Persian search key: diacritics (fatha, kasra, tanvin, shadda, superscript alef) are removed (CAT-011)',
+  merch.normalize_fa('شیرِ تازهٔ کَمّ چرباً') = 'شیر تازه کم چربا' AND merch.normalize_fa('رحمٰن') = 'رحمن');
 SELECT t.ok('T141 the stored search key follows the name', (SELECT name_normalized FROM merch.tenant_product WHERE id = 'a0000000-0000-0000-0000-000000000010') = 'شیر 1 لیتری');
 SELECT t.expect_error('T142 a barcode cannot be moved to another variant (history kept)', 'RC016',
   $$UPDATE merch.tenant_product_barcode SET packaging_unit = 'CT' WHERE code_normalized = '06260000000017'$$);

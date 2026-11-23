@@ -167,6 +167,38 @@ public sealed class CatalogTests : IClassFixture<ApiFactory>, IAsyncLifetime
     }
 
     [DbFact]
+    public async Task AT034_search_by_word_prefix_in_any_order_and_exact_sku_or_barcode()
+    {
+        HttpClient owner = Owner();
+        async Task<Guid> Make(string name, string sku, string? barcode = null) =>
+            (await Body(await Create(owner, new
+            {
+                name, baseUnit = "EA", confirmation = new { confirmed = true },
+                variants = new[] { new { sku, barcodes = barcode is null ? Array.Empty<object>() : new object[] { new { code = barcode } } } },
+            }))).GetProperty("id").GetGuid();
+        async Task<Guid[]> Find(string q) => [.. (await Body(await owner.GetAsync("/api/v1/products?q=" + Uri.EscapeDataString(q))))
+            .GetProperty("items").EnumerateArray().Select(e => e.GetProperty("id").GetGuid())];
+
+        Guid milk = await Make("شیرِ کم‌چرب پاستوریزه", "AT34-MILK", "6260100000018");
+        Guid yogurt = await Make("ماست پرچرب", "AT34-YOG");
+        Guid sugar = await Make("شکر ۱ کیلویی", "AT34-SUGAR");
+
+        Assert.Equal([milk], await Find("پاستو شير"));          // two word prefixes, any order, Arabic yeh, no kasra
+        Assert.Equal([milk], await Find("كمچرب"));               // half-space removed, Arabic kaf
+        Assert.Empty(await Find("چرب"));                          // not the start of a word
+        Assert.Equal([sugar], await Find("شکر 1"));               // Latin digit for ۱
+        Assert.Equal([yogurt], await Find("AT34-YOG"));           // exact SKU
+        Assert.Empty(await Find("AT34-YO"));                      // a partial SKU is not a match
+        Assert.Equal([milk], await Find("6260100000018"));        // a scanned barcode typed into the box
+        Assert.Empty(await Find("100%"));                         // LIKE wildcards are literal
+
+        await using var ds = NpgsqlDataSource.Create(Cs);
+        await new PostgresUnitOfWork(ds).ExecuteAsync(new FixedTenantContext(new TenantId(_tenant)), (sc, ct) =>
+            Exec(sc, ct, "UPDATE merch.tenant_product SET status = 'Merged', merged_into_id = $2 WHERE id = $1", yogurt, milk));
+        Assert.Empty(await Find("ماست"));                         // a merged product is not offered again
+    }
+
+    [DbFact]
     public async Task Persian_search_finds_names_typed_with_Arabic_letters_and_edits_are_versioned()
     {
         HttpClient owner = Owner();

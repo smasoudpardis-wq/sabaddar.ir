@@ -775,7 +775,10 @@ op("get", "/products", "listProducts", "Catalog", "جستجوی کالا (بار
    params=[{"name": "q", "in": "query", "required": False, "schema": {"type": "string"}},
            {"name": "barcode", "in": "query", "required": False, "schema": {"type": "string"}},
            {"$ref": "#/components/parameters/BranchFilter"}],
-   resp="Product", list_of=True, page=True, reqs=["CAT-011", "SAL-001"])
+   resp="Product", list_of=True, page=True, reqs=["CAT-011", "SAL-001"],
+   desc="`q`: an exact SKU or barcode, or up to 5 terms each matching the start of a word of the Persian-normalised name "
+        "(Arabic yeh/kaf, digits, half-spaces and diacritics folded), in any order. Merged products are not returned. "
+        "Ordered by normalised name; keyset paging.")
 op("post", "/products", "createProduct", "Catalog", "تعریف کالا با Variant و بارکد (و موجودی افتتاحیه اختیاری)",
    perm="catalog.product.manage", scope="Tenant", idem=True, body="ProductCreate", resp="Product", resp_code="201",
    reqs=["CAT-001", "CAT-002", "CAT-002.1", "CAT-004.1", "CAT-008", "UC-01"], audited=True)

@@ -57,10 +57,27 @@ public sealed class PostgresProductCatalog(IOutbox outbox) : IProductCatalog
         void Arg(object value) => cmd.Parameters.Add(new NpgsqlParameter { Value = value });
         if (!string.IsNullOrWhiteSpace(query))
         {
-            Arg("%" + query.Trim().Replace(@"\", @"\\", StringComparison.Ordinal).Replace("%", @"\%", StringComparison.Ordinal).Replace("_", @"\_", StringComparison.Ordinal) + "%");
-            Arg(query.Trim());
-            where.Add($"(p.name_normalized LIKE merch.normalize_fa(${cmd.Parameters.Count - 1}) OR EXISTS (SELECT 1 FROM merch.tenant_variant v " +
-                      $"WHERE v.tenant_id = p.tenant_id AND v.product_id = p.id AND v.sku = ${cmd.Parameters.Count}))");
+            // CAT-011: SKU or barcode typed into the box match exactly; otherwise every term must start a word of the
+            // normalised name, in any order ("کم شیر" finds «شیر کم‌چرب»). '%term%' lets the trigram index narrow first.
+            string q = query.Trim();
+            string[] terms = (await NormalizeAsync(s, q, cancellationToken)).Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(5).ToArray();
+            var nameMatch = new List<string>();
+            foreach (string term in terms)
+            {
+                string like = term.Replace(@"\", @"\\", StringComparison.Ordinal).Replace("%", @"\%", StringComparison.Ordinal).Replace("_", @"\_", StringComparison.Ordinal);
+                Arg("%" + like + "%");
+                Arg("% " + like + "%");
+                nameMatch.Add($"(p.name_normalized LIKE ${cmd.Parameters.Count - 1} AND (' ' || p.name_normalized) LIKE ${cmd.Parameters.Count})");
+            }
+
+            Arg(q);
+            int sku = cmd.Parameters.Count;
+            Arg(RetailCloud.BuildingBlocks.Domain.Gtin.TryParse(q, out RetailCloud.BuildingBlocks.Domain.Gtin qg) ? qg.Normalized14 : q);
+            int code = cmd.Parameters.Count;
+            where.Add("(" + (nameMatch.Count > 0 ? "(" + string.Join(" AND ", nameMatch) + ") OR " : "") +
+                      $"EXISTS (SELECT 1 FROM merch.tenant_variant v WHERE v.tenant_id = p.tenant_id AND v.product_id = p.id AND v.sku = ${sku}) OR " +
+                      "EXISTS (SELECT 1 FROM merch.tenant_product_barcode b JOIN merch.tenant_variant v ON v.tenant_id = b.tenant_id AND v.id = b.variant_id " +
+                      $"WHERE v.product_id = p.id AND b.active AND b.code_normalized = ${code}))");
         }
 
         if (!string.IsNullOrWhiteSpace(barcode))
@@ -78,8 +95,8 @@ public sealed class PostgresProductCatalog(IOutbox outbox) : IProductCatalog
         }
 
         Arg(limit + 1);
-        cmd.CommandText = "SELECT p.id, p.name_normalized FROM merch.tenant_product p" +
-                          (where.Count > 0 ? " WHERE " + string.Join(" AND ", where) : "") +
+        where.Add("p.status <> 'Merged'");   // a merged product lives on as the product it was merged into
+        cmd.CommandText = "SELECT p.id, p.name_normalized FROM merch.tenant_product p WHERE " + string.Join(" AND ", where) +
                           $" ORDER BY p.name_normalized, p.id LIMIT ${cmd.Parameters.Count}";
         var page = new List<(Guid Id, string Name)>();
         await using (NpgsqlDataReader r = await cmd.ExecuteReaderAsync(cancellationToken))
@@ -94,6 +111,13 @@ public sealed class PostgresProductCatalog(IOutbox outbox) : IProductCatalog
         page = [.. page.Take(limit)];
         IReadOnlyList<ProductView> items = await LoadAsync(s, [.. page.Select(p => p.Id)], cancellationToken);
         return (items, more ? EncodeCursor(page[^1].Name, page[^1].Id) : null);
+    }
+
+    private static async Task<string> NormalizeAsync(PostgresUnitOfWorkScope s, string text, CancellationToken ct)
+    {
+        await using NpgsqlCommand cmd = s.Command("SELECT merch.normalize_fa($1)");   // one normaliser: the one the stored key uses
+        cmd.Parameters.Add(new NpgsqlParameter { Value = text });
+        return (string)(await cmd.ExecuteScalarAsync(ct))!;
     }
 
     public async Task<CatalogResult<ProductView>> UpdateAsync(IUnitOfWorkScope scope, Guid productId, ProductChange change, CancellationToken cancellationToken)
