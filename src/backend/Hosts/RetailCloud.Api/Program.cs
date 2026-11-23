@@ -30,6 +30,7 @@ builder.Services.AddSingleton<ISupportAccess, PostgresSupportAccess>();
 builder.Services.AddSingleton<IProductCatalog, PostgresProductCatalog>();
 builder.Services.AddSingleton<IWeightedBarcodeProfiles, PostgresWeightedBarcodeProfiles>();
 builder.Services.AddSingleton<IPriceLists, PostgresPriceLists>();
+builder.Services.AddSingleton<IDiscounts, PostgresDiscounts>();
 builder.Services.AddSingleton<IStockLedger, RetailCloud.Inventory.Infrastructure.PostgresStockLedger>();
 builder.Services.AddSingleton<IShifts, PostgresShifts>();
 builder.Services.AddSingleton<IJournals, PostgresJournals>();
@@ -1146,7 +1147,11 @@ v1.MapPost("/catalog/barcodes/resolve", async (BarcodeResolveInput body, Request
                 WeightedDecodeStatus.NotWeighted => await catalog.FindByCodeAsync(s, gs1 ? gtin.Normalized14 : code, c),
                 _ => null,
             };
-            return (status, label, match);
+            // CAT-010 / D-18: the one automatic rule that applies here and now (the largest), for the POS to show
+            DiscountRuleView? rule = match is null ? null : DiscountPolicy.Best(
+                await http.RequestServices.GetRequiredService<IDiscounts>().RulesForAsync(s, [match.ProductId], DateTimeOffset.UtcNow, c),
+                match.ProductId, body.BranchId!.Value, DateTimeOffset.UtcNow);
+            return (status, label, match, rule);
         }, ct);
         if (result.status == WeightedDecodeStatus.Invalid)
         {
@@ -1193,6 +1198,7 @@ v1.MapPost("/catalog/barcodes/resolve", async (BarcodeResolveInput body, Request
             {
                 productId = m.ProductId, variantId = m.VariantId, name = m.Name, sku = m.Sku,
                 unitPrice = m.UnitPrice?.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                discount = result.rule is { } r ? new { ruleId = r.Id, percent = r.PercentBp, name = r.Name } : null,
             };
         }
 
@@ -1300,6 +1306,102 @@ v1.MapPut("/inventory/negative-stock-policies", async (NegativeStockPolicyInput 
                 Details: new { body.ScopeType, scopeId, policy = policy.ToString() }), c);
             return Results.NoContent();
         }, ct);
+    })
+    .RequirePermission(Permissions.TenantSettingsManage);
+
+// ---------------- US-053: automatic discount rules (CAT-010, D-18) and manual discount caps (BR-021)
+object RuleJson(DiscountRuleView r) => new
+{
+    r.Id, r.Name, target = new { kind = r.TargetKind, id = r.TargetId }, percent = r.PercentBp, r.ValidFrom, r.ValidTo, branchIds = r.BranchIds,
+};
+
+// a store-wide rule needs the permission store-wide; a branch rule needs it in each of its branches
+bool MayManageRule(RequestContext ctx, IReadOnlyCollection<Guid> branchIds) =>
+    branchIds.Count == 0
+        ? AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.CatalogPriceManage, ScopeRef.Tenant)
+        : branchIds.All(b => AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.CatalogPriceManage, new ScopeRef(ScopeType.Branch, b, b)));
+
+v1.MapGet("/discount-rules", async (RequestContext ctx, IUnitOfWork uow, IDiscounts discounts, bool? includeEnded, CancellationToken ct) =>
+        Results.Ok(new { items = (await uow.ExecuteAsync(ctx, (s, c) => discounts.ListRulesAsync(s, includeEnded ?? false, c), ct)).Select(RuleJson) }))
+    .RequireTenantMember();
+
+v1.MapPost("/discount-rules", async (DiscountRuleInput body, RequestContext ctx, IUnitOfWork uow, IDiscounts discounts, IProductCatalog catalog,
+        HttpContext http, TimeProvider clock, CancellationToken ct) =>
+    {
+        DateTimeOffset now = clock.GetUtcNow();
+        var errors = new Dictionary<string, string[]>();
+        ProductRules.Name(errors, "name", body.Name);
+        if (body.Target?.Kind is not ("Product" or "Category") || body.Target.Id is null) errors["target"] = ["{kind: Product|Category, id}"];
+        else if (body.Target.Kind == "Category") errors["target.kind"] = ["not-yet-supported"];   // categories come with the catalog tree
+        if (body.Percent is not (>= 1 and <= 10_000)) errors["percent"] = ["1-10000 basis points"];
+        if (body.ValidFrom is not { } from || from > now.AddDays(366)) errors["validFrom"] = ["up to a year ahead (an earlier instant starts now)"];
+        if (body.ValidTo is { } to && (to <= (body.ValidFrom ?? now) || to <= now)) errors["validTo"] = ["after validFrom and in the future"];
+        Guid[] branchIds = [.. (body.BranchIds ?? []).Distinct()];
+        if (branchIds.Length > 50) errors["branchIds"] = ["up to 50"];
+        if (errors.Count > 0) return Problems.Validation(http, errors);
+        if (!MayManageRule(ctx, branchIds)) return Forbidden(http);
+
+        var result = await uow.ExecuteAsync<(IResult? Problem, DiscountRuleView? Rule)>(ctx, async (s, c) =>
+        {
+            if (await catalog.GetAsync(s, body.Target!.Id!.Value, c) is not { Status: not "Merged" })
+            {
+                return (Problems.Validation(http, new Dictionary<string, string[]> { ["target.id"] = ["not a product of this store"] }), null);
+            }
+
+            foreach (Guid b in branchIds)
+            {
+                if (await ResolveScope(s, http.RequestServices.GetServices<IScopeLookup>(), ScopeType.Branch, b, c) is null)
+                {
+                    return (Problems.Validation(http, new Dictionary<string, string[]> { ["branchIds"] = [$"{b}: not a branch of this store"] }), null);
+                }
+            }
+
+            DateTimeOffset start = body.ValidFrom!.Value > now ? body.ValidFrom.Value : now;
+            DiscountRuleView rule = await discounts.CreateRuleAsync(s, new DiscountRuleSpec(body.Name!, "Product", body.Target.Id.Value, body.Percent!.Value,
+                start, body.ValidTo, branchIds), ctx.User!.Value.Value, c);
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry("catalog.discount-rule.created", "DiscountRule", rule.Id.ToString(),
+                Details: new { rule.Name, productId = rule.TargetId, rule.PercentBp, rule.ValidFrom, rule.ValidTo, branchIds }), c);
+            return (null, rule);
+        }, ct);
+        return result.Problem ?? Results.Created($"/api/v1/discount-rules/{result.Rule!.Id}", RuleJson(result.Rule));
+    })
+    .RequirePermission(Permissions.CatalogPriceManage);
+
+v1.MapDelete("/discount-rules/{ruleId:guid}", async (Guid ruleId, RequestContext ctx, IUnitOfWork uow, IDiscounts discounts, HttpContext http,
+        CancellationToken ct) =>
+        await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            DiscountRuleView? rule = await discounts.GetRuleAsync(s, ruleId, c);
+            if (rule is null) return Problems.NotFound(http);
+            if (!MayManageRule(ctx, rule.BranchIds)) return Forbidden(http);
+            if (!await discounts.EndRuleAsync(s, ruleId, c)) return Problems.NotFound(http);   // already ended
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry("catalog.discount-rule.ended", "DiscountRule", ruleId.ToString(),
+                Details: new { rule.Name, rule.PercentBp }), c);
+            return Results.NoContent();
+        }, ct))
+    .RequirePermission(Permissions.CatalogPriceManage);
+
+v1.MapGet("/discount-caps", async (RequestContext ctx, IUnitOfWork uow, IDiscounts discounts, CancellationToken ct) =>
+    {
+        IReadOnlyDictionary<string, int> set = await uow.ExecuteAsync(ctx, (s, c) => discounts.CapsAsync(s, c), ct);
+        return Results.Ok(new { caps = DiscountPolicy.DefaultCaps.Keys.ToDictionary(r => r, r => set.TryGetValue(r, out int v) ? v : DiscountPolicy.DefaultCaps[r]) });
+    })
+    .RequireTenantMember();
+
+v1.MapPut("/discount-caps", async (DiscountCapsInput body, RequestContext ctx, IUnitOfWork uow, IDiscounts discounts, HttpContext http, CancellationToken ct) =>
+    {
+        if (body.Caps is not { Count: >= 1 } || body.Caps.Any(c => !DiscountPolicy.DefaultCaps.ContainsKey(c.Key) || c.Value is not (>= 0 and <= 10_000)))
+        {
+            return Problems.Validation(http, new Dictionary<string, string[]> { ["caps"] = ["{TenantOwner|TenantAdmin|BranchManager|Cashier: 0-10000 basis points}"] });
+        }
+
+        await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            await discounts.SetCapsAsync(s, body.Caps, ctx.User!.Value.Value, c);
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry("catalog.discount-caps.set", "ManualDiscountCap", null, Details: body.Caps), c);
+            return 0;
+        }, ct);
+        return Results.NoContent();
     })
     .RequirePermission(Permissions.TenantSettingsManage);
 
@@ -2015,6 +2117,9 @@ internal sealed record ShiftOpenInput(Guid? RegisterId, string? OpeningCash);
 internal sealed record CashMovementInput(string? Direction, string? Amount, string? Reason);
 internal sealed record DenominationInput(string? Value, int? Count);
 internal sealed record ShiftCloseInput(string? CountedCash, int? ExpectedVersion, DenominationInput[]? Denominations, string? VarianceReason);
+internal sealed record DiscountTargetInput(string? Kind, Guid? Id);
+internal sealed record DiscountRuleInput(string? Name, DiscountTargetInput? Target, int? Percent, DateTimeOffset? ValidFrom, DateTimeOffset? ValidTo, Guid[]? BranchIds);
+internal sealed record DiscountCapsInput(Dictionary<string, int>? Caps);
 internal sealed record NegativeStockPolicyInput(string? ScopeType, Guid? ScopeId, string? Policy);
 internal sealed record PriceItemInput(Guid? VariantId, string? UnitPrice);
 internal sealed record PriceSetInput(PriceItemInput?[]? Items, DateTimeOffset? ValidFrom, string? Reason);

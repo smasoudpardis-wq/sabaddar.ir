@@ -112,6 +112,22 @@ SELECT t.expect_error('T145 a standard barcode is stored only as GTIN-14', '2351
     VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000011', '6260000000017', '6260000000017')$$);
 SELECT t.expect_error('T146 barcode rows are never deleted', '42501',
   $$DELETE FROM merch.tenant_product_barcode WHERE code_normalized = '06260000000017'$$);
+-- US-053 discount rules (CAT-010)
+INSERT INTO merch.discount_rule (tenant_id, id, name, target_kind, target_id, percent_bp, valid)
+  VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000090', 'جشنواره', 'Product', 'a0000000-0000-0000-0000-000000000010', 1000,
+          tstzrange(now() - interval '1 day', NULL));
+SELECT t.expect_error('T188 a discount rule cannot be changed, only ended', 'RC025',
+  $$UPDATE merch.discount_rule SET percent_bp = 5000 WHERE id = 'a0000000-0000-0000-0000-000000000090'$$);
+SELECT t.expect_error('T189 a discount rule cannot be ended in the past', 'RC025',
+  $$UPDATE merch.discount_rule SET valid = tstzrange(lower(valid), now() - interval '2 hours') WHERE id = 'a0000000-0000-0000-0000-000000000090'$$);
+UPDATE merch.discount_rule SET valid = tstzrange(lower(valid), now()) WHERE id = 'a0000000-0000-0000-0000-000000000090';
+SELECT t.expect_error('T190 an ended rule is not reopened', 'RC025',
+  $$UPDATE merch.discount_rule SET valid = tstzrange(lower(valid), now() + interval '1 day') WHERE id = 'a0000000-0000-0000-0000-000000000090'$$);
+SELECT t.expect_error('T191 a discount is 0.01% to 100%', '23514',
+  $$INSERT INTO merch.discount_rule (tenant_id, id, name, target_kind, target_id, percent_bp, valid)
+    VALUES (core.current_tenant(), gen_random_uuid(), 'x', 'Product', gen_random_uuid(), 10001, tstzrange(now(), NULL))$$);
+SELECT t.expect_error('T192 a manual discount cap is 0-100%', '23514',
+  $$INSERT INTO merch.manual_discount_cap (tenant_id, role, cap_bp) VALUES (core.current_tenant(), 'Cashier', -1)$$);
 -- US-051 variant matrix (CAT-008)
 INSERT INTO merch.tenant_product (tenant_id, id, name, base_unit_code, axes)
   VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000080', 'تی‌شرت', 'EA', '{color,size}');

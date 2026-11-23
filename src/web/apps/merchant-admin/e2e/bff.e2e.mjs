@@ -322,6 +322,19 @@ try {
   await page.locator('[data-variant="E2E-TEE-1-2"]').getByRole('button', { name: 'غیرفعال کن' }).click();
   await page.locator('[data-variant="E2E-TEE-1-2"][data-status="Inactive"]').waitFor();
   check('M02', 'one combination is switched off and stays listed as inactive', true);
+  // K01–K02 US-053: an automatic rule for the product, and the cashier's manual discount cap
+  await page.goto(`${BFF}/discounts`);
+  await page.getByTestId('discount-sku').fill('E2E-COLA');
+  await page.getByTestId('discount-name').fill('جشنواره آزمایشی');
+  await page.getByTestId('discount-percent').fill('۱۰');
+  await page.getByTestId('discount-submit').click();
+  await page.locator('[data-rule="جشنواره آزمایشی"]').waitFor();
+  check('K01', 'the owner adds a 10% automatic rule for a product (CAT-010)', true);
+  await page.getByTestId('cap-Cashier').fill('5');
+  await page.getByTestId('caps-submit').click();
+  await page.getByTestId('discount-saved').waitFor();
+  const capsNow = await page.evaluate(async () => (await fetch('/bff/discount-caps', { cache: 'no-store' })).json());
+  check('K02', "the cashier's manual cap is set to 5% (BR-021)", capsNow?.caps?.Cashier === 500, JSON.stringify(capsNow));
   // W01–W03 US-045: the owner sets a scale label format; a printed label then decodes to the item and its weight
   await page.goto(`${BFF}/products`);
   await page.getByTestId('product-name').fill('پنیر فله آزمایشی');

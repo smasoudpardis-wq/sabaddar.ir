@@ -154,6 +154,49 @@ BEGIN
 END $$;
 CREATE TRIGGER price_history BEFORE UPDATE ON merch.price_list_item FOR EACH ROW EXECUTE FUNCTION merch.price_history();
 
+-- CAT-010 / D-18: automatic discount rules (percent on a product or category over a time window, optionally for some
+-- branches). When several apply, only the largest counts. A rule is ended, never edited or deleted (history).
+CREATE TABLE merch.discount_rule (
+  tenant_id   uuid NOT NULL,
+  id          uuid NOT NULL,
+  name        text NOT NULL CHECK (length(btrim(name)) BETWEEN 1 AND 100),
+  target_kind text NOT NULL CHECK (target_kind IN ('Product','Category')),
+  target_id   uuid NOT NULL,
+  percent_bp  int  NOT NULL CHECK (percent_bp BETWEEN 1 AND 10000),
+  valid       tstzrange NOT NULL CHECK (NOT isempty(valid) AND lower(valid) IS NOT NULL),
+  branch_ids  uuid[] NOT NULL DEFAULT '{}',     -- empty: every branch
+  created_by  uuid,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, id)
+);
+CREATE INDEX ix_discount_rule_target ON merch.discount_rule (tenant_id, target_kind, target_id);
+CALL core.enable_tenant_rls('merch.discount_rule');
+
+CREATE OR REPLACE FUNCTION merch.discount_rule_history() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  -- the only change: end the rule, now or later, never earlier than now (what was granted stays granted)
+  IF (NEW.tenant_id, NEW.id, NEW.name, NEW.target_kind, NEW.target_id, NEW.percent_bp, lower(NEW.valid), NEW.branch_ids, NEW.created_by, NEW.created_at)
+     IS DISTINCT FROM (OLD.tenant_id, OLD.id, OLD.name, OLD.target_kind, OLD.target_id, OLD.percent_bp, lower(OLD.valid), OLD.branch_ids, OLD.created_by, OLD.created_at)
+     OR upper(NEW.valid) IS NULL OR upper(NEW.valid) < statement_timestamp() - interval '1 minute'
+     OR (upper(OLD.valid) IS NOT NULL AND upper(NEW.valid) > upper(OLD.valid)) THEN
+    RAISE EXCEPTION 'discount rule % can only be ended', OLD.id USING ERRCODE = 'RC025';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER discount_rule_history BEFORE UPDATE ON merch.discount_rule FOR EACH ROW EXECUTE FUNCTION merch.discount_rule_history();
+
+-- BR-021: the manual discount a role may give without approval (basis points). No row: Cashier 0, BranchManager and
+-- above 10000 (the defaults live in the application, D02).
+CREATE TABLE merch.manual_discount_cap (
+  tenant_id  uuid NOT NULL,
+  role       text NOT NULL CHECK (role IN ('TenantOwner','TenantAdmin','BranchManager','Cashier')),
+  cap_bp     int  NOT NULL CHECK (cap_bp BETWEEN 0 AND 10000),
+  changed_by uuid,
+  changed_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, role)
+);
+CALL core.enable_tenant_rls('merch.manual_discount_cap');
+
 -- CAT-007: weighted barcode profiles (an EAN-13 starting with 2: prefix, item code, [price check digit], value,
 -- check digit). A tenant edits its profiles as one set (PUT) guarded by weighted_barcode_settings.version.
 CREATE TABLE merch.weighted_barcode_settings (

@@ -202,7 +202,8 @@ schema("BarcodeResolveResponse", kind=("enum", ["known", "candidates", "not_foun
                    "weighted?": {"variantId": "uuid", "value": "str", "valueType": ("enum", ["Weight", "Price"]),
                                  "quantity?": "qty", "amount?": "money"}},
        **{"tenantProduct?": "#ProductSummary"}, candidates=["#BarcodeCandidate"], degraded="bool")
-schema("ProductSummary", productId="uuid", variantId="uuid", name="str", sku="str", unitPrice="money?")
+schema("ProductSummary", productId="uuid", variantId="uuid", name="str", sku="str", unitPrice="money?",
+       **{"discount?": ("desc", {"ruleId": "uuid", "percent": "bp", "name": "str"}, "The one automatic rule in force here (the largest; D-18)")})
 schema("VariantInput", sku="str", **{"axisValues?": {"color?": "str", "size?": "str", "model?": "str"},
                                      "unitPrice?": "money", "barcodes?": ["#BarcodeInput"]})
 schema("BarcodeInput", code="str", **{"packagingUnit?": "str", "unitFactor?": "qty", "isInternal?": "bool"})
@@ -233,7 +234,10 @@ schema("PriceVersion", variantId="uuid", unitPrice="money", validFrom="dt",
        validTo=("desc", "dt?", "Exclusive; null = until changed"), reason="str?", createdBy="uuid?", createdAt="dt")
 schema("DiscountRuleCreate", name="str", target={"kind": ("enum", ["Product", "Category"]), "id": "uuid"},
        percent="bp", validFrom="dt", **{"validTo?": "dt", "branchIds?": ["uuid"]})
-schema("DiscountRule", id="uuid", name="str", percent="bp", validFrom="dt", validTo="dt?")
+schema("DiscountRule", id="uuid", name="str", target={"kind": ("enum", ["Product", "Category"]), "id": "uuid"}, percent="bp",
+       validFrom="dt", validTo=("desc", "dt?", "Exclusive; null = until ended"), branchIds=("desc", ["uuid"], "Empty: every branch"))
+schema("DiscountCaps", caps=("desc", {"Cashier?": "bp", "BranchManager?": "bp", "TenantAdmin?": "bp", "TenantOwner?": "bp"},
+       "BR-021: manual discount a role may give without approval; defaults Cashier 0, the others 10000"))
 schema("WeightedBarcodeProfile", **{"id?": "uuid"}, prefix=("desc", "str", "1-3 digits starting with 2 (GS1 restricted circulation)"),
        itemCodeLength=("desc", "int", "1-6; the item code is the variant's internal code (its PLU on the scale)"),
        valueType=("enum", ["Weight", "Price"]), valueLength="int",
@@ -844,9 +848,20 @@ op("post", "/price-lists/{priceListId}/prices", "setPrices", "Catalog", "تعی�
         "until the next scheduled version; a scheduled version not yet started is corrected in place. Changing the "
         "default list needs the permission store-wide. Above the BR-041 thresholds the answer is 403 approval-required; "
         "the approval binds this exact change (list, validFrom, every price) and is consumed by the retry with X-Approval-Id.")
-op("get", "/discount-rules", "listDiscountRules", "Catalog", "قواعد تخفیف", resp="DiscountRule", list_of=True, reqs=["CAT-010"])
+op("get", "/discount-rules", "listDiscountRules", "Catalog", "قواعد تخفیف", resp="DiscountRule", list_of=True, reqs=["CAT-010"],
+   params=[{"name": "includeEnded", "in": "query", "required": False, "schema": {"type": "boolean"}}],
+   desc="Rules in force or scheduled, newest first, up to 200; includeEnded=true adds the ended ones.")
 op("post", "/discount-rules", "createDiscountRule", "Catalog", "قاعده تخفیف خودکار", perm="catalog.price.manage",
-   scope="Branch", body="DiscountRuleCreate", resp="DiscountRule", resp_code="201", reqs=["CAT-010"], audited=True)
+   scope="Branch", body="DiscountRuleCreate", resp="DiscountRule", resp_code="201", reqs=["CAT-010", "D-18"], audited=True,
+   desc="Target kind Product (Category comes with the category tree). Without branchIds the rule is store-wide and needs "
+        "the permission store-wide; with branchIds, in each branch. When several rules apply only the largest counts.")
+op("delete", "/discount-rules/{ruleId}", "endDiscountRule", "Catalog", "پایان قاعده تخفیف (تاریخچه حفظ می‌شود)",
+   perm="catalog.price.manage", scope="Branch", no_content=True, reqs=["CAT-010"], audited=True,
+   desc="Ends the rule now; a rule never changes or disappears (RC025). An ended rule is 404.")
+op("get", "/discount-caps", "getDiscountCaps", "Catalog", "سقف تخفیف دستی نقش‌ها", resp="DiscountCaps", reqs=["BR-021"])
+op("put", "/discount-caps", "setDiscountCaps", "Catalog", "تعیین سقف تخفیف دستی نقش‌ها", perm="tenant.settings.manage", scope="Tenant",
+   body="DiscountCaps", resp_code="204", no_content=True, reqs=["BR-021", "AB-01"], audited=True,
+   desc="A manual discount above the highest cap among the person's roles at the register needs a manager's approval (applyDiscount).")
 op("get", "/weighted-barcode-profiles", "getWeightedBarcodeProfiles", "Catalog", "Profileهای بارکد وزنی",
    resp="WeightedBarcodeProfileSet", reqs=["CAT-007"])
 op("put", "/weighted-barcode-profiles", "setWeightedBarcodeProfiles", "Catalog", "تعیین Profileهای بارکد وزنی (کل مجموعه)",

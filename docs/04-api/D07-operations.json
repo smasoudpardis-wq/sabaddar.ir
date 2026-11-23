@@ -662,6 +662,43 @@
   "idempotent": false
  },
  {
+  "operationId": "endDiscountRule",
+  "method": "DELETE",
+  "path": "/discount-rules/{ruleId}",
+  "permission": "catalog.price.manage",
+  "allowedWhenReadOnly": false,
+  "scope": "Branch",
+  "pathParams": [
+   "ruleId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
+ },
+ {
+  "operationId": "getDiscountCaps",
+  "method": "GET",
+  "path": "/discount-caps",
+  "permission": "tenant.member",
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
+ },
+ {
+  "operationId": "setDiscountCaps",
+  "method": "PUT",
+  "path": "/discount-caps",
+  "permission": "tenant.settings.manage",
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": [
+   "caps"
+  ],
+  "idempotent": false
+ },
+ {
   "operationId": "getWeightedBarcodeProfiles",
   "method": "GET",
   "path": "/weighted-barcode-profiles",
