@@ -42,6 +42,17 @@ public static class Problems
 
     public static async Task WriteAsync(HttpContext http, IResult result) => await result.ExecuteAsync(http);
 
+    /// <summary>403 tenant-read-only (TEN-004) with the reason: suspended, closed or trial-expired.</summary>
+    public static IResult TenantReadOnly(HttpContext http, string reason) =>
+        Results.Problem(statusCode: StatusCodes.Status403Forbidden, title: "The store is read-only",
+            type: "https://errors.retailcloud.example/tenant-read-only",
+            extensions: new Dictionary<string, object?>
+            {
+                ["code"] = "tenant-read-only",
+                ["reason"] = reason,
+                ["traceId"] = Activity.Current?.TraceId.ToString() ?? http.TraceIdentifier,
+            });
+
     /// <summary>403 entitlement-exceeded (TEN-003) with the resource and the plan's limit, for the "upgrade" prompt (D09).</summary>
     public static IResult EntitlementExceeded(HttpContext http, string resource, int? limit) =>
         Results.Problem(statusCode: StatusCodes.Status403Forbidden, title: "Plan limit reached",

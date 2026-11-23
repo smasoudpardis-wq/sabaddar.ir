@@ -7,6 +7,12 @@ type Me = { displayName: string; memberships: Membership[]; activeTenantId: stri
 type Tenant = {
   id: string; legalName: string; status: string; plan: string; trialEndsAt: string | null;
   entitlements: { maxBranches: number | null; maxRegisters: number | null; maxUsers: number | null };
+  readOnlyReason: 'suspended' | 'closed' | 'trial-expired' | null;
+};
+const READ_ONLY: Record<string, string> = {
+  suspended: 'حساب فروشگاه تعلیق شده است',
+  closed: 'حساب فروشگاه بسته شده است',
+  'trial-expired': 'دوره آزمایشی به پایان رسیده است',
 };
 const PLANS: Record<string, string> = { Trial: 'آزمایشی', Basic: 'پایه', Pro: 'حرفه‌ای', Enterprise: 'سازمانی' };
 const cap = (n: number | null) => (n === null ? 'نامحدود' : n.toLocaleString('fa-IR'));
@@ -126,6 +132,12 @@ export default function Home() {
         ))}
       </ul>
       {tenant && <p data-testid="active-tenant">فروشگاه فعال: {tenant.legalName}</p>}
+      {tenant?.readOnlyReason && (
+        <p role="status" data-testid="read-only-banner">
+          {READ_ONLY[tenant.readOnlyReason]}؛ فروشگاه فقط‌خواندنی است. اطلاعات، گزارش‌ها و خروجی در دسترس‌اند، ولی ثبت جدید ممکن نیست.
+          برای تمدید یا رفع تعلیق با پشتیبانی تماس بگیرید.
+        </p>
+      )}
       {tenant && (
         <p data-testid="plan">
           پلن: {PLANS[tenant.plan] ?? tenant.plan}

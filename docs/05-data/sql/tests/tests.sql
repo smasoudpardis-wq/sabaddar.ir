@@ -459,6 +459,28 @@ SELECT t.ok('T118 Enterprise has no caps', (SELECT count(*) FROM platform.branch
 SELECT set_config('app.tenant_id', :A, false);
 SELECT t.ok('T119 a tenant sees only its own subscription (RLS)', (SELECT count(*) FROM platform.subscription WHERE tenant_id = :C) = 0);
 RESET ROLE;
+-- US-015 read-only (TEN-004)
+SET ROLE rc_app;
+SELECT set_config('app.tenant_id', :C, false);
+SELECT t.ok('T122 an active subscription is not read-only', platform.read_only_reason() IS NULL);
+RESET ROLE;
+UPDATE platform.subscription SET plan_code = 'Trial', trial_ends_at = now() - interval '1 minute' WHERE tenant_id = :C;
+SET ROLE rc_app;
+SELECT set_config('app.tenant_id', :C, false);
+SELECT t.ok('T123 a trial past its end is read-only', platform.read_only_reason() = 'trial-expired');
+RESET ROLE;
+UPDATE platform.tenant SET status = 'Suspended' WHERE id = :C;
+SET ROLE rc_app;
+SELECT set_config('app.tenant_id', :C, false);
+SELECT t.ok('T124 suspension wins over the trial state', platform.read_only_reason() = 'suspended');
+SELECT t.ok('T125 a read-only tenant still reads all of its data', (SELECT count(*) FROM platform.branch) = 22);   -- 21 active + 1 inactive
+SELECT set_config('app.tenant_id', :A, false);
+SELECT t.ok('T126 the reason is about the context tenant only', platform.read_only_reason() IS NULL);
+SELECT set_config('app.tenant_id', :C, false);
+SELECT t.expect_error('T127 a store cannot lift its own suspension', '42501', $$UPDATE platform.tenant SET status = 'Active'$$);
+UPDATE platform.tenant SET legal_name = 'پلن ۲';
+SELECT t.ok('T128 a store still edits its own settings', (SELECT legal_name FROM platform.tenant) = 'پلن ۲');
+RESET ROLE;
 SELECT set_config('app.tenant_id', '', false);
 INSERT INTO platform.tenant (id, legal_name, industry_code) VALUES ('c1000000-0000-0000-0000-000000000002', 'عملیاتی', 'general');
 SELECT t.ok('T121 a tenant created by an operator without a context also starts its trial, and the context is restored',

@@ -53,6 +53,7 @@ DELETE FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$N
 SET session_replication_role = origin;
 INSERT INTO platform.tenant (id, legal_name, industry_code) VALUES
   ('$T1','فروشگاه الف','supermarket'), ('$T2','فروشگاه ب','supermarket'), ('$TF','فروشگاه غریبه','supermarket');
+UPDATE platform.tenant SET status = 'Suspended' WHERE id = '$T2';   -- US-015: store B is read-only (the E2E user is only a cashier there)
 INSERT INTO platform.branch (tenant_id, id, code, name) VALUES ('$T1', gen_random_uuid(), 'B1', 'مرکزی');
 INSERT INTO iam.approval_request (tenant_id, id, action, resource_type, resource_id, scope_type, condition, value, limit_value, reason, binding_hash, requested_by, expires_at)
   VALUES ('$T1', '$APPROVAL', 'pos.discount.apply', 'SaleLine', 'sale-e2e/1', 'Tenant', 'amount-limit', '20', '0', 'مشتری ثابت', sha256('e2e'), gen_random_uuid(), now() + interval '30 minutes');

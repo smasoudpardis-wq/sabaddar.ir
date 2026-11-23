@@ -33,6 +33,8 @@ export const MESSAGES: Record<string, string> = {
   'pin-not-set': 'هنوز PIN تعیین نکرده‌اید.',
   // D09 §10.1: «سقف پلن شما ({مورد}) پر شده است.» — action: upgrade the plan
   'entitlement-exceeded': 'سقف پلن شما پر شده است. برای افزودن بیشتر، پلن را ارتقا دهید.',
+  // D09 §10.1: «حساب فروشگاه در حالت فقط‌خواندنی است.» — action: contact support or renew
+  'tenant-read-only': 'حساب فروشگاه در حالت فقط‌خواندنی است. برای تمدید یا رفع تعلیق با پشتیبانی تماس بگیرید.',
   'entitlement-exceeded:branches': 'سقف پلن شما (شعبه) پر شده است. برای افزودن بیشتر، پلن را ارتقا دهید.',
   'entitlement-exceeded:registers': 'سقف پلن شما (صندوق) پر شده است. برای افزودن بیشتر، پلن را ارتقا دهید.',
   'entitlement-exceeded:users': 'سقف پلن شما (کاربر) پر شده است. برای افزودن بیشتر، پلن را ارتقا دهید.',

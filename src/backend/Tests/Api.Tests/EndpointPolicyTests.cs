@@ -21,7 +21,7 @@ public sealed class EndpointPolicyTests : IClassFixture<ApiFactory>
 
     public EndpointPolicyTests(ApiFactory factory) => _factory = factory;
 
-    private sealed record Operation(string OperationId, string Method, string Path, string? Permission);
+    private sealed record Operation(string OperationId, string Method, string Path, string? Permission, bool AllowedWhenReadOnly);
 
     private static List<Operation> D07()
     {
@@ -66,6 +66,12 @@ public sealed class EndpointPolicyTests : IClassFixture<ApiFactory>
                 else if (declared != op.Permission)
                 {
                     problems.Add($"{method} {path} ({op.OperationId}): policy '{declared}' but D07 x-permission '{op.Permission}'");
+                }
+
+                bool readOnlyOk = e.Metadata.GetMetadata<AllowedWhenReadOnlyAttribute>() is not null;
+                if (op is not null && method != "GET" && readOnlyOk != op.AllowedWhenReadOnly)
+                {
+                    problems.Add($"{method} {path} ({op.OperationId}): AllowWhenReadOnly={readOnlyOk} but D07 x-allowed-when-read-only={op.AllowedWhenReadOnly} (TEN-004)");
                 }
             }
         }

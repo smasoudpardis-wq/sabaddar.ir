@@ -97,6 +97,8 @@ try {
   check('E14', 'select store as Cashier with password only → works', (await page.getByTestId('active-tenant').textContent()).includes('فروشگاه ب'));
   await page.getByTestId('plan').waitFor();
   check('L01', 'the home page shows the plan, the trial end and the caps (US-014)', /آزمایشی.*پایان دوره آزمایشی.*۲ شعبه/.test(await page.getByTestId('plan').textContent()));
+  await page.getByTestId('read-only-banner').waitFor();
+  check('R01', 'a suspended store opens read-only with the D09 explanation (US-015)', (await page.getByTestId('read-only-banner').textContent()).includes('فقط‌خواندنی'));
 
   // E15–E16 TenantOwner role without MFA → the API refuses (AT-290)
   const t1Direct = await post('/bff/active-tenant', { tenantId: T1 }, { 'x-csrf-token': token });

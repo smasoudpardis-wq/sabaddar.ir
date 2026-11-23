@@ -17,6 +17,7 @@ builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(connectionString));
 builder.Services.AddSingleton<IUnitOfWork, PostgresUnitOfWork>();
 builder.Services.AddSingleton<IUserDirectory, PostgresUserDirectory>();
 builder.Services.AddSingleton<ITenantProfileQuery, PostgresTenantProfileQuery>();
+builder.Services.AddSingleton<ITenantReadOnlyQuery, PostgresTenantReadOnlyQuery>();
 builder.Services.AddSingleton<IIdempotencyStore, PostgresIdempotencyStore>();
 builder.Services.AddSingleton<IOutbox>(_ => new PostgresOutbox());
 builder.Services.AddSingleton<ITenantRegistration, PostgresTenantRegistration>();
@@ -67,7 +68,8 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
 // Default Deny (IAM-006): every endpoint below declares RequirePermission / RequireTenantMember / AllowAnyAuthenticated,
 // equal to its x-permission in D07 (EndpointPolicyTests); one that does not is refused by DefaultDenyFilter.
 RouteGroupBuilder v1 = app.MapGroup("/api/v1").RequireAuthorization(ServiceCollectionExtensions.MerchantPolicy)
-    .AddEndpointFilter<DefaultDenyFilter>();
+    .AddEndpointFilter<DefaultDenyFilter>()
+    .AddEndpointFilter<ReadOnlyTenantFilter>();   // TEN-004: a read-only tenant writes only x-allowed-when-read-only
 
 // getMe (D07). Effective permissions of the active tenant (US-025); MFA state from the token (US-022).
 v1.MapGet("/me", (RequestContext ctx) => Results.Ok(new
@@ -112,7 +114,8 @@ v1.MapPost("/me/active-tenant", async (SelectTenant body, RequestContext ctx, IU
             return 0;
         }, ct);
         return Results.NoContent();
-    }).AllowAnyAuthenticated();
+    }).AllowAnyAuthenticated()
+    .AllowWhenReadOnly();
 
 // getMyTenant (D07): tenant-scoped, read through RLS.
 v1.MapGet("/tenants/me", async (RequestContext ctx, ITenantProfileQuery query, HttpContext http, CancellationToken ct) =>
@@ -337,7 +340,8 @@ v1.MapDelete("/terminals/{terminalId:guid}", async (Guid terminalId, RequestCont
             await Audit(http, s, ActorOf(ctx, http), new AuditEntry("platform.terminal.revoked", "Terminal", terminalId.ToString(), Details: new { t.BranchId }), c);
             return Results.NoContent();
         }, ct))
-    .RequirePermission(Permissions.TerminalsManage);
+    .RequirePermission(Permissions.TerminalsManage)
+    .AllowWhenReadOnly();
 
 // ---------------- US-026: on-the-spot approvals (IAM-007, D08 F-14, SoD-01, D-61)
 object ApprovalJson(ApprovalView a) => new
@@ -542,7 +546,8 @@ v1.MapPost("/me/pin/verify", async (SetPin body, RequestContext ctx, IUnitOfWork
         return check == PinCheck.Ok ? Results.NoContent() : PinProblem(http, check, left);
     })
     .RequireTenantMember()
-    .AddEndpointFilter<RequireTerminalFilter>();
+    .AddEndpointFilter<RequireTerminalFilter>()
+    .AllowWhenReadOnly();
 
 // listRoles: the system roles with their stable ids and permissions (custom roles: later story).
 v1.MapGet("/roles", () => Results.Ok(RoleCatalog.Roles.Select(r => new
@@ -628,6 +633,12 @@ v1.MapPost("/invitations/{token}/accept", async (string token, RequestContext ct
         if (token.Length is < 32 or > 64 || await users.FindInvitationTenantAsync(token, ct) is not { } tenant)
         {
             return Problems.NotFound(http); // unknown, used, revoked and expired look the same
+        }
+
+        // TEN-004: the tenant comes from the invitation, not from a header, so the read-only filter cannot see it
+        if (await http.RequestServices.GetRequiredService<ITenantReadOnlyQuery>().ReasonAsync(tenant, ct) is { } readOnly)
+        {
+            return Problems.TenantReadOnly(http, readOnly);
         }
 
         var user = await directory.EnsureUserAsync(ctx.Issuer!, ctx.Subject!, ctx.TokenName ?? "کاربر", ct);
@@ -729,7 +740,8 @@ v1.MapDelete("/users/{userId:guid}/role-assignments/{assignmentId:guid}", async 
         RequestContextMiddleware.ForgetMemberships(cache, new UserId(userId));
         return result;
     })
-    .RequirePermission(Permissions.UsersManage);
+    .RequirePermission(Permissions.UsersManage)
+    .AllowWhenReadOnly();
 
 await app.RunAsync();
 

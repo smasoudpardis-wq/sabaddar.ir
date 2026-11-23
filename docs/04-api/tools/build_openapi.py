@@ -25,6 +25,8 @@ def t(x):
         return obj(**x)
     if isinstance(x, tuple) and x[0] == "enum":
         return {"type": "string", "enum": list(x[1])}
+    if isinstance(x, tuple) and x[0] == "enum?":
+        return {"type": ["string", "null"], "enum": list(x[1]) + [None]}
     if isinstance(x, tuple) and x[0] == "desc":
         s = t(x[1]); s["description"] = x[2]; return s
     if isinstance(x, list):
@@ -129,7 +131,9 @@ schema("Tenant", id="uuid", legalName="str", industryCode="str", timeZone="str",
        pricingMode=("enum", ["TaxExclusive", "TaxInclusive"]),
        status=("enum", ["Trial", "Active", "Suspended", "Closed"]), version="int",
        plan=("desc", "str", "Subscription plan code (TEN-003, US-014), e.g. Trial, Basic, Pro, Enterprise"),
-       trialEndsAt="dt?", entitlements="#Entitlements")
+       trialEndsAt="dt?", entitlements="#Entitlements",
+       readOnlyReason=("desc", ("enum?", ["suspended", "closed", "trial-expired"]),
+                       "Set while the store is read-only (TEN-004): writes answer 403 tenant-read-only except x-allowed-when-read-only"))
 schema("Entitlements", maxBranches=("desc", "int?", "null = unlimited"), maxRegisters=("desc", "int?", "null = unlimited"),
        maxUsers=("desc", "int?", "null = unlimited; active members plus open invitations count"))
 schema("TenantSetup", complete="bool", steps=[{"name": ("enum", ["branch-and-register", "warehouse", "chart-of-accounts", "fiscal-periods"]), "complete": "bool"}])
@@ -500,7 +504,7 @@ ERROR_CATALOG = {
     "mfa-required": (403, "IAM-003"),
     "step-up-required": (403, "ABAC-05"),
     "entitlement-exceeded": (403, "TEN-003"),
-    "tenant-read-only": (403, "Suspended tenant (TEN-004)"),
+    "tenant-read-only": (403, "Suspended, closed or trial-expired tenant: writes refused except x-allowed-when-read-only (TEN-004)"),
     "terminal-not-registered": (403, "ABAC-04"),
     "qr-expired": (401, "Customer QR expired or already used (CUS-005)"),
     "invalid-qr": (401, "Wrong audience/signature"),
@@ -542,6 +546,15 @@ SEC = {
     "platform": [{"platformBearer": []}],
     "integration": [{"integrationKey": []}],
     "public": [],
+}
+
+
+# TEN-004 / US-015: a suspended or trial-expired tenant is read-only. Every write is refused with 403 tenant-read-only
+# EXCEPT these: reads stay open anyway; export, debt collection and the tax queue continue (TEN-004); access can still
+# be reduced (revoke a device, remove a role) and the register unlocked to read; support can be let in to help.
+READ_ONLY_ALLOWED = {
+    "selectActiveTenant", "verifyMyPin", "revokeTerminal", "removeRoleAssignment", "createExport",
+    "recordCollection", "portalPayBalance", "portalExportMyData", "retryTaxInvoice", "decideSupportAccess",
 }
 
 
@@ -624,6 +637,8 @@ def op(method, path, op_id, tagname, summary, *, perm=None, scope=None, idem=Fal
         o["x-requirements"] = list(reqs)
     if audited:
         o["x-audited"] = True
+    if op_id in READ_ONLY_ALLOWED:
+        o["x-allowed-when-read-only"] = True
     if approval:
         o["x-approval"] = approval
     if rate:
@@ -1183,7 +1198,8 @@ if __name__ == "__main__":
               "# RetailCloud D07 — OpenAPI 3.1 (Draft 0.1.0)\n")
     OUT.write_text(header + yaml.safe_dump(spec, allow_unicode=True, sort_keys=False, width=120), encoding="utf-8")
     # Manifest for the API's default-deny test (EndpointPolicyTests): operation -> method, path, permission.
-    manifest = [{"operationId": o["operationId"], "method": m.upper(), "path": p, "permission": o.get("x-permission")}
+    manifest = [{"operationId": o["operationId"], "method": m.upper(), "path": p, "permission": o.get("x-permission"),
+                 "allowedWhenReadOnly": bool(o.get("x-allowed-when-read-only"))}
                 for p, item in spec["paths"].items() for m, o in item.items()]
     (OUT.parent / "D07-operations.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     n_ops = sum(len(v) for v in PATHS.values())

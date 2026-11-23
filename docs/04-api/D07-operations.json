@@ -3,984 +3,1148 @@
   "operationId": "registerTenant",
   "method": "POST",
   "path": "/tenants",
-  "permission": "authenticated"
+  "permission": "authenticated",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "getTenantSetup",
   "method": "GET",
   "path": "/tenants/me/setup",
-  "permission": "tenant.member"
+  "permission": "tenant.member",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "getMyTenant",
   "method": "GET",
   "path": "/tenants/me",
-  "permission": "tenant.member"
+  "permission": "tenant.member",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "updateMyTenant",
   "method": "PATCH",
   "path": "/tenants/me",
-  "permission": "tenant.settings.manage"
+  "permission": "tenant.settings.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "listBranches",
   "method": "GET",
   "path": "/branches",
-  "permission": "tenant.member"
+  "permission": "tenant.member",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "createBranch",
   "method": "POST",
   "path": "/branches",
-  "permission": "tenant.settings.manage"
+  "permission": "tenant.settings.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "createRegister",
   "method": "POST",
   "path": "/branches/{branchId}/registers",
-  "permission": "tenant.settings.manage"
+  "permission": "tenant.settings.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "createPairingCode",
   "method": "POST",
   "path": "/branches/{branchId}/pairing-codes",
-  "permission": "terminals.manage"
+  "permission": "terminals.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "pairTerminal",
   "method": "POST",
   "path": "/terminals/pair",
-  "permission": "tenant.member"
+  "permission": "tenant.member",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "listTerminals",
   "method": "GET",
   "path": "/terminals",
-  "permission": "terminals.manage"
+  "permission": "terminals.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "revokeTerminal",
   "method": "DELETE",
   "path": "/terminals/{terminalId}",
-  "permission": "terminals.manage"
+  "permission": "terminals.manage",
+  "allowedWhenReadOnly": true
  },
  {
   "operationId": "createExport",
   "method": "POST",
   "path": "/exports",
-  "permission": "data.export"
+  "permission": "data.export",
+  "allowedWhenReadOnly": true
  },
  {
   "operationId": "getExport",
   "method": "GET",
   "path": "/exports/{exportId}",
-  "permission": "data.export"
+  "permission": "data.export",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "getMe",
   "method": "GET",
   "path": "/me",
-  "permission": "authenticated"
+  "permission": "authenticated",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "selectActiveTenant",
   "method": "POST",
   "path": "/me/active-tenant",
-  "permission": "authenticated"
+  "permission": "authenticated",
+  "allowedWhenReadOnly": true
  },
  {
   "operationId": "listUsers",
   "method": "GET",
   "path": "/users",
-  "permission": "iam.users.manage"
+  "permission": "iam.users.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "inviteUser",
   "method": "POST",
   "path": "/users/invitations",
-  "permission": "iam.users.manage"
+  "permission": "iam.users.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "acceptInvitation",
   "method": "POST",
   "path": "/invitations/{token}/accept",
-  "permission": "authenticated"
+  "permission": "authenticated",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "updateUser",
   "method": "PATCH",
   "path": "/users/{userId}",
-  "permission": "iam.users.manage"
+  "permission": "iam.users.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "addRoleAssignment",
   "method": "POST",
   "path": "/users/{userId}/role-assignments",
-  "permission": "iam.users.manage"
+  "permission": "iam.users.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "removeRoleAssignment",
   "method": "DELETE",
   "path": "/users/{userId}/role-assignments/{assignmentId}",
-  "permission": "iam.users.manage"
+  "permission": "iam.users.manage",
+  "allowedWhenReadOnly": true
  },
  {
   "operationId": "listRoles",
   "method": "GET",
   "path": "/roles",
-  "permission": "iam.users.manage"
+  "permission": "iam.users.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "setMyPin",
   "method": "PUT",
   "path": "/me/pin",
-  "permission": "tenant.member"
+  "permission": "tenant.member",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "verifyMyPin",
   "method": "POST",
   "path": "/me/pin/verify",
-  "permission": "tenant.member"
+  "permission": "tenant.member",
+  "allowedWhenReadOnly": true
  },
  {
   "operationId": "listApprovals",
   "method": "GET",
   "path": "/approvals",
-  "permission": "tenant.member"
+  "permission": "tenant.member",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "getApproval",
   "method": "GET",
   "path": "/approvals/{approvalId}",
-  "permission": "tenant.member"
+  "permission": "tenant.member",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "decideApproval",
   "method": "POST",
   "path": "/approvals/{approvalId}/decision",
-  "permission": "tenant.member"
+  "permission": "tenant.member",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "listSupportAccessRequests",
   "method": "GET",
   "path": "/support-access-requests",
-  "permission": "tenant.settings.manage"
+  "permission": "tenant.settings.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "decideSupportAccess",
   "method": "POST",
   "path": "/support-access-requests/{requestId}/decision",
-  "permission": "tenant.settings.manage"
+  "permission": "tenant.settings.manage",
+  "allowedWhenReadOnly": true
  },
  {
   "operationId": "resolveBarcode",
   "method": "POST",
   "path": "/catalog/barcodes/resolve",
-  "permission": "catalog.product.manage"
+  "permission": "catalog.product.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "listProducts",
   "method": "GET",
   "path": "/products",
-  "permission": "tenant.member"
+  "permission": "tenant.member",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "createProduct",
   "method": "POST",
   "path": "/products",
-  "permission": "catalog.product.manage"
+  "permission": "catalog.product.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "getProduct",
   "method": "GET",
   "path": "/products/{productId}",
-  "permission": "tenant.member"
+  "permission": "tenant.member",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "updateProduct",
   "method": "PATCH",
   "path": "/products/{productId}",
-  "permission": "catalog.product.manage"
+  "permission": "catalog.product.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "addVariant",
   "method": "POST",
   "path": "/products/{productId}/variants",
-  "permission": "catalog.product.manage"
+  "permission": "catalog.product.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "addBarcode",
   "method": "POST",
   "path": "/products/{productId}/variants/{variantId}/barcodes",
-  "permission": "catalog.product.manage"
+  "permission": "catalog.product.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "removeBarcode",
   "method": "DELETE",
   "path": "/products/{productId}/variants/{variantId}/barcodes/{barcodeId}",
-  "permission": "catalog.product.manage"
+  "permission": "catalog.product.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "mergeProduct",
   "method": "POST",
   "path": "/products/{productId}/merge",
-  "permission": "catalog.product.manage"
+  "permission": "catalog.product.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "suggestToGlobalCatalog",
   "method": "POST",
   "path": "/products/{productId}/catalog-suggestions",
-  "permission": "catalog.product.manage"
+  "permission": "catalog.product.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "listPriceLists",
   "method": "GET",
   "path": "/price-lists",
-  "permission": "tenant.member"
+  "permission": "tenant.member",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "setPrices",
   "method": "POST",
   "path": "/price-lists/{priceListId}/prices",
-  "permission": "catalog.price.manage"
+  "permission": "catalog.price.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "listDiscountRules",
   "method": "GET",
   "path": "/discount-rules",
-  "permission": "tenant.member"
+  "permission": "tenant.member",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "createDiscountRule",
   "method": "POST",
   "path": "/discount-rules",
-  "permission": "catalog.price.manage"
+  "permission": "catalog.price.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "setWeightedBarcodeProfiles",
   "method": "PUT",
   "path": "/weighted-barcode-profiles",
-  "permission": "tenant.settings.manage"
+  "permission": "tenant.settings.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "listWarehouses",
   "method": "GET",
   "path": "/warehouses",
-  "permission": "tenant.member"
+  "permission": "tenant.member",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "createWarehouse",
   "method": "POST",
   "path": "/warehouses",
-  "permission": "tenant.settings.manage"
+  "permission": "tenant.settings.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "postGoodsReceipt",
   "method": "POST",
   "path": "/inventory/receipts",
-  "permission": "inventory.receipt.create"
+  "permission": "inventory.receipt.create",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "postAdjustment",
   "method": "POST",
   "path": "/inventory/adjustments",
-  "permission": "inventory.adjust"
+  "permission": "inventory.adjust",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "postTransfer",
   "method": "POST",
   "path": "/inventory/transfers",
-  "permission": "inventory.transfer"
+  "permission": "inventory.transfer",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "createCount",
   "method": "POST",
   "path": "/inventory/counts",
-  "permission": "inventory.count"
+  "permission": "inventory.count",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "addCountEntries",
   "method": "POST",
   "path": "/inventory/counts/{countId}/entries",
-  "permission": "inventory.count"
+  "permission": "inventory.count",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "getCountResult",
   "method": "GET",
   "path": "/inventory/counts/{countId}/result",
-  "permission": "inventory.count"
+  "permission": "inventory.count",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "confirmCount",
   "method": "POST",
   "path": "/inventory/counts/{countId}/confirm",
-  "permission": "inventory.adjust"
+  "permission": "inventory.adjust",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "listStockBalances",
   "method": "GET",
   "path": "/inventory/balances",
-  "permission": "tenant.member"
+  "permission": "tenant.member",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "listStockMovements",
   "method": "GET",
   "path": "/inventory/movements",
-  "permission": "reports.view"
+  "permission": "reports.view",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "listSuppliers",
   "method": "GET",
   "path": "/suppliers",
-  "permission": "tenant.member"
+  "permission": "tenant.member",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "createSupplier",
   "method": "POST",
   "path": "/suppliers",
-  "permission": "inventory.receipt.create"
+  "permission": "inventory.receipt.create",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "paySupplier",
   "method": "POST",
   "path": "/suppliers/{supplierId}/payments",
-  "permission": "accounting.journal.post"
+  "permission": "accounting.journal.post",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "postPurchaseReturn",
   "method": "POST",
   "path": "/purchase-returns",
-  "permission": "inventory.receipt.create"
+  "permission": "inventory.receipt.create",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "openShift",
   "method": "POST",
   "path": "/shifts",
-  "permission": "shift.manage"
+  "permission": "shift.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "getShift",
   "method": "GET",
   "path": "/shifts/{shiftId}",
-  "permission": "shift.manage"
+  "permission": "shift.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "recordCashMovement",
   "method": "POST",
   "path": "/shifts/{shiftId}/cash-movements",
-  "permission": "shift.manage"
+  "permission": "shift.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "closeShift",
   "method": "POST",
   "path": "/shifts/{shiftId}/close",
-  "permission": "shift.manage"
+  "permission": "shift.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "approveShiftVariance",
   "method": "POST",
   "path": "/shifts/{shiftId}/variance-approval",
-  "permission": "shift.supervise"
+  "permission": "shift.supervise",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "createSale",
   "method": "POST",
   "path": "/pos/sales",
-  "permission": "pos.sell"
+  "permission": "pos.sell",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "getSale",
   "method": "GET",
   "path": "/pos/sales/{saleId}",
-  "permission": "pos.sell"
+  "permission": "pos.sell",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "addSaleLine",
   "method": "POST",
   "path": "/pos/sales/{saleId}/lines",
-  "permission": "pos.sell"
+  "permission": "pos.sell",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "updateSaleLine",
   "method": "PATCH",
   "path": "/pos/sales/{saleId}/lines/{lineNo}",
-  "permission": "pos.sell"
+  "permission": "pos.sell",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "removeSaleLine",
   "method": "DELETE",
   "path": "/pos/sales/{saleId}/lines/{lineNo}",
-  "permission": "pos.sell"
+  "permission": "pos.sell",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "applyDiscount",
   "method": "POST",
   "path": "/pos/sales/{saleId}/discounts",
-  "permission": "pos.discount.apply"
+  "permission": "pos.discount.apply",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "attachCustomer",
   "method": "POST",
   "path": "/pos/sales/{saleId}/customer",
-  "permission": "customers.lookup"
+  "permission": "customers.lookup",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "holdSale",
   "method": "POST",
   "path": "/pos/sales/{saleId}/hold",
-  "permission": "pos.sell"
+  "permission": "pos.sell",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "resumeSale",
   "method": "POST",
   "path": "/pos/sales/{saleId}/resume",
-  "permission": "pos.sell"
+  "permission": "pos.sell",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "cancelSale",
   "method": "POST",
   "path": "/pos/sales/{saleId}/cancel",
-  "permission": "pos.sale.cancel"
+  "permission": "pos.sale.cancel",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "recordTender",
   "method": "POST",
   "path": "/pos/sales/{saleId}/tenders",
-  "permission": "pos.sell"
+  "permission": "pos.sell",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "finalizeSale",
   "method": "POST",
   "path": "/sales/{saleId}/finalize",
-  "permission": "pos.sell"
+  "permission": "pos.sell",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "listSales",
   "method": "GET",
   "path": "/sales",
-  "permission": "pos.sell"
+  "permission": "pos.sell",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "createReturn",
   "method": "POST",
   "path": "/sales/{saleId}/returns",
-  "permission": "sales.return.create"
+  "permission": "sales.return.create",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "listReturns",
   "method": "GET",
   "path": "/sales/{saleId}/returns",
-  "permission": "sales.return.create"
+  "permission": "sales.return.create",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "deliverReceipt",
   "method": "POST",
   "path": "/sales/{saleId}/receipt-deliveries",
-  "permission": "pos.sell"
+  "permission": "pos.sell",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "listSaleNotifications",
   "method": "GET",
   "path": "/sales/{saleId}/notifications",
-  "permission": "pos.sell"
+  "permission": "pos.sell",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "createPaymentIntent",
   "method": "POST",
   "path": "/payments/intents",
-  "permission": "pos.sell"
+  "permission": "pos.sell",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "getPaymentIntent",
   "method": "GET",
   "path": "/payments/intents/{intentId}",
-  "permission": "pos.sell"
+  "permission": "pos.sell",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "pspCallback",
   "method": "POST",
   "path": "/callbacks/psp/{gateway}/{intentId}",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "listGatewayConfigs",
   "method": "GET",
   "path": "/payment-gateways",
-  "permission": "integrations.manage"
+  "permission": "integrations.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "createGatewayConfig",
   "method": "POST",
   "path": "/payment-gateways",
-  "permission": "integrations.manage"
+  "permission": "integrations.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "completeRefundManually",
   "method": "POST",
   "path": "/refunds/{refundId}/manual-completion",
-  "permission": "payments.refund"
+  "permission": "payments.refund",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "importSettlement",
   "method": "POST",
   "path": "/settlements/imports",
-  "permission": "accounting.read"
+  "permission": "accounting.read",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "listAccounts",
   "method": "GET",
   "path": "/accounting/accounts",
-  "permission": "accounting.read"
+  "permission": "accounting.read",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "createAccount",
   "method": "POST",
   "path": "/accounting/accounts",
-  "permission": "accounting.journal.post"
+  "permission": "accounting.journal.post",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "setAccountMappings",
   "method": "PUT",
   "path": "/accounting/account-mappings",
-  "permission": "accounting.journal.post"
+  "permission": "accounting.journal.post",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "listJournals",
   "method": "GET",
   "path": "/accounting/journals",
-  "permission": "accounting.read"
+  "permission": "accounting.read",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "createJournalDraft",
   "method": "POST",
   "path": "/accounting/journals",
-  "permission": "accounting.journal.post"
+  "permission": "accounting.journal.post",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "postJournal",
   "method": "POST",
   "path": "/accounting/journals/{journalId}/post",
-  "permission": "accounting.journal.post"
+  "permission": "accounting.journal.post",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "reverseJournal",
   "method": "POST",
   "path": "/accounting/journals/{journalId}/reverse",
-  "permission": "accounting.journal.post"
+  "permission": "accounting.journal.post",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "listPeriods",
   "method": "GET",
   "path": "/accounting/periods",
-  "permission": "accounting.read"
+  "permission": "accounting.read",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "closePeriod",
   "method": "POST",
   "path": "/accounting/periods/{periodId}/close",
-  "permission": "accounting.period.close"
+  "permission": "accounting.period.close",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "getTrialBalance",
   "method": "GET",
   "path": "/accounting/reports/trial-balance",
-  "permission": "accounting.read"
+  "permission": "accounting.read",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "getLedger",
   "method": "GET",
   "path": "/accounting/reports/ledger/{accountId}",
-  "permission": "accounting.read"
+  "permission": "accounting.read",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "createCreditAccount",
   "method": "POST",
   "path": "/credit-accounts",
-  "permission": "credit.account.manage"
+  "permission": "credit.account.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "listCreditAccounts",
   "method": "GET",
   "path": "/credit-accounts",
-  "permission": "credit.account.manage"
+  "permission": "credit.account.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "getCreditAccount",
   "method": "GET",
   "path": "/credit-accounts/{creditAccountId}",
-  "permission": "credit.account.manage"
+  "permission": "credit.account.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "updateCreditAccount",
   "method": "PATCH",
   "path": "/credit-accounts/{creditAccountId}",
-  "permission": "credit.account.manage"
+  "permission": "credit.account.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "getStatement",
   "method": "GET",
   "path": "/credit-accounts/{creditAccountId}/statement",
-  "permission": "receivables.collect"
+  "permission": "receivables.collect",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "recordCollection",
   "method": "POST",
   "path": "/receivables/collections",
-  "permission": "receivables.collect"
+  "permission": "receivables.collect",
+  "allowedWhenReadOnly": true
  },
  {
   "operationId": "writeOff",
   "method": "POST",
   "path": "/receivables/write-offs",
-  "permission": "receivables.writeoff"
+  "permission": "receivables.writeoff",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "getAging",
   "method": "GET",
   "path": "/receivables/aging",
-  "permission": "accounting.read"
+  "permission": "accounting.read",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "identifyCustomer",
   "method": "POST",
   "path": "/customers/identify",
-  "permission": "customers.lookup"
+  "permission": "customers.lookup",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "startCustomerOtp",
   "method": "POST",
   "path": "/customers/otp-challenges",
-  "permission": "customers.lookup"
+  "permission": "customers.lookup",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "linkMembership",
   "method": "POST",
   "path": "/customer-memberships/link",
-  "permission": "customers.lookup"
+  "permission": "customers.lookup",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "getTenantCustomer",
   "method": "GET",
   "path": "/customers/{tenantCustomerId}",
-  "permission": "customers.lookup"
+  "permission": "customers.lookup",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "createStoreInvite",
   "method": "POST",
   "path": "/store-invites",
-  "permission": "tenant.settings.manage"
+  "permission": "tenant.settings.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "portalStartOtp",
   "method": "POST",
   "path": "/c/auth/otp",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "portalVerifyOtp",
   "method": "POST",
   "path": "/c/auth/otp/verify",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "portalGetMe",
   "method": "GET",
   "path": "/c/me",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "portalRotatePublicCode",
   "method": "POST",
   "path": "/c/me/public-code/rotate",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "portalIssueQr",
   "method": "POST",
   "path": "/c/me/qr",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "portalGetInvite",
   "method": "GET",
   "path": "/c/join/{inviteToken}",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "portalJoinStore",
   "method": "POST",
   "path": "/c/join/{inviteToken}",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "portalAcceptJoinRequest",
   "method": "POST",
   "path": "/c/join-requests/{joinRequestId}/accept",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "portalListMemberships",
   "method": "GET",
   "path": "/c/memberships",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "portalLeaveStore",
   "method": "DELETE",
   "path": "/c/memberships/{membershipId}",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "portalUpdateConsents",
   "method": "PUT",
   "path": "/c/memberships/{membershipId}/consents",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "portalAccessHistory",
   "method": "GET",
   "path": "/c/memberships/{membershipId}/access-history",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "portalListReceipts",
   "method": "GET",
   "path": "/c/receipts",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "portalGetCredit",
   "method": "GET",
   "path": "/c/memberships/{membershipId}/credit",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "portalPayBalance",
   "method": "POST",
   "path": "/c/payments/intents",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": true
  },
  {
   "operationId": "portalBaleLinkToken",
   "method": "POST",
   "path": "/c/bale/link-token",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "portalExportMyData",
   "method": "POST",
   "path": "/c/data-export",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": true
  },
  {
   "operationId": "portalRequestDeletion",
   "method": "POST",
   "path": "/c/account/deletion",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "getPublicReceipt",
   "method": "GET",
   "path": "/r/{token}",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "baleWebhook",
   "method": "POST",
   "path": "/integrations/bale/webhook/{secretPath}",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "getTaxProfile",
   "method": "GET",
   "path": "/tax/profile",
-  "permission": "tax.manage"
+  "permission": "tax.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "updateTaxProfile",
   "method": "PUT",
   "path": "/tax/profile",
-  "permission": "tax.manage"
+  "permission": "tax.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "generateSigningKey",
   "method": "POST",
   "path": "/tax/keys",
-  "permission": "tax.manage"
+  "permission": "tax.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "getSigningKeyCsr",
   "method": "GET",
   "path": "/tax/keys/{keyId}/csr",
-  "permission": "tax.manage"
+  "permission": "tax.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "activateSigningKey",
   "method": "POST",
   "path": "/tax/keys/{keyId}/activate",
-  "permission": "tax.manage"
+  "permission": "tax.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "testTaxConnection",
   "method": "POST",
   "path": "/tax/connection-test",
-  "permission": "tax.manage"
+  "permission": "tax.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "listTaxInvoices",
   "method": "GET",
   "path": "/tax/invoices",
-  "permission": "tax.manage"
+  "permission": "tax.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "getTaxInvoice",
   "method": "GET",
   "path": "/tax/invoices/{taxInvoiceId}",
-  "permission": "tax.manage"
+  "permission": "tax.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "retryTaxInvoice",
   "method": "POST",
   "path": "/tax/invoices/{taxInvoiceId}/retry",
-  "permission": "tax.manage"
+  "permission": "tax.manage",
+  "allowedWhenReadOnly": true
  },
  {
   "operationId": "getTaxDashboard",
   "method": "GET",
   "path": "/tax/dashboard",
-  "permission": "tax.manage"
+  "permission": "tax.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "getReceiptTemplate",
   "method": "GET",
   "path": "/templates/receipt",
-  "permission": "tenant.member"
+  "permission": "tenant.member",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "updateReceiptTemplate",
   "method": "PUT",
   "path": "/templates/receipt",
-  "permission": "templates.receipt.manage"
+  "permission": "templates.receipt.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "createIntegrationKey",
   "method": "POST",
   "path": "/integrations/keys",
-  "permission": "integrations.manage"
+  "permission": "integrations.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "revokeIntegrationKey",
   "method": "DELETE",
   "path": "/integrations/keys/{keyId}",
-  "permission": "integrations.manage"
+  "permission": "integrations.manage",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "reportSalesDaily",
   "method": "GET",
   "path": "/reports/sales-daily",
-  "permission": "reports.view"
+  "permission": "reports.view",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "reportStock",
   "method": "GET",
   "path": "/reports/stock",
-  "permission": "reports.view"
+  "permission": "reports.view",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "reportReturns",
   "method": "GET",
   "path": "/reports/returns",
-  "permission": "reports.view"
+  "permission": "reports.view",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "reportGrossProfit",
   "method": "GET",
   "path": "/reports/gross-profit",
-  "permission": "reports.view"
+  "permission": "reports.view",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "listAudit",
   "method": "GET",
   "path": "/audit",
-  "permission": "audit.view"
+  "permission": "audit.view",
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "partnerListProducts",
   "method": "GET",
   "path": "/partner/catalog/products",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "partnerListBalances",
   "method": "GET",
   "path": "/partner/inventory/balances",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "platformListTenants",
   "method": "GET",
   "path": "/platform/tenants",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "platformChangeTenantStatus",
   "method": "POST",
   "path": "/platform/tenants/{tenantId}/status",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "platformRequestSupportAccess",
   "method": "POST",
   "path": "/platform/tenants/{tenantId}/support-access-requests",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "platformListTaxPolicies",
   "method": "GET",
   "path": "/platform/tax-submission-policies",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "platformCreateTaxPolicy",
   "method": "POST",
   "path": "/platform/tax-submission-policies",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "platformListRetention",
   "method": "GET",
   "path": "/platform/retention-policies",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "platformSetRetention",
   "method": "PUT",
   "path": "/platform/retention-policies",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "platformListIndustries",
   "method": "GET",
   "path": "/platform/industry-profiles",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "platformUpdateIndustry",
   "method": "PUT",
   "path": "/platform/industry-profiles/{code}",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "platformListCatalogSuggestions",
   "method": "GET",
   "path": "/platform/catalog/suggestions",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  },
  {
   "operationId": "platformDecideCatalogSuggestion",
   "method": "POST",
   "path": "/platform/catalog/suggestions/{suggestionId}/decision",
-  "permission": null
+  "permission": null,
+  "allowedWhenReadOnly": false
  }
 ]

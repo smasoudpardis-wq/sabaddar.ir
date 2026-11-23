@@ -183,9 +183,26 @@ CREATE TRIGGER branch_entitlement AFTER INSERT OR UPDATE OF status ON platform.b
 CREATE TRIGGER register_entitlement AFTER INSERT ON platform.register
   FOR EACH ROW EXECUTE FUNCTION platform.enforce_entitlement('registers');
 
+-- TEN-004 / US-015: why the context tenant is read-only, or NULL when it is not. Suspended and closed tenants, and a
+-- trial whose end has passed, keep every row and can still read; the API refuses their writes (403 tenant-read-only).
+CREATE OR REPLACE FUNCTION platform.read_only_reason() RETURNS text
+LANGUAGE sql STABLE SET search_path = pg_catalog AS $$
+  SELECT CASE WHEN t.status = 'Suspended' THEN 'suspended'
+              WHEN t.status = 'Closed' THEN 'closed'
+              WHEN p.is_trial AND s.trial_ends_at <= now() THEN 'trial-expired' END
+  FROM platform.tenant t
+  LEFT JOIN platform.subscription s ON s.tenant_id = t.id
+  LEFT JOIN platform.plan p ON p.code = s.plan_code
+  WHERE t.id = core.current_tenant()
+$$;
+
 GRANT USAGE ON SCHEMA platform TO rc_app, rc_worker, rc_reporting;
 GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA platform TO rc_app;
 GRANT SELECT ON ALL TABLES IN SCHEMA platform TO rc_worker, rc_reporting;
 REVOKE INSERT, UPDATE ON platform.plan, platform.subscription FROM rc_app;   -- read-only for the application
-GRANT EXECUTE ON FUNCTION platform.entitlement_cap(text) TO rc_app, rc_worker;
+-- TEN-004: suspension is a platform decision, so the application may edit only the settings of TenantUpdate (D07),
+-- never status (a store could otherwise lift its own suspension).
+REVOKE UPDATE ON platform.tenant FROM rc_app;
+GRANT UPDATE (legal_name, time_zone, pricing_mode, version) ON platform.tenant TO rc_app;
+GRANT EXECUTE ON FUNCTION platform.entitlement_cap(text), platform.read_only_reason() TO rc_app, rc_worker;
 RESET ROLE;

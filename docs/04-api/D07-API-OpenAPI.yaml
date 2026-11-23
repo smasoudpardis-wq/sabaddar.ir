@@ -550,6 +550,7 @@ paths:
       x-requirements:
       - TEN-002.1
       x-audited: true
+      x-allowed-when-read-only: true
   /exports:
     post:
       operationId: createExport
@@ -594,6 +595,7 @@ paths:
       - TEN-005
       - RPT-003
       x-audited: true
+      x-allowed-when-read-only: true
   /exports/{exportId}:
     get:
       operationId: getExport
@@ -714,6 +716,7 @@ paths:
       - IAM-001
       - BR-001
       x-audited: true
+      x-allowed-when-read-only: true
   /users:
     get:
       operationId: listUsers
@@ -996,6 +999,7 @@ paths:
       x-requirements:
       - IAM-006
       x-audited: true
+      x-allowed-when-read-only: true
   /roles:
     get:
       operationId: listRoles
@@ -1111,6 +1115,7 @@ paths:
       - IAM-004
       - AUTH-08
       x-audited: true
+      x-allowed-when-read-only: true
   /approvals:
     get:
       operationId: listApprovals
@@ -1341,6 +1346,7 @@ paths:
       - IAM-008
       - SoD-05
       x-audited: true
+      x-allowed-when-read-only: true
   /catalog/barcodes/resolve:
     post:
       operationId: resolveBarcode
@@ -5266,6 +5272,7 @@ paths:
       - BR-084
       - UC-11
       x-audited: true
+      x-allowed-when-read-only: true
   /receivables/write-offs:
     post:
       operationId: writeOff
@@ -6206,6 +6213,7 @@ paths:
       x-requirements:
       - CRD-005
       x-audited: true
+      x-allowed-when-read-only: true
   /c/bale/link-token:
     post:
       operationId: portalBaleLinkToken
@@ -6262,6 +6270,7 @@ paths:
       x-requirements:
       - NFR-PRIV-003
       x-audited: true
+      x-allowed-when-read-only: true
   /c/account/deletion:
     post:
       operationId: portalRequestDeletion
@@ -6770,6 +6779,7 @@ paths:
       - BR-074
       - DI-071
       x-audited: true
+      x-allowed-when-read-only: true
   /tax/dashboard:
     get:
       operationId: getTaxDashboard
@@ -12162,6 +12172,16 @@ components:
           format: date-time
         entitlements:
           $ref: '#/components/schemas/Entitlements'
+        readOnlyReason:
+          type:
+          - string
+          - 'null'
+          enum:
+          - suspended
+          - closed
+          - trial-expired
+          - null
+          description: 'Set while the store is read-only (TEN-004): writes answer 403 tenant-read-only except x-allowed-when-read-only'
       required:
       - id
       - legalName
@@ -12174,6 +12194,7 @@ components:
       - plan
       - trialEndsAt
       - entitlements
+      - readOnlyReason
     TenantCustomer:
       type: object
       additionalProperties: false
@@ -12744,7 +12765,7 @@ x-error-catalog:
     meaning: TEN-003
   tenant-read-only:
     status: 403
-    meaning: Suspended tenant (TEN-004)
+    meaning: 'Suspended, closed or trial-expired tenant: writes refused except x-allowed-when-read-only (TEN-004)'
   terminal-not-registered:
     status: 403
     meaning: ABAC-04

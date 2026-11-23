@@ -43,6 +43,11 @@ public static class EndpointPolicies
     public static TBuilder AllowAnyAuthenticated<TBuilder>(this TBuilder builder) where TBuilder : IEndpointConventionBuilder =>
         builder.WithMetadata(new EndpointPolicyAttribute(Permissions.Authenticated));
 
+    /// <summary>TEN-004 / US-015: this write stays open while the tenant is read-only. Must equal D07
+    /// <c>x-allowed-when-read-only</c> (EndpointPolicyTests); every other write of a read-only tenant gets 403.</summary>
+    public static TBuilder AllowWhenReadOnly<TBuilder>(this TBuilder builder) where TBuilder : IEndpointConventionBuilder =>
+        builder.WithMetadata(new AllowedWhenReadOnlyAttribute());
+
     internal static IResult Forbidden(HttpContext http) =>
         Problems.Create(http, StatusCodes.Status403Forbidden, "forbidden", "Your role does not allow this operation");
 }
@@ -91,3 +96,33 @@ public sealed class RequireTerminalFilter : IEndpointFilter
     }
 }
 
+[AttributeUsage(AttributeTargets.Method | AttributeTargets.Class)]
+public sealed class AllowedWhenReadOnlyAttribute : Attribute;
+
+/// <summary>
+/// TEN-004 / US-015: a suspended, closed or trial-expired tenant can read everything but write only what is marked
+/// <see cref="EndpointPolicies.AllowWhenReadOnly{TBuilder}"/>. Runs for every /api/v1 endpoint; reads pass untouched.
+/// </summary>
+public sealed class ReadOnlyTenantFilter : IEndpointFilter
+{
+    public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(next);
+        HttpContext http = context.HttpContext;
+        if (HttpMethods.IsGet(http.Request.Method) || HttpMethods.IsHead(http.Request.Method) || HttpMethods.IsOptions(http.Request.Method)
+            || http.GetEndpoint()?.Metadata.GetMetadata<AllowedWhenReadOnlyAttribute>() is not null)
+        {
+            return await next(context);
+        }
+
+        RequestContext ctx = http.RequestServices.GetRequiredService<RequestContext>();
+        if (ctx.ActiveTenant is not { } tenant)
+        {
+            return await next(context);   // no tenant yet (sign-up) or a tenant from the URL, checked by that handler
+        }
+
+        string? reason = await http.RequestServices.GetRequiredService<ITenantReadOnlyQuery>().ReasonAsync(tenant, http.RequestAborted);
+        return reason is null ? await next(context) : Problems.TenantReadOnly(http, reason);
+    }
+}

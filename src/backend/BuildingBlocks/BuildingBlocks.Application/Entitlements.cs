@@ -11,3 +11,9 @@ public sealed class EntitlementExceededException(string resource, int? limit)
 
     public int? Limit { get; } = limit;
 }
+
+/// <summary>TEN-004: why a tenant is read-only (suspended, closed, trial-expired), or null when it may write.</summary>
+public interface ITenantReadOnlyQuery
+{
+    Task<string?> ReasonAsync(BuildingBlocks.Domain.TenantId tenant, CancellationToken cancellationToken);
+}
