@@ -28,6 +28,7 @@ builder.Services.AddSingleton<IExportJobs, PostgresExportJobs>();
 builder.Services.AddSingleton<ISupportAccess, PostgresSupportAccess>();
 builder.Services.AddSingleton<IProductCatalog, PostgresProductCatalog>();
 builder.Services.AddSingleton<IWeightedBarcodeProfiles, PostgresWeightedBarcodeProfiles>();
+builder.Services.AddSingleton<IPriceLists, PostgresPriceLists>();
 builder.Services.AddSingleton<IShifts, PostgresShifts>();
 builder.Services.AddSingleton<IJournals, PostgresJournals>();
 ObjectStorageOptions? storage = builder.Configuration.GetSection("Storage").Get<ObjectStorageOptions>();
@@ -757,7 +758,8 @@ object ProductJson(ProductView p) => new
     p.Id, p.Name, p.Brand, baseUnit = p.BaseUnit, p.TaxCode, taxRate = p.TaxRate, p.Status, p.Version,
     variants = p.Variants.Select(VariantJson),
 };
-object VariantJson(VariantView v) => new { v.Id, v.Sku, axisValues = v.AxisValues, v.Status, barcodes = v.Barcodes, unitPrice = (string?)null };
+object VariantJson(VariantView v) => new { v.Id, v.Sku, axisValues = v.AxisValues, v.Status, barcodes = v.Barcodes,
+    unitPrice = v.UnitPrice?.ToString(System.Globalization.CultureInfo.InvariantCulture) };
 
 IResult CatalogProblem(HttpContext http, CatalogOutcome outcome, Guid? conflictProduct) => outcome switch
 {
@@ -1075,7 +1077,22 @@ v1.MapPost("/catalog/barcodes/resolve", async (BarcodeResolveInput body, Request
         if (gs1) normalized["gtin14"] = gtin.Normalized14;
         if (isWeighted && result.match is not null)
         {
-            normalized["weighted"] = new { variantId = result.match.VariantId, value = result.label!.ValueText, valueType = result.label.Profile.ValueType.ToString() };
+            WeightedLabel l = result.label!;
+            var weightedJson = new Dictionary<string, object?>
+            {
+                ["variantId"] = result.match.VariantId, ["value"] = l.ValueText, ["valueType"] = l.Profile.ValueType.ToString(),
+            };
+            if (result.match.UnitPrice is long unit and > 0)
+            {
+                // CAT-007.1: a price label is the reference amount; a weight label is weight x unit price
+                (decimal qty, long amount) = l.Profile.ValueType == WeightedValueType.Price
+                    ? WeightedBarcodes.PriceLabelLine((long)l.Value, unit)
+                    : (l.Value, (long)Math.Round(l.Value * unit, MidpointRounding.AwayFromZero));
+                weightedJson["quantity"] = qty.ToString("0.000", System.Globalization.CultureInfo.InvariantCulture);
+                weightedJson["amount"] = amount.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
+
+            normalized["weighted"] = weightedJson;
         }
 
         var response = new Dictionary<string, object?>
@@ -1087,7 +1104,11 @@ v1.MapPost("/catalog/barcodes/resolve", async (BarcodeResolveInput body, Request
         };
         if (result.match is { } m)
         {
-            response["tenantProduct"] = new { productId = m.ProductId, variantId = m.VariantId, name = m.Name, sku = m.Sku, unitPrice = (string?)null };
+            response["tenantProduct"] = new
+            {
+                productId = m.ProductId, variantId = m.VariantId, name = m.Name, sku = m.Sku,
+                unitPrice = m.UnitPrice?.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            };
         }
 
         return Results.Ok(response);
@@ -1095,6 +1116,112 @@ v1.MapPost("/catalog/barcodes/resolve", async (BarcodeResolveInput body, Request
     .RequirePermission(Permissions.CatalogProductManage)
     .AllowWhenReadOnly()
     .RequireRateLimiting(RateLimits.CatalogResolve);
+
+// ---------------- US-052: versioned prices (CAT-009, BR-041, AB-06)
+// BR-041 [ASM]: thresholds are tenant settings later; until then Catalog:PriceBulkLimit and Catalog:PriceChangePercent.
+int priceBulkLimit = builder.Configuration.GetValue<int?>("Catalog:PriceBulkLimit") ?? 20;
+int priceChangePercent = builder.Configuration.GetValue<int?>("Catalog:PriceChangePercent") ?? 30;
+
+v1.MapGet("/price-lists", async (RequestContext ctx, IUnitOfWork uow, IPriceLists prices, CancellationToken ct) =>
+        Results.Ok(new { items = await uow.ExecuteAsync(ctx, (s, c) => prices.ListAsync(s, c), ct) }))
+    .RequireTenantMember();
+
+v1.MapGet("/price-lists/{priceListId:guid}/prices", async (Guid priceListId, Guid? variantId, RequestContext ctx, IUnitOfWork uow, IPriceLists prices,
+        HttpContext http, CancellationToken ct) =>
+    {
+        var history = await uow.ExecuteAsync(ctx, (s, c) => prices.HistoryAsync(s, priceListId, variantId, c), ct);
+        return history is null ? Problems.NotFound(http) : Results.Ok(new
+        {
+            items = history.Select(v => new
+            {
+                v.VariantId, unitPrice = v.UnitPrice.ToString(System.Globalization.CultureInfo.InvariantCulture), v.ValidFrom, v.ValidTo, v.Reason,
+                v.CreatedBy, v.CreatedAt,
+            }),
+        });
+    })
+    .RequirePermission(Permissions.CatalogPriceManage);
+
+v1.MapIdempotentPost<PriceSetInput>("/price-lists/{priceListId:guid}/prices", "catalog.set-prices", async (body, scope, http, ct) =>
+    {
+        RequestContext ctx = http.RequestServices.GetRequiredService<RequestContext>();
+        Guid priceListId = Guid.Parse((string)http.GetRouteValue("priceListId")!, System.Globalization.CultureInfo.InvariantCulture);
+        DateTimeOffset now = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
+        var errors = new Dictionary<string, string[]>();
+        var items = new List<PriceItem>();
+        if (body.Items is not { Length: >= 1 and <= PriceRules.MaxItems }) errors["items"] = [$"1-{PriceRules.MaxItems} items"];
+        for (int i = 0; i < (body.Items?.Length ?? 0) && body.Items!.Length <= PriceRules.MaxItems; i++)
+        {
+            PriceItemInput? it = body.Items[i];
+            if (it?.VariantId is null) errors[$"items[{i}].variantId"] = ["required"];
+            if (!TryMoney(it?.UnitPrice, positive: true, out long price)) errors[$"items[{i}].unitPrice"] = ["positive rial amount as a whole-number string"];
+            else if (it?.VariantId is { } v) items.Add(new PriceItem(v, price));
+        }
+
+        if (items.Select(i => i.VariantId).Distinct().Count() != items.Count) errors["items"] = ["one price per variant"];
+        // a price takes effect now or later, never in the past: what was charged stays as it was (AB-06). An instant up to
+        // 15 minutes old (an approval round trip: 10 pending + 5 valid) is moved to now; the approval binds the value sent.
+        if (body.ValidFrom is not { } from || from < now.AddMinutes(-15) || from > now.AddDays(366)) errors["validFrom"] = ["from now up to a year ahead"];
+        if (body.Reason is { Length: > 200 }) errors["reason"] = ["up to 200 characters"];
+        if (errors.Count > 0) return CommandResult.Fail(Problems.Validation(http, errors));
+
+        // the default list serves every branch, so changing it needs the permission store-wide
+        if (!AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.CatalogPriceManage, ScopeRef.Tenant))
+        {
+            return CommandResult.Fail(Forbidden(http));
+        }
+
+        DateTimeOffset asked = DateTimeOffset.FromUnixTimeMilliseconds(body.ValidFrom!.Value.ToUnixTimeMilliseconds());
+        DateTimeOffset validFrom = asked > now ? asked : DateTimeOffset.FromUnixTimeMilliseconds(now.ToUnixTimeMilliseconds());
+        IPriceLists prices = http.RequestServices.GetRequiredService<IPriceLists>();
+        var preview = await prices.PreviewAsync(scope, priceListId, items, validFrom, ct);
+        if (preview.Outcome == PriceOutcome.NotFound) return CommandResult.Fail(Problems.NotFound(http));
+        if (preview.Outcome == PriceOutcome.UnknownVariant)
+        {
+            int at = items.FindIndex(i => i.VariantId == preview.Variant);
+            return CommandResult.Fail(Problems.Validation(http, new Dictionary<string, string[]> { [$"items[{at}].variantId"] = ["not an active variant of this store"] }));
+        }
+
+        Guid? approvalId = null;
+        if (PriceRules.NeedsApproval(preview.Changes!, priceBulkLimit, priceChangePercent) is { } need)
+        {
+            // D-61: the approval binds this exact change (list, start, every new price); it is consumed with the change
+            var ask = new ApprovalAsk(Permissions.CatalogPriceManage, "PriceList", priceListId.ToString(), ScopeRef.Tenant, need.Condition,
+                PriceRules.Binding(priceListId, items, asked), need.Limit, body.Reason);
+            IApprovals approvals = http.RequestServices.GetRequiredService<IApprovals>();
+            bool approved = Guid.TryParse(http.Request.Headers["X-Approval-Id"], out Guid given)
+                && await approvals.ConsumeAsync(scope, given, ask, ctx.User!.Value, ct);
+            if (!approved)
+            {
+                // a retry before the decision points at the same open request instead of opening another one
+                if (given != Guid.Empty && await approvals.GetAsync(scope, given, ct) is { Status: "Pending" } open
+                    && open.RequestedBy == ctx.User!.Value.Value && open.ResourceId == ask.ResourceId && open.Value == ask.Value)
+                {
+                    return CommandResult.Fail(Problems.ApprovalRequired(http, given, need.Condition, ask.Value, need.Limit));
+                }
+
+                // this command rolls back, so the request is stored on its own; the client retries with X-Approval-Id
+                Guid requested = await http.RequestServices.GetRequiredService<IUnitOfWork>()
+                    .ExecuteAsync(ctx, (s, c) => approvals.RequestAsync(s, ask, ctx.User!.Value, c), ct);
+                return CommandResult.Fail(Problems.ApprovalRequired(http, requested, need.Condition, ask.Value, need.Limit));
+            }
+
+            approvalId = given;
+        }
+
+        if (await prices.SetAsync(scope, priceListId, items, validFrom, body.Reason, ctx.User!.Value.Value, ct) == PriceOutcome.Taken)
+        {
+            return CommandResult.Fail(Problems.Create(http, StatusCodes.Status409Conflict, "version-conflict",
+                "A price already started at this instant; choose another validFrom"));
+        }
+
+        await Audit(http, scope, ActorOf(ctx, http), new AuditEntry("catalog.prices.set", "PriceList", priceListId.ToString(), body.Reason, new
+        {
+            validFrom, count = items.Count, approvalId,
+            changes = preview.Changes!.Take(50).Select(c => new { c.VariantId, from = c.Current, to = c.New }),
+        }), ct);
+        return CommandResult.NoContent();
+    })
+    .RequirePermission(Permissions.CatalogPriceManage);
 
 // Support JIT access (US-027, IAM-008, SoD-05): the store owner sees, approves, rejects and ends platform support
 // access. Deciding and ending need TenantOwner (not just tenant.settings.manage) and a fresh second factor.
@@ -1702,6 +1829,8 @@ internal sealed record ShiftOpenInput(Guid? RegisterId, string? OpeningCash);
 internal sealed record CashMovementInput(string? Direction, string? Amount, string? Reason);
 internal sealed record DenominationInput(string? Value, int? Count);
 internal sealed record ShiftCloseInput(string? CountedCash, int? ExpectedVersion, DenominationInput[]? Denominations, string? VarianceReason);
+internal sealed record PriceItemInput(Guid? VariantId, string? UnitPrice);
+internal sealed record PriceSetInput(PriceItemInput?[]? Items, DateTimeOffset? ValidFrom, string? Reason);
 internal sealed record WeightedProfileInput(Guid? Id, string? Prefix, int? ItemCodeLength, string? ValueType, int? ValueLength, int? Decimals,
     bool? HasInnerCheckDigit);
 internal sealed record WeightedProfilesInput(int? ExpectedVersion, WeightedProfileInput[]? Profiles);

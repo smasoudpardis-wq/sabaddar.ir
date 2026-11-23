@@ -6,7 +6,9 @@ namespace RetailCloud.Merchandising.Application;
 
 public sealed record BarcodeView(Guid Id, string Code, string CodeNormalized, string PackagingUnit, string UnitFactor, bool IsInternal, bool Active);
 
-public sealed record VariantView(Guid Id, string Sku, IReadOnlyDictionary<string, string> AxisValues, string Status, IReadOnlyList<BarcodeView> Barcodes);
+/// <summary><paramref name="UnitPrice"/>: rials in force now in the default price list (CAT-009); null = no price yet.</summary>
+public sealed record VariantView(Guid Id, string Sku, IReadOnlyDictionary<string, string> AxisValues, string Status, IReadOnlyList<BarcodeView> Barcodes,
+    long? UnitPrice = null);
 
 public sealed record ProductView(Guid Id, string Name, string? Brand, string BaseUnit, string? TaxCode, int TaxRate, string Status,
     IReadOnlyList<VariantView> Variants, int Version);
@@ -31,7 +33,7 @@ public sealed record BarcodeSpec(string Code, string Normalized, string Packagin
     }
 }
 
-public sealed record BarcodeMatch(Guid ProductId, Guid VariantId, string Name, string Sku, string BaseUnit, bool IsInternal);
+public sealed record BarcodeMatch(Guid ProductId, Guid VariantId, string Name, string Sku, string BaseUnit, bool IsInternal, long? UnitPrice);
 
 public sealed record VariantSpec(string Sku, IReadOnlyDictionary<string, string> AxisValues, IReadOnlyList<BarcodeSpec> Barcodes);
 

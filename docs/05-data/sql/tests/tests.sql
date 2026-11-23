@@ -37,7 +37,7 @@ INSERT INTO merch.tenant_variant (tenant_id, id, product_id, sku)
   VALUES (:A, 'a0000000-0000-0000-0000-000000000011', 'a0000000-0000-0000-0000-000000000010', 'MILK-1L');
 INSERT INTO merch.tenant_product_barcode (tenant_id, id, variant_id, code_normalized, code_original)
   VALUES (:A, gen_random_uuid(), 'a0000000-0000-0000-0000-000000000011', '06260000000017', '6260000000017');
-INSERT INTO merch.price_list VALUES (:A, 'a0000000-0000-0000-0000-000000000020', 'پیش‌فرض');
+INSERT INTO merch.price_list VALUES (:A, 'a0000000-0000-0000-0000-000000000020', 'پیش‌فرض', true);
 INSERT INTO merch.price_list_item (tenant_id, id, price_list_id, variant_id, unit_price, valid)
   VALUES (:A, gen_random_uuid(), 'a0000000-0000-0000-0000-000000000020', 'a0000000-0000-0000-0000-000000000011',
           500000, tstzrange('2026-11-01', NULL));
@@ -131,6 +131,24 @@ SELECT t.expect_error('T11 overlapping price validity (DI-083)', '23P01',
   $$INSERT INTO merch.price_list_item (tenant_id, id, price_list_id, variant_id, unit_price, valid)
     VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000020',
             'a0000000-0000-0000-0000-000000000011', 600000, tstzrange('2026-12-01', NULL))$$);
+-- US-052 price history (CAT-009, AB-06)
+SELECT t.expect_error('T172 one default price list per tenant', '23505',
+  $$INSERT INTO merch.price_list VALUES (core.current_tenant(), gen_random_uuid(), 'دوم', true)$$);
+SELECT t.expect_error('T173 a price that applied cannot be rewritten', 'RC023',
+  $$UPDATE merch.price_list_item SET unit_price = 1 WHERE variant_id = 'a0000000-0000-0000-0000-000000000011'$$);
+SELECT t.expect_error('T174 a version cannot be ended in the past (what was charged stays)', 'RC023',
+  $$UPDATE merch.price_list_item SET valid = tstzrange(lower(valid), now() - interval '1 day') WHERE variant_id = 'a0000000-0000-0000-0000-000000000011'$$);
+UPDATE merch.price_list_item SET valid = tstzrange(lower(valid), now() + interval '1 day') WHERE variant_id = 'a0000000-0000-0000-0000-000000000011';
+INSERT INTO merch.price_list_item (tenant_id, id, price_list_id, variant_id, unit_price, valid)
+  VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000021', 'a0000000-0000-0000-0000-000000000020',
+          'a0000000-0000-0000-0000-000000000011', 550000, tstzrange(now() + interval '1 day', NULL));
+UPDATE merch.price_list_item SET unit_price = 540000 WHERE id = 'a0000000-0000-0000-0000-000000000021';
+SELECT t.ok('T175 a version can be ended in the future, and a version not yet started can be corrected',
+  (SELECT unit_price FROM merch.price_list_item WHERE id = 'a0000000-0000-0000-0000-000000000021') = 540000);
+SELECT t.expect_error('T176 an ended version cannot be reopened or extended', 'RC023',
+  $$UPDATE merch.price_list_item SET valid = tstzrange(lower(valid), NULL) WHERE unit_price = 500000 AND variant_id = 'a0000000-0000-0000-0000-000000000011'$$);
+SELECT t.expect_error('T177 price versions are never deleted', '42501',
+  $$DELETE FROM merch.price_list_item WHERE id = 'a0000000-0000-0000-0000-000000000021'$$);
 SELECT t.expect_error('T12 negative available stock rejected by DB (DI-031)', '23514',
   $$UPDATE inv.stock_balance SET on_hand = on_hand - 2 WHERE variant_id = 'a0000000-0000-0000-0000-000000000011'$$);
 INSERT INTO inv.posted_source (tenant_id, source_type, source_id) VALUES (:A, 'Sale', 'a0000000-0000-0000-0000-000000000040');

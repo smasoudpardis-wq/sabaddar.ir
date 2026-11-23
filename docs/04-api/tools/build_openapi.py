@@ -199,7 +199,8 @@ schema("BarcodeCandidate", source=("enum", ["tenant", "global", "open_food_facts
        conflictsWith=["int"])
 schema("BarcodeResolveResponse", kind=("enum", ["known", "candidates", "not_found"]),
        normalized={"gtin14?": "str", "isInternal": "bool", "isWeighted": "bool",
-                   "weighted?": {"variantId": "uuid", "value": "str", "valueType": ("enum", ["Weight", "Price"])}},
+                   "weighted?": {"variantId": "uuid", "value": "str", "valueType": ("enum", ["Weight", "Price"]),
+                                 "quantity?": "qty", "amount?": "money"}},
        **{"tenantProduct?": "#ProductSummary"}, candidates=["#BarcodeCandidate"], degraded="bool")
 schema("ProductSummary", productId="uuid", variantId="uuid", name="str", sku="str", unitPrice="money?")
 schema("VariantInput", sku="str", **{"axisValues?": {"color?": "str", "size?": "str", "model?": "str"},
@@ -224,7 +225,10 @@ schema("ProductUpdate", expectedVersion="int", **{"name?": "str", "brand?": "str
                                                   "status?": ("enum", ["Active", "Inactive"])})
 schema("ProductMerge", targetProductId="uuid", expectedVersion="int", reason="str")
 schema("PriceSet", items=[{"variantId": "uuid", "unitPrice": "money"}], validFrom="dt", **{"reason?": "str"})
-schema("PriceList", id="uuid", name="str", branchIds=["uuid"])
+schema("PriceList", id="uuid", name="str", isDefault=("desc", "bool", "The tenant's list; created on first use"),
+       branchIds=("desc", ["uuid"], "Branches with their own list; empty: every branch sells from the default list (CAT-009)"))
+schema("PriceVersion", variantId="uuid", unitPrice="money", validFrom="dt",
+       validTo=("desc", "dt?", "Exclusive; null = until changed"), reason="str?", createdBy="uuid?", createdAt="dt")
 schema("DiscountRuleCreate", name="str", target={"kind": ("enum", ["Product", "Category"]), "id": "uuid"},
        percent="bp", validFrom="dt", **{"validTo?": "dt", "branchIds?": ["uuid"]})
 schema("DiscountRule", id="uuid", name="str", percent="bp", validFrom="dt", validTo="dt?")
@@ -783,7 +787,9 @@ op("post", "/catalog/barcodes/resolve", "resolveBarcode", "Catalog", "تشخیص
         "price/stock/ids (P0-8). Providers time out at 2s each, 4s total; degraded=true when skipped. "
         "A weighted label (CAT-007) is decoded first: its item code is looked up as the variant's internal code and "
         "`normalized.weighted.value` is kilograms (3 decimals) or rials; a wrong value check digit is 422 invalid-barcode. "
-        "Implemented so far: the tenant source only (global catalog and providers: US-043); unitPrice comes with price lists.")
+        "`unitPrice` is the default list's price now; with it a weighted label also gets `quantity` and `amount` "
+        "(a price label's amount is the printed price, CAT-007.1). "
+        "Implemented so far: the tenant source only (global catalog and providers: US-043).")
 op("get", "/products", "listProducts", "Catalog", "جستجوی کالا (بارکد، SKU، نام نرمال‌شده فارسی)",
    params=[{"name": "q", "in": "query", "required": False, "schema": {"type": "string"}},
            {"name": "barcode", "in": "query", "required": False, "schema": {"type": "string"}},
@@ -812,9 +818,19 @@ op("post", "/products/{productId}/catalog-suggestions", "suggestToGlobalCatalog"
    "پیشنهاد کالا به کاتالوگ عمومی (Opt-in؛ فقط فیلدهای مجاز)", perm="catalog.product.manage", scope="Tenant",
    resp_code="202", reqs=["CAT-005.1"], audited=True)
 op("get", "/price-lists", "listPriceLists", "Catalog", "فهرست قیمت‌ها", resp="PriceList", list_of=True, reqs=["CAT-009"])
+op("get", "/price-lists/{priceListId}/prices", "listPriceVersions", "Catalog", "تاریخچه قیمت (یک Variant یا کل فهرست)",
+   perm="catalog.price.manage", scope="Tenant", resp="PriceVersion", list_of=True, reqs=["CAT-009", "AB-06"],
+   params=[{"name": "variantId", "in": "query", "required": False, "schema": {"type": "string", "format": "uuid"}}],
+   desc="Newest first, up to 100 versions, of one variant or (without variantId) of the whole list: the review of "
+        "recent price changes (AB-06). A version is never rewritten once it applied (RC023).")
 op("post", "/price-lists/{priceListId}/prices", "setPrices", "Catalog", "تعیین قیمت (نسخه‌دار با validFrom)",
-   perm="catalog.price.manage", scope="Branch", idem=True, body="PriceSet", resp_code="204", no_content=True,
-   reqs=["CAT-009", "BR-041"], audited=True, approval="bulk (> 20 variants) or > ±30% change (BR-041)")
+   perm="catalog.price.manage", scope="Tenant", idem=True, body="PriceSet", resp_code="204", no_content=True,
+   reqs=["CAT-009", "BR-041"], audited=True, approval="bulk (> 20 variants) or > ±30% change (BR-041)",
+   params=[{"name": "X-Approval-Id", "in": "header", "required": False, "schema": {"type": "string", "format": "uuid"}}],
+   desc="validFrom: now up to a year ahead (an instant up to 15 minutes old is moved to now, so a retry after an approval still works); each price applies from validFrom "
+        "until the next scheduled version; a scheduled version not yet started is corrected in place. Changing the "
+        "default list needs the permission store-wide. Above the BR-041 thresholds the answer is 403 approval-required; "
+        "the approval binds this exact change (list, validFrom, every price) and is consumed by the retry with X-Approval-Id.")
 op("get", "/discount-rules", "listDiscountRules", "Catalog", "قواعد تخفیف", resp="DiscountRule", list_of=True, reqs=["CAT-010"])
 op("post", "/discount-rules", "createDiscountRule", "Catalog", "قاعده تخفیف خودکار", perm="catalog.price.manage",
    scope="Branch", body="DiscountRuleCreate", resp="DiscountRule", resp_code="201", reqs=["CAT-010"], audited=True)

@@ -294,6 +294,21 @@ try {
   await page.getByTestId('product-search-submit').click();
   await page.getByTestId('products').filter({ hasText: 'E2E-COLA' }).waitFor();
   check('C02', 'found by the scanned GTIN-14 and by a name typed with Arabic letters (CAT-003, CAT-011)', true);
+  // Q01–Q03 US-052: the owner prices the product; a big change waits for another manager's approval
+  const cola = page.locator('[data-variant="E2E-COLA"]');
+  await cola.getByLabel('قیمت جدید (ریال)').fill('۲۵۰۰۰۰');   // Persian digits from the keypad
+  await cola.getByRole('button', { name: 'ثبت قیمت' }).click();
+  await page.getByTestId('price-E2E-COLA').filter({ hasText: '۲۵۰٬۰۰۰' }).waitFor();
+  check('Q01', 'the owner sets a first price and the product shows it (CAT-009)', true);
+  await cola.getByLabel('قیمت جدید (ریال)').fill('500000');   // +100%
+  await cola.getByRole('button', { name: 'ثبت قیمت' }).click();
+  await cola.getByRole('status').filter({ hasText: 'تأیید مدیر' }).waitFor();
+  const still = (await page.getByTestId('price-E2E-COLA').textContent()) ?? '';
+  check('Q02', 'a +100% change waits for approval and the price stays (BR-041)', still.includes('۲۵۰٬۰۰۰'), still);
+  await cola.getByRole('button', { name: 'اعمال پس از تأیید' }).click();
+  const notYet = (await cola.getByRole('alert').textContent()) ?? '';
+  check('Q03', 'applying before the approval is refused, not guessed', notYet.includes('هنوز تأیید نشده'), notYet);
+  await shot(page, 'prices');
   // W01–W03 US-045: the owner sets a scale label format; a printed label then decodes to the item and its weight
   await page.goto(`${BFF}/products`);
   await page.getByTestId('product-name').fill('پنیر فله آزمایشی');

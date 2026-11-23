@@ -81,11 +81,13 @@ CREATE INDEX ix_product_name ON merch.tenant_product (tenant_id, name_normalized
 CREATE INDEX ix_product_name_trgm ON merch.tenant_product USING gin (name_normalized public.gin_trgm_ops);
 
 CREATE TABLE merch.price_list (
-  tenant_id uuid NOT NULL,
-  id        uuid NOT NULL,
-  name      text NOT NULL,
+  tenant_id  uuid NOT NULL,
+  id         uuid NOT NULL,
+  name       text NOT NULL CHECK (length(btrim(name)) BETWEEN 1 AND 100),
+  is_default boolean NOT NULL DEFAULT false,   -- CAT-009: a branch without its own list sells from the tenant's default
   PRIMARY KEY (tenant_id, id)
 );
+CREATE UNIQUE INDEX ux_price_list_default ON merch.price_list (tenant_id) WHERE is_default;
 CALL core.enable_tenant_rls('merch.price_list');
 
 CREATE TABLE merch.price_list_item (
@@ -96,6 +98,8 @@ CREATE TABLE merch.price_list_item (
   unit_price    bigint NOT NULL CHECK (unit_price >= 0),     -- IRR
   valid         tstzrange NOT NULL CHECK (NOT isempty(valid) AND lower(valid) IS NOT NULL),
   created_by    uuid,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  reason        text CHECK (length(reason) <= 200),
   PRIMARY KEY (tenant_id, id),
   FOREIGN KEY (tenant_id, price_list_id) REFERENCES merch.price_list (tenant_id, id),
   FOREIGN KEY (tenant_id, variant_id)    REFERENCES merch.tenant_variant (tenant_id, id),
@@ -103,6 +107,25 @@ CREATE TABLE merch.price_list_item (
   EXCLUDE USING gist (tenant_id WITH =, price_list_id WITH =, variant_id WITH =, valid WITH &&)
 );
 CALL core.enable_tenant_rls('merch.price_list_item');
+CREATE INDEX ix_price_item_variant ON merch.price_list_item (tenant_id, price_list_id, variant_id, lower(valid));
+
+-- CAT-009 / AB-06: a price version is history. What applied is never rewritten: the only change is ending a version
+-- (bringing its end forward, never into the past) or correcting a version that has not started yet. Rows are never
+-- deleted (no grant).
+CREATE OR REPLACE FUNCTION merch.price_history() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+DECLARE
+  t timestamptz := statement_timestamp() - interval '1 minute';   -- clock skew between app servers
+BEGIN
+  IF (NEW.tenant_id, NEW.id, NEW.price_list_id, NEW.variant_id, lower(NEW.valid), NEW.created_by, NEW.created_at)
+     IS DISTINCT FROM (OLD.tenant_id, OLD.id, OLD.price_list_id, OLD.variant_id, lower(OLD.valid), OLD.created_by, OLD.created_at)
+     OR (NEW.unit_price, NEW.reason) IS DISTINCT FROM (OLD.unit_price, OLD.reason) AND lower(OLD.valid) <= t
+     OR upper(NEW.valid) IS DISTINCT FROM upper(OLD.valid)
+        AND (upper(NEW.valid) IS NULL OR upper(NEW.valid) < t OR upper(OLD.valid) IS NOT NULL AND upper(NEW.valid) > upper(OLD.valid)) THEN
+    RAISE EXCEPTION 'price version % is history', OLD.id USING ERRCODE = 'RC023';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER price_history BEFORE UPDATE ON merch.price_list_item FOR EACH ROW EXECUTE FUNCTION merch.price_history();
 
 -- CAT-007: weighted barcode profiles (an EAN-13 starting with 2: prefix, item code, [price check digit], value,
 -- check digit). A tenant edits its profiles as one set (PUT) guarded by weighted_barcode_settings.version.

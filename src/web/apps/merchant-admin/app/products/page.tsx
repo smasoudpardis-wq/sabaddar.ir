@@ -4,7 +4,56 @@ import { codeOf, csrf, MESSAGES } from '@/lib/client';
 
 type Barcode = { id: string; code: string; codeNormalized: string; packagingUnit: string; unitFactor: string; active: boolean };
 type Product = { id: string; name: string; brand: string | null; baseUnit: string; taxRate: number; status: string;
-  variants: { id: string; sku: string; barcodes: Barcode[] }[] };
+  variants: { id: string; sku: string; barcodes: Barcode[]; unitPrice: string | null }[] };
+
+const rial = (v: string) => Number(v).toLocaleString('fa-IR');
+
+/**
+ * US-052 / CAT-009 / BR-041: a new price for one variant, from now. A big change needs another manager's approval:
+ * the request waits on the approvals page and, once approved, the same change is sent again with the approval.
+ */
+function PriceForm({ listId, variantId, onDone }: { listId: string; variantId: string; onDone: () => void }) {
+  const [price, setPrice] = useState('');
+  const [pending, setPending] = useState<{ approvalId: string; key: string; body: string } | null>(null);
+  const [error, setError] = useState('');
+
+  async function send(body: string, key: string, approvalId?: string) {
+    setError('');
+    const headers: Record<string, string> = { 'content-type': 'application/json', 'x-csrf-token': csrf(), 'idempotency-key': key };
+    if (approvalId) headers['x-approval-id'] = approvalId;
+    const r = await fetch(`/bff/price-lists/${listId}/prices`, { method: 'POST', headers, body });
+    if (r.status === 204) { setPending(null); setPrice(''); onDone(); return; }
+    const p = await r.json().catch(() => null) as { code?: string; approvalRequestId?: string } | null;
+    if (p?.code === 'approval-required' && p.approvalRequestId) {
+      // the same change (body and key) is retried after approval; the approval fits only this change
+      setPending({ approvalId: p.approvalRequestId, key, body });
+      if (approvalId) setError('approval-not-yet');
+      return;
+    }
+    setError(p?.code ?? `http-${r.status}`);
+  }
+
+  return (
+    <span>
+      <form style={{ display: 'inline' }} onSubmit={(e) => {
+        e.preventDefault();
+        const digits = price.replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d))).replace(/[,٬\s]/g, '');
+        void send(JSON.stringify({ items: [{ variantId, unitPrice: digits }], validFrom: new Date().toISOString() }), crypto.randomUUID());
+      }}>
+        <input aria-label="قیمت جدید (ریال)" value={price} onChange={(e) => setPrice(e.target.value)} dir="ltr" inputMode="numeric" size={10}
+          data-testid={`price-input-${variantId}`} />{' '}
+        <button type="submit" style={{ minHeight: 44 }} data-testid={`price-submit-${variantId}`}>ثبت قیمت</button>
+      </form>
+      {pending && (
+        <span role="status" data-testid={`price-pending-${variantId}`}>
+          {' '}تغییر بزرگ است و تأیید مدیر دیگری لازم دارد (<a href="/approvals">تأییدها</a>).{' '}
+          <button type="button" style={{ minHeight: 44 }} onClick={() => void send(pending.body, pending.key, pending.approvalId)}>اعمال پس از تأیید</button>
+        </span>
+      )}
+      {error && <span role="alert" data-testid={`price-error-${variantId}`}> {MESSAGES[error] ?? error}</span>}
+    </span>
+  );
+}
 
 const UNITS: [string, string][] = [['EA', 'عدد'], ['PK', 'بسته'], ['CT', 'کارتن']];
 
@@ -17,6 +66,7 @@ export default function ProductsPage() {
   const [key, setKey] = useState(() => crypto.randomUUID());
   const [error, setError] = useState('');
   const [created, setCreated] = useState('');
+  const [listId, setListId] = useState('');
 
   async function find(term = search) {
     setError('');
@@ -26,7 +76,12 @@ export default function ProductsPage() {
     if (!r.ok) return setError(await codeOf(r));
     setItems((await r.json()).items);
   }
-  useEffect(() => { void find(''); }, []);
+  useEffect(() => {
+    void find('');
+    void fetch('/bff/price-lists', { cache: 'no-store' }).then(async (r) => {
+      if (r.ok) setListId(((await r.json()).items as { id: string; isDefault: boolean }[]).find((l) => l.isDefault)?.id ?? '');
+    });
+  }, []);
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
@@ -62,7 +117,14 @@ export default function ProductsPage() {
       <ul data-testid="products">
         {items.map((p) => (
           <li key={p.id} data-product={p.id}>
-            {p.name}{p.brand ? ` (${p.brand})` : ''} — {p.variants.map((v) => `${v.sku}: ${v.barcodes.filter((b) => b.active).map((b) => b.code).join('، ') || 'بدون بارکد'}`).join(' | ')}
+            {p.name}{p.brand ? ` (${p.brand})` : ''}
+            {p.variants.map((v) => (
+              <div key={v.id} data-variant={v.sku}>
+                {v.sku}: {v.barcodes.filter((b) => b.active).map((b) => b.code).join('، ') || 'بدون بارکد'}
+                {' — '}<span data-testid={`price-${v.sku}`}>{v.unitPrice ? `${rial(v.unitPrice)} ریال` : 'بدون قیمت'}</span>{' '}
+                {listId && <PriceForm listId={listId} variantId={v.id} onDone={() => void find(search)} />}
+              </div>
+            ))}
           </li>
         ))}
       </ul>

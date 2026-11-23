@@ -55,6 +55,7 @@ export const MESSAGES: Record<string, string> = {
   'session-locked': 'صندوق قفل است.',
   'approval-expired': 'مهلت این درخواست تمام شده است.',
   'approval-not-pending': 'این درخواست قبلاً بررسی شده است.',
+  'approval-not-yet': 'هنوز تأیید نشده است (یا مهلت تأیید گذشته است).',
 };
 
 export const ROLE_LABELS: Record<string, string> = {

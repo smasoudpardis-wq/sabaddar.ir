@@ -1407,8 +1407,9 @@ paths:
       description: 'Sample barcode values are illustrative and not guaranteed real GTINs. Never returns another tenant''s
         price/stock/ids (P0-8). Providers time out at 2s each, 4s total; degraded=true when skipped. A weighted label (CAT-007)
         is decoded first: its item code is looked up as the variant''s internal code and `normalized.weighted.value` is kilograms
-        (3 decimals) or rials; a wrong value check digit is 422 invalid-barcode. Implemented so far: the tenant source only
-        (global catalog and providers: US-043); unitPrice comes with price lists.'
+        (3 decimals) or rials; a wrong value check digit is 422 invalid-barcode. `unitPrice` is the default list''s price
+        now; with it a weighted label also gets `quantity` and `amount` (a price label''s amount is the printed price, CAT-007.1).
+        Implemented so far: the tenant source only (global catalog and providers: US-043).'
       security: *id001
       requestBody:
         required: true
@@ -1990,11 +1991,74 @@ paths:
       x-requirements:
       - CAT-009
   /price-lists/{priceListId}/prices:
+    get:
+      operationId: listPriceVersions
+      tags:
+      - Catalog
+      summary: تاریخچه قیمت (یک Variant یا کل فهرست)
+      description: 'Newest first, up to 100 versions, of one variant or (without variantId) of the whole list: the review
+        of recent price changes (AB-06). A version is never rewritten once it applied (RC023).'
+      security: *id001
+      parameters:
+      - name: priceListId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: variantId
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - items
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PriceVersion'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: catalog.price.manage
+      x-scope: Tenant
+      x-idempotent: false
+      x-requirements:
+      - CAT-009
+      - AB-06
     post:
       operationId: setPrices
       tags:
       - Catalog
       summary: تعیین قیمت (نسخه‌دار با validFrom)
+      description: 'validFrom: now up to a year ahead (an instant up to 15 minutes old is moved to now, so a retry after an
+        approval still works); each price applies from validFrom until the next scheduled version; a scheduled version not
+        yet started is corrected in place. Changing the default list needs the permission store-wide. Above the BR-041 thresholds
+        the answer is 403 approval-required; the approval binds this exact change (list, validFrom, every price) and is consumed
+        by the retry with X-Approval-Id.'
       security: *id001
       parameters:
       - name: priceListId
@@ -2004,6 +2068,12 @@ paths:
           type: string
           format: uuid
       - $ref: '#/components/parameters/IdempotencyKey'
+      - name: X-Approval-Id
+        in: header
+        required: false
+        schema:
+          type: string
+          format: uuid
       requestBody:
         required: true
         content:
@@ -2034,7 +2104,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
       x-permission: catalog.price.manage
-      x-scope: Branch
+      x-scope: Tenant
       x-idempotent: true
       x-requirements:
       - CAT-009
@@ -8605,6 +8675,10 @@ components:
                   enum:
                   - Weight
                   - Price
+                quantity:
+                  $ref: '#/components/schemas/Quantity'
+                amount:
+                  $ref: '#/components/schemas/Money'
               required:
               - variantId
               - value
@@ -10489,14 +10563,19 @@ components:
           format: uuid
         name:
           type: string
+        isDefault:
+          type: boolean
+          description: The tenant's list; created on first use
         branchIds:
           type: array
           items:
             type: string
             format: uuid
+          description: 'Branches with their own list; empty: every branch sells from the default list (CAT-009)'
       required:
       - id
       - name
+      - isDefault
       - branchIds
     PriceSet:
       type: object
@@ -10524,6 +10603,44 @@ components:
       required:
       - items
       - validFrom
+    PriceVersion:
+      type: object
+      additionalProperties: false
+      properties:
+        variantId:
+          type: string
+          format: uuid
+        unitPrice:
+          $ref: '#/components/schemas/Money'
+        validFrom:
+          type: string
+          format: date-time
+        validTo:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: Exclusive; null = until changed
+        reason:
+          type:
+          - string
+          - 'null'
+        createdBy:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+      required:
+      - variantId
+      - unitPrice
+      - validFrom
+      - validTo
+      - reason
+      - createdBy
+      - createdAt
     Problem:
       type: object
       description: RFC 9457 problem details. `code` is a stable machine-readable identifier (see x-error-catalog).

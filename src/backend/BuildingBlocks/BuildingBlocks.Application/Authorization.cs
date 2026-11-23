@@ -44,6 +44,7 @@ public static class Permissions
     public const string DataExport = "data.export";
     public const string CustomersPiiView = "customers.pii.view";
     public const string CatalogProductManage = "catalog.product.manage";
+    public const string CatalogPriceManage = "catalog.price.manage";
     public const string ShiftManage = "shift.manage";
     public const string ShiftSupervise = "shift.supervise";
     public const string AccountingRead = "accounting.read";

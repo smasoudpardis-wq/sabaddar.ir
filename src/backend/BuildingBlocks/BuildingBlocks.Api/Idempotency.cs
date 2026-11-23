@@ -32,6 +32,9 @@ public sealed class CommandResult
 
     public static CommandResult Created(object value) => new(StatusCodes.Status201Created, value, null);
 
+    /// <summary>204: stored and replayed without a body.</summary>
+    public static CommandResult NoContent() => new(StatusCodes.Status204NoContent, null, null);
+
     /// <summary>Business error: the transaction rolls back and nothing is stored, so the same key may be retried (D-34).</summary>
     public static CommandResult Fail(IResult problem) => new(0, null, problem);
 }
@@ -139,7 +142,9 @@ public static partial class Idempotency
                 {
                     case IdempotencyClaim.Replay replay:
                         http.Response.Headers[ReplayedHeader] = "true";
-                        return Results.Text(replay.ResponseJson, "application/json", Encoding.UTF8, replay.Status);
+                        return replay.Status == StatusCodes.Status204NoContent
+                            ? Results.NoContent()
+                            : Results.Text(replay.ResponseJson, "application/json", Encoding.UTF8, replay.Status);
                     case IdempotencyClaim.Reused:
                         return Problems.Create(http, StatusCodes.Status409Conflict, "idempotency-key-reused",
                             "This Idempotency-Key was used with a different request");
@@ -157,7 +162,9 @@ public static partial class Idempotency
 
                 string responseJson = JsonSerializer.Serialize(result.Value, json);
                 await store.CompleteAsync(scope, key, result.Status, responseJson, ct);
-                return Results.Text(responseJson, "application/json", Encoding.UTF8, result.Status);
+                return result.Status == StatusCodes.Status204NoContent
+                    ? Results.NoContent()
+                    : Results.Text(responseJson, "application/json", Encoding.UTF8, result.Status);
             }, http.RequestAborted);
         }
         catch (CommandFailedException failed)

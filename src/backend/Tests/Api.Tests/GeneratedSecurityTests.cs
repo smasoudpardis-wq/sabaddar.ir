@@ -46,10 +46,12 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
         ["closeShift"] = _ => new { countedCash = "0", expectedVersion = 1 },
         ["approveShiftVariance"] = _ => new { decision = "Approve" },
         ["reverseJournal"] = _ => new { reason = "آزمون" },
+        ["setPrices"] = f => new { items = new[] { new { variantId = f.Variant, unitPrice = "1000" } }, validFrom = DateTimeOffset.UtcNow.AddDays(1) },
     };
 
     private sealed record Fixture(Guid Tenant, Guid Branch, Guid Branch2, Guid Terminal, Guid Terminal2, Guid User, Guid Assignment,
-        Guid Approval, Guid Export, Guid SupportRequest, Guid Product, Guid Variant, Guid Barcode, Guid Shift, Guid Journal)
+        Guid Approval, Guid Export, Guid SupportRequest, Guid Product, Guid Variant, Guid Barcode, Guid Shift, Guid Journal,
+        Guid PriceList)
     {
         public Guid Id(string param) => param switch
         {
@@ -65,6 +67,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
             "barcodeId" => Barcode,
             "shiftId" => Shift,
             "journalId" => Journal,
+            "priceListId" => PriceList,
             _ => throw new InvalidOperationException($"No fixture for path parameter '{param}': add one to GeneratedSecurityTests (US-010)"),
         };
     }
@@ -131,7 +134,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
         Guid t = Guid.CreateVersion7(), b1 = Guid.CreateVersion7(), b2 = Guid.CreateVersion7(), term = Guid.CreateVersion7(), term2 = Guid.CreateVersion7(),
             owner = Guid.CreateVersion7(), member = Guid.CreateVersion7(), assignment = Guid.CreateVersion7(), approval = Guid.CreateVersion7(),
             export = Guid.CreateVersion7(), support = Guid.CreateVersion7(), product = Guid.CreateVersion7(), variant = Guid.CreateVersion7(),
-            barcode = Guid.CreateVersion7(), register = Guid.CreateVersion7(), shift = Guid.CreateVersion7(), journal = Guid.CreateVersion7(),
+            barcode = Guid.CreateVersion7(), register = Guid.CreateVersion7(), shift = Guid.CreateVersion7(), journal = Guid.CreateVersion7(), priceList = Guid.CreateVersion7(),
             cash = Guid.CreateVersion7(), sales = Guid.CreateVersion7(), period = Guid.CreateVersion7();
         await using var ds = NpgsqlDataSource.Create(Cs);
         var uow = new PostgresUnitOfWork(ds);
@@ -174,10 +177,11 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
             await Exec(s, ct, "INSERT INTO merch.tenant_variant (tenant_id, id, product_id, sku) VALUES ($1, $2, $3, 'GEN-1')", t, variant, product);
             await Exec(s, ct, "INSERT INTO merch.tenant_product_barcode (tenant_id, id, variant_id, code_normalized, code_original, is_internal) VALUES ($1, $2, $3, $4, $4, true)",
                 t, barcode, variant, "GEN-" + Guid.NewGuid().ToString("N")[..12]);
+            await Exec(s, ct, "INSERT INTO merch.price_list (tenant_id, id, name, is_default) VALUES ($1, $2, 'پایه', true)", t, priceList);
             return await Exec(s, ct, "INSERT INTO platform.export_job (tenant_id, id, requested_by, categories) VALUES ($1, $2, $3, '{Products}')", t, export, owner);
         });
         _roleSubjects[$"owner-{t}"] = $"gen-{_run}-owner-{t}";
-        return new Fixture(t, b1, b2, term, term2, member, assignment, approval, export, support, product, variant, barcode, shift, journal);
+        return new Fixture(t, b1, b2, term, term2, member, assignment, approval, export, support, product, variant, barcode, shift, journal, priceList);
     }
 
     private static async Task<int> Exec(IUnitOfWorkScope s, CancellationToken ct, string sql, params object[] args)

@@ -586,12 +586,25 @@
   "idempotent": false
  },
  {
+  "operationId": "listPriceVersions",
+  "method": "GET",
+  "path": "/price-lists/{priceListId}/prices",
+  "permission": "catalog.price.manage",
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [
+   "priceListId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
+ },
+ {
   "operationId": "setPrices",
   "method": "POST",
   "path": "/price-lists/{priceListId}/prices",
   "permission": "catalog.price.manage",
   "allowedWhenReadOnly": false,
-  "scope": "Branch",
+  "scope": "Tenant",
   "pathParams": [
    "priceListId"
   ],

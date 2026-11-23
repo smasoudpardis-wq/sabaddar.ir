@@ -124,14 +124,16 @@ public sealed class PostgresProductCatalog(IOutbox outbox) : IProductCatalog
     {
         var s = (PostgresUnitOfWorkScope)scope;
         await using NpgsqlCommand cmd = s.Command(
-            "SELECT p.id, v.id, p.name, v.sku, p.base_unit_code, b.is_internal FROM merch.tenant_product_barcode b " +
+            "SELECT p.id, v.id, p.name, v.sku, p.base_unit_code, b.is_internal, " +
+            "(SELECT i.unit_price FROM merch.price_list_item i JOIN merch.price_list l ON l.tenant_id = i.tenant_id AND l.id = i.price_list_id " +
+            "AND l.is_default WHERE i.variant_id = v.id AND i.valid @> statement_timestamp()) FROM merch.tenant_product_barcode b " +
             "JOIN merch.tenant_variant v ON v.tenant_id = b.tenant_id AND v.id = b.variant_id " +
             "JOIN merch.tenant_product p ON p.tenant_id = v.tenant_id AND p.id = v.product_id " +
             "WHERE b.active AND b.code_normalized = $1");
         cmd.Parameters.Add(new NpgsqlParameter { Value = codeNormalized });
         await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(cancellationToken);
         return await r.ReadAsync(cancellationToken)
-            ? new BarcodeMatch(r.GetGuid(0), r.GetGuid(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetBoolean(5))
+            ? new BarcodeMatch(r.GetGuid(0), r.GetGuid(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetBoolean(5), r.IsDBNull(6) ? null : r.GetInt64(6))
             : null;
     }
 
@@ -325,15 +327,20 @@ public sealed class PostgresProductCatalog(IOutbox outbox) : IProductCatalog
             }
         }
 
-        var variants = new List<(Guid ProductId, Guid Id, string Sku, Dictionary<string, string> Axes, string Status)>();
+        var variants = new List<(Guid ProductId, Guid Id, string Sku, Dictionary<string, string> Axes, string Status, long? Price)>();
+        // CAT-009: the price in force now in the default list (every branch sells from it until per-branch lists exist)
         await using (NpgsqlCommand cmd = s.Command(
-                         "SELECT product_id, id, sku, axis_values::text, status FROM merch.tenant_variant WHERE product_id = ANY($1) ORDER BY sku"))
+                         "SELECT v.product_id, v.id, v.sku, v.axis_values::text, v.status, " +
+                         "(SELECT i.unit_price FROM merch.price_list_item i JOIN merch.price_list l ON l.tenant_id = i.tenant_id AND l.id = i.price_list_id " +
+                         "AND l.is_default WHERE i.variant_id = v.id AND i.valid @> statement_timestamp()) " +
+                         "FROM merch.tenant_variant v WHERE v.product_id = ANY($1) ORDER BY v.sku"))
         {
             cmd.Parameters.Add(new NpgsqlParameter { Value = ids });
             await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct);
             while (await r.ReadAsync(ct))
             {
-                variants.Add((r.GetGuid(0), r.GetGuid(1), r.GetString(2), JsonSerializer.Deserialize<Dictionary<string, string>>(r.GetString(3)) ?? [], r.GetString(4)));
+                variants.Add((r.GetGuid(0), r.GetGuid(1), r.GetString(2), JsonSerializer.Deserialize<Dictionary<string, string>>(r.GetString(3)) ?? [], r.GetString(4),
+                    r.IsDBNull(5) ? null : r.GetInt64(5)));
             }
         }
 
@@ -355,7 +362,7 @@ public sealed class PostgresProductCatalog(IOutbox outbox) : IProductCatalog
         var order = ids.Select((id, i) => (id, i)).ToDictionary(x => x.id, x => x.i);
         return [.. products.OrderBy(p => order[p.Id]).Select(p => new ProductView(p.Id, p.Name, p.Brand, p.Unit, p.TaxCode, p.TaxRate, p.Status,
             [.. variants.Where(v => v.ProductId == p.Id).Select(v => new VariantView(v.Id, v.Sku, v.Axes, v.Status,
-                [.. barcodes.Where(b => b.VariantId == v.Id).Select(b => b.View)]))], p.Version))];
+                [.. barcodes.Where(b => b.VariantId == v.Id).Select(b => b.View)], v.Price))], p.Version))];
     }
 
     /// <summary>D07 Quantity: invariant decimal string without trailing zeros ("12", "0.5").</summary>
