@@ -24,15 +24,17 @@ BEGIN
   FOR t IN SELECT * FROM core.list_tenant_ids() LOOP
     PERFORM set_config('app.tenant_id', t::text, true);   -- RLS scopes every query below to tenant t
 
-    -- O-2 stock projection = ledger (both directions)
+    -- O-2 stock projection = ledger (both directions), quantity and value (INV-001, INV-006)
     RETURN QUERY
-      SELECT 'O-2'::text, t, format('warehouse=%s variant=%s on_hand=%s ledger=%s', x.warehouse_id, x.variant_id, x.on_hand, x.ledger)
+      SELECT 'O-2'::text, t, format('warehouse=%s variant=%s on_hand=%s ledger=%s value=%s ledger_value=%s',
+                                    x.warehouse_id, x.variant_id, x.on_hand, x.ledger, x.value_on_hand, x.ledger_value)
       FROM (SELECT COALESCE(b.warehouse_id, m.warehouse_id) AS warehouse_id, COALESCE(b.variant_id, m.variant_id) AS variant_id,
-                   COALESCE(b.on_hand, 0) AS on_hand, COALESCE(m.q, 0) AS ledger
+                   COALESCE(b.on_hand, 0) AS on_hand, COALESCE(m.q, 0) AS ledger,
+                   COALESCE(b.value_on_hand, 0) AS value_on_hand, COALESCE(m.v, 0) AS ledger_value
             FROM inv.stock_balance b
-            FULL JOIN (SELECT warehouse_id, variant_id, sum(qty_base) q FROM inv.stock_movement GROUP BY 1, 2) m
+            FULL JOIN (SELECT warehouse_id, variant_id, sum(qty_base) q, sum(total_cost) v FROM inv.stock_movement GROUP BY 1, 2) m
               ON m.warehouse_id = b.warehouse_id AND m.variant_id = b.variant_id) x
-      WHERE x.on_hand <> x.ledger;
+      WHERE x.on_hand <> x.ledger OR x.value_on_hand <> x.ledger_value;
 
     -- O-3 negative available where not allowed (DB CHECK should make this impossible)
     RETURN QUERY SELECT 'O-3', t, format('variant=%s available=%s', variant_id, on_hand - reserved)

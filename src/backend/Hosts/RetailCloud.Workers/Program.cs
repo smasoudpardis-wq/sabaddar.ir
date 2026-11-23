@@ -33,7 +33,19 @@ if (builder.Configuration.GetValue<bool>("Notifications:DevChannel"))
     builder.Services.AddSingleton<RetailCloud.Notifications.Application.INotificationChannel, RetailCloud.Notifications.Infrastructure.DevSmsChannel>();
 }
 
+builder.Services.AddSingleton<OracleRunner>();
+builder.Services.AddSingleton<RetailCloud.Inventory.Infrastructure.StockMaintenance>();
+builder.Services.AddHostedService<NightlyService>();
 builder.Services.AddHostedService<NotificationService>();
 builder.Services.AddHostedService<OutboxRelayService>();
 
-await builder.Build().RunAsync();
+IHost host = builder.Build();
+// Operator command (INV-001): `RetailCloud.Workers rebuild-stock <tenantId>` replays the ledger into the balances, then exits.
+if (args is ["rebuild-stock", var tenantArg] && Guid.TryParse(tenantArg, out Guid tenantToRebuild))
+{
+    int corrected = await host.Services.GetRequiredService<RetailCloud.Inventory.Infrastructure.StockMaintenance>().RebuildAsync(tenantToRebuild, CancellationToken.None);
+    Console.WriteLine($"balances corrected: {corrected}");
+    return;
+}
+
+await host.RunAsync();

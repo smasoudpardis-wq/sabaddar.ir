@@ -14,6 +14,7 @@ using RetailCloud.Sales.Application;
 using RetailCloud.Sales.Infrastructure;
 using RetailCloud.Accounting.Application;
 using RetailCloud.Accounting.Infrastructure;
+using RetailCloud.Inventory.Application;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -29,6 +30,7 @@ builder.Services.AddSingleton<ISupportAccess, PostgresSupportAccess>();
 builder.Services.AddSingleton<IProductCatalog, PostgresProductCatalog>();
 builder.Services.AddSingleton<IWeightedBarcodeProfiles, PostgresWeightedBarcodeProfiles>();
 builder.Services.AddSingleton<IPriceLists, PostgresPriceLists>();
+builder.Services.AddSingleton<IStockLedger, RetailCloud.Inventory.Infrastructure.PostgresStockLedger>();
 builder.Services.AddSingleton<IShifts, PostgresShifts>();
 builder.Services.AddSingleton<IJournals, PostgresJournals>();
 ObjectStorageOptions? storage = builder.Configuration.GetSection("Storage").Get<ObjectStorageOptions>();
@@ -851,7 +853,18 @@ v1.MapIdempotentPost<ProductCreate>("/products", "catalog.create-product", async
         if (body.TaxCode is { Length: > 32 }) errors["taxCode"] = ["up to 32 characters"];
         if (body.CategoryId is not null) errors["categoryId"] = ["not-yet-supported"];
         if (body.CatalogProductId is not null) errors["catalogProductId"] = ["not-yet-supported"];   // global catalog (US-044)
-        if (body.OpeningStock is not null) errors["openingStock"] = ["not-yet-supported"];           // inventory ledger (US-051)
+        decimal openingQty = 0;
+        long openingCost = 0;
+        if (body.OpeningStock is { } os)
+        {
+            // UC-01: the stock a new product starts with, at its cost (OpeningBalance movement, INV-002)
+            if (os.WarehouseId is null) errors["openingStock.warehouseId"] = ["required"];
+            if (os.Qty is null || !ProductRules.TryFactor(os.Qty, out openingQty)) errors["openingStock.qty"] = ["positive decimal, up to 6 places"];
+            if (!TryMoney(os.UnitCost, positive: false, out long unitCost)) errors["openingStock.unitCost"] = ["rial amount per base unit as a whole-number string"];
+            else openingCost = (long)Math.Round(openingQty * unitCost, MidpointRounding.AwayFromZero);
+            if (body.Variants is not { Length: 1 }) errors["openingStock"] = ["only for a product with one variant"];
+        }
+
         if (body.Axes is { Length: > 0 }) errors["axes"] = ["not-yet-supported"];                     // variant matrix (US-046)
         if (body.Confirmation?.Confirmed != true) errors["confirmation.confirmed"] = ["required: true (CAT-004.1)"];
         var variants = new List<VariantSpec>();
@@ -879,8 +892,26 @@ v1.MapIdempotentPost<ProductCreate>("/products", "catalog.create-product", async
         var result = await http.RequestServices.GetRequiredService<IProductCatalog>().CreateAsync(scope,
             new ProductSpec(body.Name!, body.Brand, body.BaseUnit!, body.TaxCode, body.TaxRate ?? 0, variants), ct);
         if (result.Outcome != CatalogOutcome.Done) return CommandResult.Fail(CatalogProblem(http, result.Outcome, result.ConflictProductId));
+        if (body.OpeningStock is { WarehouseId: Guid warehouseId })
+        {
+            ScopeRef? warehouse = await ResolveScope(scope, http.RequestServices.GetServices<IScopeLookup>(), ScopeType.Warehouse, warehouseId, ct);
+            if (warehouse is null)
+            {
+                return CommandResult.Fail(Problems.Validation(http, new Dictionary<string, string[]> { ["openingStock.warehouseId"] = ["not a warehouse of this store"] }));
+            }
+
+            if (!AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.InventoryReceiptCreate, warehouse)) return CommandResult.Fail(Forbidden(http));
+            StockResult opening = await http.RequestServices.GetRequiredService<IStockLedger>().PostAsync(scope, new StockDocument("Product", result.Value!.Id,
+                DateTimeOffset.UtcNow, [new StockLine(1, warehouseId, result.Value.Variants[0].Id, MovementType.OpeningBalance, openingQty, openingCost)], "opening-stock"), ct);
+            if (opening.Outcome != StockOutcome.Done) throw new InvalidOperationException($"opening stock of a new product: {opening.Outcome}");
+        }
+
         await Audit(http, scope, ActorOf(ctx, http), new AuditEntry("catalog.product.created", "Product", result.Value!.Id.ToString(),
-            Details: new { result.Value.Name, variants = variants.Count, barcodes = variants.Sum(v => v.Barcodes.Count) }), ct);
+            Details: new
+            {
+                result.Value.Name, variants = variants.Count, barcodes = variants.Sum(v => v.Barcodes.Count),
+                openingStock = body.OpeningStock is null ? null : new { body.OpeningStock.WarehouseId, qty = openingQty, cost = openingCost },
+            }), ct);
         return CommandResult.Created(ProductJson(result.Value));
     })
     .RequirePermission(Permissions.CatalogProductManage);
@@ -1116,6 +1147,107 @@ v1.MapPost("/catalog/barcodes/resolve", async (BarcodeResolveInput body, Request
     .RequirePermission(Permissions.CatalogProductManage)
     .AllowWhenReadOnly()
     .RequireRateLimiting(RateLimits.CatalogResolve);
+
+// ---------------- US-061: stock ledger (INV-001..006): balances, card, negative-stock policy
+v1.MapGet("/warehouses", async (RequestContext ctx, IUnitOfWork uow, CancellationToken ct) =>
+        Results.Ok(new
+        {
+            items = await uow.ExecuteAsync(ctx, async (s, c) =>
+            {
+                await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)s).Command("SELECT id, branch_id, code, kind FROM inv.warehouse ORDER BY code");
+                await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(c);
+                var list = new List<object>();
+                while (await r.ReadAsync(c)) list.Add(new { id = r.GetGuid(0), branchId = r.GetGuid(1), code = r.GetString(2), kind = r.GetString(3) });
+                return list;
+            }, ct),
+        }))
+    .RequireTenantMember();
+
+string Qty(decimal q) => q.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture);
+
+v1.MapGet("/inventory/balances", async (RequestContext ctx, IUnitOfWork uow, IStockLedger ledger, HttpContext http, Guid? warehouseId, Guid? variantId,
+        bool? belowReorderPoint, CancellationToken ct) =>
+    {
+        if (belowReorderPoint is not null) return Problems.Validation(http, new Dictionary<string, string[]> { ["belowReorderPoint"] = ["not-yet-supported"] });   // US-066
+        var rows = await uow.ExecuteAsync(ctx, (s, c) => ledger.BalancesAsync(s, warehouseId, variantId, c), ct);
+        // TM-014: cost and value only for whoever may see reports for that warehouse's branch
+        var lookups = http.RequestServices.GetServices<IScopeLookup>();
+        var canSee = new Dictionary<Guid, bool>();
+        foreach (Guid w in rows.Select(b => b.WarehouseId).Distinct())
+        {
+            ScopeRef? scope = await uow.ExecuteAsync(ctx, (s, c) => ResolveScope(s, lookups, ScopeType.Warehouse, w, c), ct);
+            canSee[w] = scope is not null && AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.ReportsView, scope);
+        }
+
+        return Results.Ok(new
+        {
+            items = rows.Select(b => new
+            {
+                b.WarehouseId, b.VariantId, onHand = Qty(b.OnHand), reserved = Qty(b.Reserved), available = Qty(b.OnHand - b.Reserved),
+                wac = canSee[b.WarehouseId] ? b.Wac.ToString(System.Globalization.CultureInfo.InvariantCulture) : null,
+                value = canSee[b.WarehouseId] ? b.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) : null,
+                belowReorderPoint = false,
+            }),
+            page = new { nextCursor = (string?)null, hasMore = rows.Count == 500 },
+        });
+    })
+    .RequireTenantMember();
+
+v1.MapGet("/inventory/movements", async (RequestContext ctx, IUnitOfWork uow, IStockLedger ledger, HttpContext http, Guid? variantId, Guid? warehouseId,
+        DateTimeOffset? from, DateTimeOffset? to, CancellationToken ct) =>
+    {
+        if (variantId is null) return Problems.Validation(http, new Dictionary<string, string[]> { ["variantId"] = ["required"] });
+        if (warehouseId is { } w)
+        {
+            ScopeRef? scope = await uow.ExecuteAsync(ctx, (s, c) => ResolveScope(s, http.RequestServices.GetServices<IScopeLookup>(), ScopeType.Warehouse, w, c), ct);
+            if (scope is null) return Problems.NotFound(http);
+            if (!AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.ReportsView, scope)) return Forbidden(http);
+        }
+        else if (!AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.ReportsView, ScopeRef.Tenant))
+        {
+            return Forbidden(http);   // every warehouse at once needs the store-wide permission
+        }
+
+        var rows = await uow.ExecuteAsync(ctx, (s, c) => ledger.MovementsAsync(s, variantId.Value, warehouseId, 200, c, from, to), ct);
+        return Results.Ok(new
+        {
+            items = rows.Select(m => new
+            {
+                m.Id, m.RecordedAt, m.EffectiveAt, type = m.Type, qtyBase = Qty(m.QtyBase),
+                unitCost = m.UnitCost.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                totalCost = m.TotalCost.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                m.SourceType, m.SourceId, m.SourceLine, enteredQty = m.EnteredQty is { } q ? Qty(q) : null, enteredUnit = m.EnteredUnit,
+                unitFactor = m.UnitFactor is { } f ? Qty(f) : null,
+            }),
+            page = new { nextCursor = (string?)null, hasMore = rows.Count == 200 },
+        });
+    })
+    .RequirePermission(Permissions.ReportsView);
+
+v1.MapPut("/inventory/negative-stock-policies", async (NegativeStockPolicyInput body, RequestContext ctx, IUnitOfWork uow, IStockLedger ledger,
+        HttpContext http, CancellationToken ct) =>
+    {
+        var errors = new Dictionary<string, string[]>();
+        if (body.ScopeType is not ("Tenant" or "Branch" or "Variant")) errors["scopeType"] = ["Tenant|Branch|Variant"];
+        if (body.ScopeType is "Branch" or "Variant" && body.ScopeId is null) errors["scopeId"] = ["required for Branch and Variant"];
+        if (body.ScopeType is "Tenant" && body.ScopeId is not null) errors["scopeId"] = ["not for Tenant"];
+        if (!Enum.TryParse(body.Policy, out NegativeStockPolicy policy) || !Enum.IsDefined(policy)) errors["policy"] = ["Forbid|AllowWithWarning"];
+        if (errors.Count > 0) return Problems.Validation(http, errors);
+        Guid scopeId = body.ScopeId ?? ctx.ActiveTenant!.Value.Value;
+        return await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            if (body.ScopeType == "Branch" && await ResolveScope(s, http.RequestServices.GetServices<IScopeLookup>(), ScopeType.Branch, scopeId, c) is null)
+            {
+                return Problems.NotFound(http);
+            }
+
+            await ledger.SetPolicyAsync(s, body.ScopeType!, scopeId, policy, ctx.User!.Value.Value, c);
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry("inventory.negative-stock-policy.set", "NegativeStockPolicy", $"{body.ScopeType}/{scopeId}",
+                Details: new { body.ScopeType, scopeId, policy = policy.ToString() }), c);
+            return Results.NoContent();
+        }, ct);
+    })
+    .RequirePermission(Permissions.TenantSettingsManage);
 
 // ---------------- US-052: versioned prices (CAT-009, BR-041, AB-06)
 // BR-041 [ASM]: thresholds are tenant settings later; until then Catalog:PriceBulkLimit and Catalog:PriceChangePercent.
@@ -1829,6 +1961,7 @@ internal sealed record ShiftOpenInput(Guid? RegisterId, string? OpeningCash);
 internal sealed record CashMovementInput(string? Direction, string? Amount, string? Reason);
 internal sealed record DenominationInput(string? Value, int? Count);
 internal sealed record ShiftCloseInput(string? CountedCash, int? ExpectedVersion, DenominationInput[]? Denominations, string? VarianceReason);
+internal sealed record NegativeStockPolicyInput(string? ScopeType, Guid? ScopeId, string? Policy);
 internal sealed record PriceItemInput(Guid? VariantId, string? UnitPrice);
 internal sealed record PriceSetInput(PriceItemInput?[]? Items, DateTimeOffset? ValidFrom, string? Reason);
 internal sealed record WeightedProfileInput(Guid? Id, string? Prefix, int? ItemCodeLength, string? ValueType, int? ValueLength, int? Decimals,

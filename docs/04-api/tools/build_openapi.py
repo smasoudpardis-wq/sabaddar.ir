@@ -264,8 +264,12 @@ schema("CountResult", lines=[{"variantId": "uuid", "systemAtSnapshot": "qty", "m
        totalValueDifference="money", approvalRequired="bool")
 schema("StockBalance", warehouseId="uuid", variantId="uuid", onHand="qty", reserved="qty", available="qty",
        **{"wac?": "money", "value?": "money"}, belowReorderPoint="bool")
-schema("StockMovement", id="uuid", recordedAt="dt", type="str", qtyBase=("desc", "str", "signed decimal"),
-       unitCost="money?", sourceType="str", sourceId="uuid")
+schema("StockMovement", id="uuid", recordedAt="dt", effectiveAt="dt", type="str", qtyBase=("desc", "str", "signed decimal, base unit"),
+       unitCost=("desc", "money", "Per base unit: the WAC of the moment, or the line's own cost for a receipt (INV-006)"),
+       totalCost=("desc", "str", "Signed rials; Σ totalCost = the balance's value"), sourceType="str", sourceId="uuid", sourceLine="int",
+       enteredQty=("desc", "str?", "As the document said it, e.g. 2 (cartons); BR-044 snapshot"), enteredUnit="str?", unitFactor="qty?")
+schema("NegativeStockPolicySet", scopeType=("enum", ["Tenant", "Branch", "Variant"]),
+       **{"scopeId?": ("desc", "uuid", "Branch or variant id; omitted for Tenant")}, policy=("enum", ["Forbid", "AllowWithWarning"]))
 schema("SupplierCreate", name="str", **{"nationalId?": "str", "economicCode?": "str", "phone?": "str"})
 schema("Supplier", id="uuid", name="str", balance="money")
 schema("SupplierPaymentCreate", amount="money", method=("enum", ["Cash", "Bank"]), **{"reference?": "str", "registerShiftId?": "uuid"})
@@ -869,11 +873,20 @@ op("get", "/inventory/balances", "listStockBalances", "Inventory", "موجودی
    params=[{"name": "warehouseId", "in": "query", "required": False, "schema": {"type": "string", "format": "uuid"}},
            {"name": "variantId", "in": "query", "required": False, "schema": {"type": "string", "format": "uuid"}},
            {"name": "belowReorderPoint", "in": "query", "required": False, "schema": {"type": "boolean"}}],
-   resp="StockBalance", list_of=True, page=True, reqs=["INV-001", "INV-010", "RPT-001.1"])
+   resp="StockBalance", list_of=True, page=True, reqs=["INV-001", "INV-010", "RPT-001.1"],
+   desc="wac and value only with reports.view for the warehouse's branch (TM-014), otherwise null. "
+        "belowReorderPoint arrives with US-066 (the filter is refused until then). Up to 500 rows.")
 op("get", "/inventory/movements", "listStockMovements", "Inventory", "کاردکس کالا", perm="reports.view", scope="Warehouse",
    params=[{"name": "variantId", "in": "query", "required": True, "schema": {"type": "string", "format": "uuid"}},
+           {"name": "warehouseId", "in": "query", "required": False, "schema": {"type": "string", "format": "uuid"}},
            {"$ref": "#/components/parameters/From"}, {"$ref": "#/components/parameters/To"}],
-   resp="StockMovement", list_of=True, page=True, reqs=["INV-001", "RPT-001.1"])
+   resp="StockMovement", list_of=True, page=True, reqs=["INV-001", "RPT-001.1"],
+   desc="Newest first, up to 200; from/to on effectiveAt. Without warehouseId the permission is needed store-wide.")
+op("put", "/inventory/negative-stock-policies", "setNegativeStockPolicy", "Inventory", "Policy موجودی منفی (فروشگاه، شعبه یا کالا)",
+   perm="tenant.settings.manage", scope="Tenant", body="NegativeStockPolicySet", resp_code="204", no_content=True,
+   reqs=["BR-040", "INV-003"], audited=True,
+   desc="The most specific level wins (Variant, then Branch, then Tenant); the default is Forbid. Under Forbid a document "
+        "that would make available stock negative is refused with 409 insufficient-stock listing every shortage.")
 tag("Procurement", "تأمین‌کننده، پرداخت و برگشت از خرید (PRC)")
 op("get", "/suppliers", "listSuppliers", "Procurement", "تأمین‌کنندگان", resp="Supplier", list_of=True, page=True, reqs=["PRC-001"])
 op("post", "/suppliers", "createSupplier", "Procurement", "ایجاد تأمین‌کننده", perm="inventory.receipt.create", scope="Tenant",

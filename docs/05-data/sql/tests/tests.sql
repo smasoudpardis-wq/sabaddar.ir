@@ -158,6 +158,20 @@ INSERT INTO inv.stock_movement (tenant_id, id, recorded_at, effective_at, wareho
                                 qty_base, unit_cost, total_cost, source_type, source_id, source_line)
 VALUES (:A, gen_random_uuid(), '2026-11-22 10:00+00', '2026-11-22 10:00+00', 'a0000000-0000-0000-0000-000000000003',
         'a0000000-0000-0000-0000-000000000011', 'SaleIssue', -1, 300000, -300000, 'Sale', 'a0000000-0000-0000-0000-000000000040', 1);
+SELECT t.expect_error('T178 a movement in cartons must equal its base quantity (INV-005, BR-044)', '23514',
+  $$INSERT INTO inv.stock_movement (tenant_id, id, effective_at, warehouse_id, variant_id, movement_type, qty_base, unit_cost, total_cost,
+      source_type, source_id, source_line, entered_qty, entered_unit, unit_factor)
+    VALUES (core.current_tenant(), gen_random_uuid(), now(), 'a0000000-0000-0000-0000-000000000003', 'a0000000-0000-0000-0000-000000000011',
+            'GoodsReceipt', 47, 1000, 47000, 'GoodsReceipt', gen_random_uuid(), 1, 2, 'CT', 24)$$);
+SELECT t.expect_error('T179 value moves with the quantity: an issue cannot add value', '23514',
+  $$INSERT INTO inv.stock_movement (tenant_id, id, effective_at, warehouse_id, variant_id, movement_type, qty_base, unit_cost, total_cost,
+      source_type, source_id, source_line)
+    VALUES (core.current_tenant(), gen_random_uuid(), now(), 'a0000000-0000-0000-0000-000000000003', 'a0000000-0000-0000-0000-000000000011',
+            'SaleIssue', -1, 1000, 1000, 'Sale', gen_random_uuid(), 1)$$);
+SELECT t.expect_error('T180 a tenant-level negative-stock policy names the tenant itself', '23514',
+  $$INSERT INTO inv.negative_stock_policy (tenant_id, scope_type, scope_id, policy) VALUES (core.current_tenant(), 'Tenant', gen_random_uuid(), 'Forbid')$$);
+SELECT t.expect_error('T181 the application cannot create partitions', '42501',
+  $$SELECT inv.ensure_movement_partitions(1)$$);
 SELECT t.expect_error('T14 stock movement is append-only for the app role', '42501',
   $$UPDATE inv.stock_movement SET qty_base = -2$$);
 SELECT t.expect_error('T15 movement for another tenant via parent rejected', '42501',
@@ -642,6 +656,11 @@ RESET ROLE;
 SET ROLE rc_worker;
 SELECT set_config('app.tenant_id', :C, false);
 SELECT t.ok('T132 the worker sees no other tenant''s export jobs (RLS)', (SELECT count(*) FROM platform.export_job) = 0);
+SELECT inv.ensure_movement_partitions(3);
+SELECT t.ok('T182 the worker keeps three months of movement partitions ready, idempotently, with no grants',
+  inv.ensure_movement_partitions(3) = 0
+  AND to_regclass(format('inv.stock_movement_%s', to_char(statement_timestamp() AT TIME ZONE 'UTC' + interval '3 months', 'YYYY_MM'))) IS NOT NULL
+  AND NOT has_table_privilege('rc_app', format('inv.stock_movement_%s', to_char(statement_timestamp() AT TIME ZONE 'UTC' + interval '3 months', 'YYYY_MM')), 'SELECT'));
 RESET ROLE;
 SET ROLE rc_app;
 RESET ROLE;

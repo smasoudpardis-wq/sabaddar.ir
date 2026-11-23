@@ -2707,6 +2707,8 @@ paths:
       tags:
       - Inventory
       summary: موجودی (ارزش فقط با مجوز گزارش)
+      description: wac and value only with reports.view for the warehouse's branch (TM-014), otherwise null. belowReorderPoint
+        arrives with US-066 (the filter is refused until then). Up to 500 rows.
       security: *id001
       parameters:
       - $ref: '#/components/parameters/Cursor'
@@ -2772,6 +2774,7 @@ paths:
       tags:
       - Inventory
       summary: کاردکس کالا
+      description: Newest first, up to 200; from/to on effectiveAt. Without warehouseId the permission is needed store-wide.
       security: *id001
       parameters:
       - $ref: '#/components/parameters/Cursor'
@@ -2779,6 +2782,12 @@ paths:
       - name: variantId
         in: query
         required: true
+        schema:
+          type: string
+          format: uuid
+      - name: warehouseId
+        in: query
+        required: false
         schema:
           type: string
           format: uuid
@@ -2822,6 +2831,47 @@ paths:
       x-requirements:
       - INV-001
       - RPT-001.1
+  /inventory/negative-stock-policies:
+    put:
+      operationId: setNegativeStockPolicy
+      tags:
+      - Inventory
+      summary: Policy موجودی منفی (فروشگاه، شعبه یا کالا)
+      description: The most specific level wins (Variant, then Branch, then Tenant); the default is Forbid. Under Forbid a
+        document that would make available stock negative is refused with 409 insufficient-stock listing every shortage.
+      security: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NegativeStockPolicySet'
+      responses:
+        '204':
+          description: No content
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: tenant.settings.manage
+      x-scope: Tenant
+      x-idempotent: false
+      x-requirements:
+      - BR-040
+      - INV-003
+      x-audited: true
   /suppliers:
     get:
       operationId: listSuppliers
@@ -10270,6 +10320,28 @@ components:
         Toman is a display concern only (BR-011).
       examples:
       - '5500000'
+    NegativeStockPolicySet:
+      type: object
+      additionalProperties: false
+      properties:
+        scopeType:
+          type: string
+          enum:
+          - Tenant
+          - Branch
+          - Variant
+        scopeId:
+          type: string
+          format: uuid
+          description: Branch or variant id; omitted for Tenant
+        policy:
+          type: string
+          enum:
+          - Forbid
+          - AllowWithWarning
+      required:
+      - scopeType
+      - policy
     Notification:
       type: object
       additionalProperties: false
@@ -11980,28 +12052,55 @@ components:
         recordedAt:
           type: string
           format: date-time
+        effectiveAt:
+          type: string
+          format: date-time
         type:
           type: string
         qtyBase:
           type: string
-          description: signed decimal
+          description: signed decimal, base unit
         unitCost:
-          anyOf:
-          - $ref: '#/components/schemas/Money'
-          - type: 'null'
+          $ref: '#/components/schemas/Money'
+          description: 'Per base unit: the WAC of the moment, or the line''s own cost for a receipt (INV-006)'
+        totalCost:
+          type: string
+          description: Signed rials; Σ totalCost = the balance's value
         sourceType:
           type: string
         sourceId:
           type: string
           format: uuid
+        sourceLine:
+          type: integer
+          format: int32
+        enteredQty:
+          type:
+          - string
+          - 'null'
+          description: As the document said it, e.g. 2 (cartons); BR-044 snapshot
+        enteredUnit:
+          type:
+          - string
+          - 'null'
+        unitFactor:
+          anyOf:
+          - $ref: '#/components/schemas/Quantity'
+          - type: 'null'
       required:
       - id
       - recordedAt
+      - effectiveAt
       - type
       - qtyBase
       - unitCost
+      - totalCost
       - sourceType
       - sourceId
+      - sourceLine
+      - enteredQty
+      - enteredUnit
+      - unitFactor
     StockReportRow:
       type: object
       additionalProperties: false

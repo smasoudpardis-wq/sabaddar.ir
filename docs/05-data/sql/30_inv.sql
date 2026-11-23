@@ -58,7 +58,14 @@ CREATE TABLE inv.stock_movement (
   source_type   text NOT NULL,
   source_id     uuid NOT NULL,
   source_line   int  NOT NULL,
-  PRIMARY KEY (tenant_id, recorded_at, id)
+  -- BR-044 / INV-005: what the document said (e.g. 2 cartons) and the factor in force then; the ledger is in base units
+  entered_qty   numeric(18,6),
+  entered_unit  text CHECK (entered_unit ~ '^[A-Z0-9]{1,10}$'),
+  unit_factor   numeric(18,6) CHECK (unit_factor > 0),
+  PRIMARY KEY (tenant_id, recorded_at, id),
+  CHECK ((entered_qty IS NULL) = (entered_unit IS NULL) AND (entered_unit IS NULL) = (unit_factor IS NULL)),
+  CHECK (unit_factor IS NULL OR qty_base = entered_qty * unit_factor),
+  CHECK (total_cost = 0 OR sign(total_cost) = sign(qty_base))                -- value moves with the quantity
 ) PARTITION BY RANGE (recorded_at);
 
 CREATE TABLE inv.stock_movement_2026_11 PARTITION OF inv.stock_movement
@@ -71,12 +78,54 @@ CREATE INDEX ix_movement_variant ON inv.stock_movement (tenant_id, variant_id, w
 CREATE INDEX ix_movement_source  ON inv.stock_movement (tenant_id, source_type, source_id);
 
 CALL core.enable_tenant_rls('inv.stock_movement');
+
+-- D05 §6: Workers keep the next months' partitions ready so rows never land in DEFAULT. Partitions get no grants
+-- (the application reaches them only through the parent, under its RLS policy; fitness rule 3).
+CREATE OR REPLACE FUNCTION inv.ensure_movement_partitions(p_months int DEFAULT 3) RETURNS int
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+DECLARE
+  m date;
+  created int := 0;
+BEGIN
+  IF p_months NOT BETWEEN 0 AND 24 THEN
+    RAISE EXCEPTION 'months 0-24' USING ERRCODE = '22023';
+  END IF;
+  FOR i IN 0..p_months LOOP
+    m := (date_trunc('month', statement_timestamp() AT TIME ZONE 'UTC') + make_interval(months => i))::date;
+    IF to_regclass(format('inv.stock_movement_%s', to_char(m, 'YYYY_MM'))) IS NULL THEN
+      EXECUTE format('CREATE TABLE inv.%I PARTITION OF inv.stock_movement FOR VALUES FROM (%L) TO (%L)',
+                     'stock_movement_' || to_char(m, 'YYYY_MM'), m::text || ' 00:00+00', (m + interval '1 month')::date::text || ' 00:00+00');
+      created := created + 1;
+    END IF;
+  END LOOP;
+  RETURN created;
+END $$;
+REVOKE ALL ON FUNCTION inv.ensure_movement_partitions(int) FROM PUBLIC;
+
+-- BR-040: Forbid | AllowWithWarning at Tenant, Branch or Variant level; the most specific wins, default Forbid.
+-- The posting materialises the result into stock_balance.allow_negative, where the DI-031 CHECK enforces it.
+CREATE TABLE inv.negative_stock_policy (
+  tenant_id  uuid NOT NULL,
+  scope_type text NOT NULL CHECK (scope_type IN ('Tenant','Branch','Variant')),
+  scope_id   uuid NOT NULL,
+  policy     text NOT NULL CHECK (policy IN ('Forbid','AllowWithWarning')),
+  changed_by uuid,
+  changed_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, scope_type, scope_id),
+  CHECK (scope_type <> 'Tenant' OR scope_id = tenant_id)
+);
+CALL core.enable_tenant_rls('inv.negative_stock_policy');
 CREATE TRIGGER tr_movement_append_only BEFORE UPDATE OR DELETE ON inv.stock_movement
   FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
 
 GRANT USAGE ON SCHEMA inv TO rc_app, rc_worker, rc_reporting;
 GRANT SELECT, INSERT, UPDATE ON inv.warehouse, inv.stock_balance TO rc_app;
 GRANT SELECT, INSERT ON inv.posted_source TO rc_app;
+GRANT SELECT, INSERT, UPDATE ON inv.negative_stock_policy TO rc_app;
+GRANT SELECT ON inv.negative_stock_policy TO rc_worker, rc_reporting;
+GRANT EXECUTE ON FUNCTION inv.ensure_movement_partitions(int) TO rc_worker;
+-- INV-001 rebuild (operator command run by Workers): balances only, never the ledger
+GRANT INSERT, UPDATE ON inv.stock_balance TO rc_worker;
 -- Privileges on the PARENT only. Partitions do not inherit RLS policies, so applications must never
 -- receive privileges on partitions directly (checked by 90_fitness.sql).
 GRANT SELECT, INSERT ON inv.stock_movement TO rc_app;

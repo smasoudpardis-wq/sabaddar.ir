@@ -826,6 +826,21 @@
   "idempotent": false
  },
  {
+  "operationId": "setNegativeStockPolicy",
+  "method": "PUT",
+  "path": "/inventory/negative-stock-policies",
+  "permission": "tenant.settings.manage",
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": [
+   "policy",
+   "scopeId",
+   "scopeType"
+  ],
+  "idempotent": false
+ },
+ {
   "operationId": "listSuppliers",
   "method": "GET",
   "path": "/suppliers",
