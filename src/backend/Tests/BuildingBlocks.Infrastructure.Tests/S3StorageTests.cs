@@ -11,7 +11,7 @@ using RetailCloud.Platform.Infrastructure;
 
 namespace RetailCloud.BuildingBlocks.Infrastructure.Tests;
 
-/// <summary>Runs only when an S3 endpoint is given (RC_TEST_S3 = service URL; CI runs MinIO and also sets RC_TEST_S3_STRICT=1).</summary>
+/// <summary>Runs only when an S3 endpoint is given (RC_TEST_S3 = service URL; CI runs moto; RC_TEST_S3_STRICT=1 against MinIO).</summary>
 public sealed class S3FactAttribute : FactAttribute
 {
     public S3FactAttribute()
@@ -66,15 +66,16 @@ public sealed class S3StorageTests
     {
         if (!Strict)
         {
-            return;   // moto does not check signatures; MinIO in CI does (RC_TEST_S3_STRICT=1)
+            return;   // moto (local and CI) does not check signatures or expiry; run with RC_TEST_S3_STRICT=1 against MinIO (Staging)
         }
 
         using S3ObjectStorage s3 = Storage("rc-test-strict");
         string key = ObjectKeys.NewExportKey(Guid.CreateVersion7());
         await s3.PutAsync(key, new MemoryStream([1, 2, 3]), "application/zip", CancellationToken.None);
         string link = s3.PresignGet(key, ObjectKeys.LinkLifetime, "x.zip").ToString();
-        string otherKey = link.Replace(key.Split('/')[^1], ObjectKeys.NewExportKey(Guid.Empty).Split('/')[^1], StringComparison.Ordinal);
-        using HttpResponseMessage tampered = await Http.GetAsync(otherKey);
+        int sig = link.IndexOf("X-Amz-Signature=", StringComparison.Ordinal) + "X-Amz-Signature=".Length;
+        string forged = link[..sig] + (link[sig] == 'a' ? 'b' : 'a') + link[(sig + 1)..];   // one character of the signature changed
+        using HttpResponseMessage tampered = await Http.GetAsync(forged);
         Assert.Equal(HttpStatusCode.Forbidden, tampered.StatusCode);
 
         Uri shortLived = s3.PresignGet(key, TimeSpan.FromSeconds(1), "x.zip");
