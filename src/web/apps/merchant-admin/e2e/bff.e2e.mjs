@@ -344,7 +344,8 @@ try {
       && listed.b.items.some((x) => x.handle === other?.handle && !x.current) && sessionRows === listed.b.items.length,
     JSON.stringify(listed.b.items.map((x) => [x.device, x.current])));
   await a.p.getByTestId(`session-end-${other.handle}`).click();
-  await a.p.waitForFunction((n) => document.querySelectorAll('[data-testid=session]').length === n, sessionRows - 1);
+  // poll the locator (waitForFunction evaluates a string, which the app's CSP forbids in older Playwright)
+  for (let i = 0; i < 100 && (await a.p.getByTestId('session').count()) !== sessionRows - 1; i++) await a.p.waitForTimeout(100);
   const bAfter = await b.p.request.get(`${BFF}/bff/me`);
   await b.p.goto(`${BFF}/auth/login`);
   const reauth = await b.p.locator('#username').isVisible({ timeout: 10000 }).catch(() => false);
