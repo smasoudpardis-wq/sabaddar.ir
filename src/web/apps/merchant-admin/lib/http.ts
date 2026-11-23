@@ -1,4 +1,4 @@
-import { cookies } from 'next/headers';
+import { cookies, headers as requestHeaders } from 'next/headers';
 import { NextRequest, NextResponse } from 'next/server';
 import * as client from 'openid-client';
 import { config, cookieNames } from './config';
@@ -104,6 +104,11 @@ export async function callApi(session: Session, method: string, path: string, bo
   const device = (await cookies()).get(cookieNames().device)?.value;
   if (device) headers['x-rc-device'] = device;
   if (body !== undefined) headers['content-type'] = 'application/json';
+  // AUD-001: the API records the browser's address. The BFF is the API's trusted proxy (Network:TrustedProxies), so it passes on
+  // the address its own edge reported, or the peer it saw; a client-sent header is only as trustworthy as that edge.
+  const incoming = await requestHeaders();
+  const clientIp = incoming.get('x-forwarded-for')?.split(',')[0]?.trim() || incoming.get('x-real-ip') || undefined;
+  if (clientIp) headers['x-forwarded-for'] = clientIp;
   try {
     return await fetch(new URL(path, config.apiUrl()), { method, headers, body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store' });
   } catch {

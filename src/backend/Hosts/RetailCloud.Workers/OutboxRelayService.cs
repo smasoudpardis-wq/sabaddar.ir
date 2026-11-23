@@ -14,11 +14,13 @@ public sealed partial class OutboxRelayService(
     NpgsqlDataSource dataSource,
     OutboxRelay relay,
     MessagingRetention retention,
+    AuditChainVerifier auditVerifier,
     IUnitOfWork unitOfWork,
     ILogger<OutboxRelayService> logger) : BackgroundService
 {
     private static readonly TimeSpan MinIdle = TimeSpan.FromMilliseconds(200), MaxIdle = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan RetentionEvery = TimeSpan.FromHours(1);
+    private static readonly TimeSpan AuditCheckEvery = TimeSpan.FromHours(24); // AUD-002 daily
     private volatile IReadOnlyList<(string Producer, long Pending, double Oldest, long Dead)> _stats = [];
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -27,7 +29,7 @@ public sealed partial class OutboxRelayService(
         OutboxRelay.Meter.CreateObservableGauge("rc_outbox_oldest_pending_seconds", () => _stats.Select(s => new Measurement<double>(s.Oldest, Tag(s.Producer))));
         OutboxRelay.Meter.CreateObservableGauge("rc_outbox_dead", () => _stats.Select(s => new Measurement<long>(s.Dead, Tag(s.Producer))));
 
-        DateTimeOffset nextRetention = DateTimeOffset.UtcNow;
+        DateTimeOffset nextRetention = DateTimeOffset.UtcNow, nextAuditCheck = DateTimeOffset.UtcNow;
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -47,6 +49,16 @@ public sealed partial class OutboxRelayService(
                     {
                         await retention.PurgeAsync(stoppingToken);
                         nextRetention = DateTimeOffset.UtcNow + RetentionEvery;
+                    }
+
+                    if (DateTimeOffset.UtcNow >= nextAuditCheck)
+                    {
+                        foreach (ChainCheck broken in (await auditVerifier.VerifyAllAsync(stoppingToken)).Where(c => !c.Intact))
+                        {
+                            LogChainBroken(logger, broken.TenantId, broken.BrokenSeq ?? 0);
+                        }
+
+                        nextAuditCheck = DateTimeOffset.UtcNow + AuditCheckEvery;
                     }
 
                     if (handled > 0)
@@ -86,6 +98,9 @@ public sealed partial class OutboxRelayService(
         }, ct);
 
     private static KeyValuePair<string, object?> Tag(string producer) => new("producer", producer);
+
+    [LoggerMessage(Level = LogLevel.Critical, Message = "Audit hash chain of tenant {TenantId} is broken at seq {Seq} (AUD-002)")]
+    private static partial void LogChainBroken(ILogger logger, Guid tenantId, long seq);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Outbox relay loop failed; restarting in 2 s")]
     private static partial void LogRelayError(ILogger logger, Exception exception);

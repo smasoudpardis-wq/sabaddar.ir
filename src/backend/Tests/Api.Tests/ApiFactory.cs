@@ -27,6 +27,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
         builder.UseSetting("ConnectionStrings:Main", Environment.GetEnvironmentVariable("RC_TEST_PG") ?? "Host=unused");
         builder.UseSetting("Auth:Merchant:Authority", Issuer);
         builder.UseSetting("Auth:Merchant:Audience", Audience);
+        builder.UseSetting("Network:TrustedProxies", "*"); // TestServer has no peer address; the tests act as the BFF
         builder.ConfigureTestServices(services =>
             services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, o =>
             {

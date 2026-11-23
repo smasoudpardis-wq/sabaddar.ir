@@ -135,6 +135,7 @@ flowchart LR
 | `rc_outbox_published_total`، `rc_outbox_handler_failures_total` | Counter | `producer`/`consumer`، `event_type` |
 | `rc_oracle_violations` | Gauge | `oracle` (O-2..O-14) — خروجی `core.run_oracles()` |
 | `rc_db_rls_denied_total` | Counter | `table` (از Log خطای 42501 نقش App) |
+| `rc_audit_chain_broken_total` | Counter | — (وارسی روزانه `AuditChainVerifier` در Workers؛ هر افزایش = Alert `RCAuditChainBroken`، Sev-1) |
 | `rc_tax_invoices` | Gauge | `status` |
 | `rc_tax_deadline_at_risk` | Gauge | `threshold` (`50`، `80`، `95`) |
 | `rc_tax_invoices_rejected_total` | Counter | — |
@@ -365,6 +366,12 @@ flowchart LR
 - **گام‌ها:** اجرای دستی Job ساخت Partition؛ انتقال ردیف‌ها از Default به Partition درست در پنجره کم‌ترافیک (`ALTER TABLE … DETACH`/`ATTACH` با جدول موقت)؛ بررسی علت شکست Job.
 
 ---
+
+### RB-22 — شکست زنجیره ممیزی (AUD-002)
+- **محرک:** `RCAuditChainBroken` (Sev-1) یا Log `audit.chain-broken` با `tenant` و نخستین `seq` خراب · **اثر:** احتمال دست‌کاری سابقه ممیزی.
+- **تشخیص:** `audit.verify_chain()` برای همان Tenant؛ مقایسه با آخرین `audit.chain_anchor` سالم (seq و Hash ثبت‌شده در وارسی‌های قبلی). ردیف‌های پس از آخرین Anchor سالم مظنون‌اند.
+- **کاهش اثر:** **هیچ ردیفی اصلاح یا حذف نشود** (شواهد). IR-01 (D06 §13.2)؛ بررسی Log دسترسی DBA و نقش‌هایی که می‌توانستند Trigger را دور بزنند.
+- **وارسی:** پس از بررسی، Anchor جدید با یادداشت حادثه ثبت می‌شود؛ زنجیره از آن نقطه دوباره وارسی می‌شود.
 
 ## 9. مدیریت حادثه و On-call
 

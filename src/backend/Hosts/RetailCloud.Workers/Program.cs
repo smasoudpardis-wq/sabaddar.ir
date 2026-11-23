@@ -14,6 +14,7 @@ builder.Services.AddSingleton<IOutbox, PostgresOutbox>(_ => new PostgresOutbox()
 builder.Services.AddSingleton(new OutboxRelayOptions());
 builder.Services.AddSingleton<OutboxRelay>();
 builder.Services.AddSingleton<MessagingRetention>();
+builder.Services.AddSingleton<AuditChainVerifier>();
 // Consumers (IIntegrationEventConsumer), one per module and purpose. Never rename a deployed consumer (inbox key).
 builder.Services.AddSingleton<IIntegrationEventConsumer, RetailCloud.IdentityAccess.Infrastructure.OwnerMembershipConsumer>();
 builder.Services.AddSingleton<IIntegrationEventConsumer, RetailCloud.Inventory.Infrastructure.DefaultWarehouseConsumer>();

@@ -28,6 +28,7 @@ builder.Services.AddSingleton<IUserAdministration, PostgresUserAdministration>()
 builder.Services.AddSingleton<IBranchAdministration, PostgresBranchAdministration>();
 builder.Services.AddSingleton<IApprovals, PostgresApprovals>();
 builder.Services.AddSingleton<IPinStore, PostgresPinStore>();
+builder.Services.AddSingleton<IAuditLog, PostgresAuditLog>();
 builder.Services.AddSingleton<PostgresTerminals>();
 builder.Services.AddSingleton<ITerminalAdministration>(sp => sp.GetRequiredService<PostgresTerminals>());
 builder.Services.AddSingleton<ITerminalDirectory>(sp => sp.GetRequiredService<PostgresTerminals>());
@@ -38,6 +39,26 @@ builder.Services.AddRetailCloudApi(builder.Configuration);
 
 var app = builder.Build();
 app.UseRetailCloudApi();
+
+// ---------------- AUD-001..003 (US-031): who/where from the validated request; written inside each operation's transaction.
+// The client IP comes from X-Forwarded-For set by the BFF (the API is not reachable from the Internet, D04 §3.3).
+// AUD-001 "where": X-Forwarded-For is honoured only from a configured proxy (the BFF / ingress, Network:TrustedProxies);
+// from anyone else it would let a caller write an arbitrary IP into the tamper-evident trail.
+string[] trustedProxies = (builder.Configuration["Network:TrustedProxies"] ?? "")
+    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+string? ClientIp(HttpContext http)
+{
+    string? peer = http.Connection.RemoteIpAddress?.ToString();
+    bool trusted = trustedProxies.Contains("*") || (peer is not null && trustedProxies.Contains(peer));
+    return trusted && http.Request.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim() is { Length: > 0 } fwd ? fwd : peer;
+}
+
+AuditActor ActorOf(RequestContext ctx, HttpContext http, Guid? userOverride = null, IReadOnlyList<string>? rolesOverride = null) =>
+    new(userOverride ?? ctx.User?.Value, "User", rolesOverride ?? ctx.ActiveMembership?.Roles ?? [], ctx.Terminal?.BranchId, ctx.Terminal?.TerminalId, ClientIp(http));
+
+static Task Audit(HttpContext http, IUnitOfWorkScope s, AuditActor actor, AuditEntry entry, CancellationToken c) =>
+    http.RequestServices.GetRequiredService<IAuditLog>().WriteAsync(s, entry, actor, c);
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" })).AllowAnonymous(); // R7: explicit anonymous
 
@@ -69,12 +90,26 @@ v1.MapGet("/me", (RequestContext ctx) => Results.Ok(new
 
 // selectActiveTenant (D07): the BFF calls this before storing the choice in its session; 404 unless the user is a member,
 // 403 mfa-required when the user's role there needs a second factor the token does not carry (IAM-003).
-v1.MapPost("/me/active-tenant", (SelectTenant body, RequestContext ctx, HttpContext http) =>
-    ctx.Memberships.FirstOrDefault(m => m.TenantId.Value == body.TenantId) switch
+v1.MapPost("/me/active-tenant", async (SelectTenant body, RequestContext ctx, IUnitOfWork uow, HttpContext http, CancellationToken ct) =>
     {
-        null => Problems.NotFound(http),
-        { } m when MfaPolicy.Requires(m) && !ctx.MfaSatisfied => MfaPolicy.MfaRequired(http),
-        _ => Results.NoContent(),
+        MembershipInfo? m = ctx.Memberships.FirstOrDefault(m => m.TenantId.Value == body.TenantId);
+        if (m is null)
+        {
+            return Problems.NotFound(http);
+        }
+
+        if (MfaPolicy.Requires(m) && !ctx.MfaSatisfied)
+        {
+            return MfaPolicy.MfaRequired(http);
+        }
+
+        await uow.ExecuteAsync(new FixedTenantContext(m.TenantId, ctx.User), async (s, c) =>
+        {
+            await Audit(http, s, ActorOf(ctx, http, rolesOverride: m.Roles), new AuditEntry("iam.tenant.selected", "Tenant", m.TenantId.Value.ToString(),
+                Details: new { acr = ctx.Acr }), c);
+            return 0;
+        }, ct);
+        return Results.NoContent();
     }).AllowAnyAuthenticated();
 
 // getMyTenant (D07): tenant-scoped, read through RLS.
@@ -106,6 +141,8 @@ v1.MapIdempotentCreateTenant<RegisterTenant>("/tenants", "platform.register-tena
         }
 
         TenantProfile profile = await http.RequestServices.GetRequiredService<ITenantRegistration>().RegisterAsync(scope, cmd, owner.Value.Id, ct);
+        await Audit(http, scope, ActorOf(ctx, http, owner.Value.Id.Value, ["TenantOwner"]),
+            new AuditEntry("platform.tenant.registered", "Tenant", profile.Id.ToString(), Details: new { industry = cmd.IndustryCode, pricingMode = profile.PricingMode }), ct);
         return CommandResult.Created(profile);
     })
     .WithMetadata(new AllowUnprovisionedUserAttribute())
@@ -184,7 +221,12 @@ v1.MapPost("/branches", async (BranchCreate body, RequestContext ctx, IUnitOfWor
 
         try
         {
-            BranchView b = await uow.ExecuteAsync(ctx, (s, c) => branches.CreateBranchAsync(s, body.Code!, body.Name!, c), ct);
+            BranchView b = await uow.ExecuteAsync(ctx, async (s, c) =>
+            {
+                BranchView created = await branches.CreateBranchAsync(s, body.Code!, body.Name!, c);
+                await Audit(http, s, ActorOf(ctx, http), new AuditEntry("platform.branch.created", "Branch", created.Id.ToString(), Details: new { created.Code }), c);
+                return created;
+            }, ct);
             return Results.Created($"/api/v1/branches/{b.Id}", b);
         }
         catch (DuplicateCodeException)
@@ -205,7 +247,16 @@ v1.MapPost("/branches/{branchId:guid}/registers", async (Guid branchId, Register
 
         try
         {
-            RegisterView? r = await uow.ExecuteAsync(ctx, (s, c) => branches.CreateRegisterAsync(s, branchId, body.Code!, c), ct);
+            RegisterView? r = await uow.ExecuteAsync(ctx, async (s, c) =>
+            {
+                RegisterView? created = await branches.CreateRegisterAsync(s, branchId, body.Code!, c);
+                if (created is not null)
+                {
+                    await Audit(http, s, ActorOf(ctx, http), new AuditEntry("platform.register.created", "Register", created.Id.ToString(), Details: new { branchId, created.Code }), c);
+                }
+
+                return created;
+            }, ct);
             return r is null ? Problems.NotFound(http) : Results.Created($"/api/v1/branches/{branchId}/registers/{r.Id}", r);
         }
         catch (DuplicateCodeException)
@@ -224,7 +275,17 @@ v1.MapPost("/branches/{branchId:guid}/pairing-codes", async (Guid branchId, Requ
             return Forbidden(http);
         }
 
-        PairingCodeView? code = await uow.ExecuteAsync(ctx, (s, c) => terminals.IssueCodeAsync(s, branchId, ctx.User!.Value, c), ct);
+        PairingCodeView? code = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            PairingCodeView? issued = await terminals.IssueCodeAsync(s, branchId, ctx.User!.Value, c);
+            if (issued is not null)
+            {
+                // the code itself is a credential: never audited (AUD-003)
+                await Audit(http, s, ActorOf(ctx, http), new AuditEntry("platform.pairing-code.issued", "Branch", branchId.ToString(), Details: new { issued.ExpiresAt }), c);
+            }
+
+            return issued;
+        }, ct);
         return code is null ? Problems.NotFound(http) : Results.Created($"/api/v1/branches/{branchId}/pairing-codes", code);
     })
     .RequirePermission(Permissions.TerminalsManage);
@@ -239,7 +300,17 @@ v1.MapPost("/terminals/pair", async (PairTerminal body, RequestContext ctx, IUni
         }
 
         TerminalView? terminal = code is null ? null
-            : await uow.ExecuteAsync(ctx, (s, c) => terminals.PairAsync(s, code, body.DeviceName, ctx.User!.Value, c), ct);
+            : await uow.ExecuteAsync(ctx, async (s, c) =>
+            {
+                TerminalView? paired = await terminals.PairAsync(s, code, body.DeviceName, ctx.User!.Value, c);
+                if (paired is not null)
+                {
+                    await Audit(http, s, ActorOf(ctx, http), new AuditEntry("platform.terminal.paired", "Terminal", paired.Id.ToString(),
+                        Details: new { paired.BranchId, paired.DeviceName }), c);
+                }
+
+                return paired;
+            }, ct);
         return terminal is null ? Problems.NotFound(http) : Results.Created($"/api/v1/terminals/{terminal.Id}", terminal);
     })
     .RequireTenantMember()
@@ -261,6 +332,7 @@ v1.MapDelete("/terminals/{terminalId:guid}", async (Guid terminalId, RequestCont
             }
 
             await terminals.RevokeAsync(s, terminalId, ctx.User!.Value, c);
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry("platform.terminal.revoked", "Terminal", terminalId.ToString(), Details: new { t.BranchId }), c);
             return Results.NoContent();
         }, ct))
     .RequirePermission(Permissions.TerminalsManage);
@@ -362,11 +434,22 @@ v1.MapPost("/approvals/{approvalId:guid}/decision", async (Guid approvalId, Appr
                 (PinCheck check, int left) = await pins.VerifyAsync(s, approver, body.Pin!, c);
                 if (check != PinCheck.Ok)
                 {
-                    return PinProblem(http, check, left); // the failure count is committed with this transaction
+                    await Audit(http, s, ActorOf(ctx, http), new AuditEntry(check == PinCheck.Locked ? "iam.pin.locked" : "iam.pin.failed", "User",
+                        approver.Value.ToString(), Details: new { purpose = "approval", approvalId }), c);
+                    return PinProblem(http, check, left); // the failure count and its audit record commit with this transaction
                 }
             }
 
-            return await approvals.DecideAsync(s, approvalId, approver, body.Decision == "Approve", body.Comment, c) switch
+            DecisionOutcome outcome = await approvals.DecideAsync(s, approvalId, approver, body.Decision == "Approve", body.Comment, c);
+            if (outcome == DecisionOutcome.Decided)
+            {
+                // AUD-001 / IAM-007: approver, requester, reason and time
+                await Audit(http, s, ActorOf(ctx, http, approver.Value, onDevice ? approverGrants.Select(g => g.Role).Distinct().ToList() : null),
+                    new AuditEntry(body.Decision == "Approve" ? "iam.approval.approved" : "iam.approval.rejected", "ApprovalRequest", approvalId.ToString(), a.Reason,
+                        new { a.Action, a.ResourceType, a.ResourceId, a.RequestedBy, a.Value, a.Limit, onDevice, comment = body.Comment }), c);
+            }
+
+            return outcome switch
             {
                 DecisionOutcome.Decided => Results.Ok(ApprovalJson((await approvals.GetAsync(s, approvalId, c))!)),
                 DecisionOutcome.Expired => Problems.Create(http, StatusCodes.Status409Conflict, "approval-expired", "The request has expired"),
@@ -393,7 +476,12 @@ v1.MapPut("/me/pin", async (SetPin body, RequestContext ctx, IUnitOfWork uow, IP
             return Problems.Validation(http, new Dictionary<string, string[]> { ["pin"] = ["4-6-digits"] });
         }
 
-        await uow.ExecuteAsync(ctx, async (s, c) => { await pins.SetAsync(s, ctx.User!.Value, body.Pin!, c); return 0; }, ct);
+        await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            await pins.SetAsync(s, ctx.User!.Value, body.Pin!, c);
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry("iam.pin.set", "User", ctx.User!.Value.Value.ToString()), c);
+            return 0;
+        }, ct);
         return Results.NoContent();
     })
     .RequireTenantMember();
@@ -401,7 +489,17 @@ v1.MapPut("/me/pin", async (SetPin body, RequestContext ctx, IUnitOfWork uow, IP
 // verifyMyPin: unlock a locked register; registered terminals only; 5 failures lock the PIN.
 v1.MapPost("/me/pin/verify", async (SetPin body, RequestContext ctx, IUnitOfWork uow, IPinStore pins, HttpContext http, CancellationToken ct) =>
     {
-        (PinCheck check, int left) = await uow.ExecuteAsync(ctx, (s, c) => pins.VerifyAsync(s, ctx.User!.Value, body.Pin ?? "", c), ct);
+        (PinCheck check, int left) = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            (PinCheck result, int attemptsLeft) = await pins.VerifyAsync(s, ctx.User!.Value, body.Pin ?? "", c);
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry(result switch
+            {
+                PinCheck.Ok => "iam.register.unlocked",
+                PinCheck.Locked => "iam.pin.locked",
+                _ => "iam.pin.failed",
+            }, "User", ctx.User!.Value.Value.ToString(), Details: new { attemptsLeft }), c);
+            return (result, attemptsLeft);
+        }, ct);
         return check == PinCheck.Ok ? Results.NoContent() : PinProblem(http, check, left);
     })
     .RequireTenantMember()
@@ -477,6 +575,8 @@ v1.MapPost("/users/invitations", async (InviteUser body, RequestContext ctx, IUn
             }
 
             InvitationView invitation = await users.InviteAsync(s, ctx.User!.Value, body.DisplayName!.Trim(), body.Email, body.Mobile, grants, c);
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry("iam.invitation.created", "Invitation", invitation.Id.ToString(),
+                Details: new { roles = grants }), c); // no name, contact or token (AUD-003)
             return Results.Created($"/api/v1/users/invitations/{invitation.Id}", invitation);
         }, ct);
     })
@@ -497,7 +597,17 @@ v1.MapPost("/invitations/{token}/accept", async (string token, RequestContext ct
             return Problems.Create(http, StatusCodes.Status403Forbidden, "user-not-provisioned", "This account is disabled");
         }
 
-        AcceptedInvitation? accepted = await uow.ExecuteAsync(new FixedTenantContext(tenant, user.Value.Id), (s, c) => users.AcceptAsync(s, token, user.Value.Id, c), ct);
+        AcceptedInvitation? accepted = await uow.ExecuteAsync(new FixedTenantContext(tenant, user.Value.Id), async (s, c) =>
+        {
+            AcceptedInvitation? done = await users.AcceptAsync(s, token, user.Value.Id, c);
+            if (done is not null)
+            {
+                await Audit(http, s, ActorOf(ctx, http, user.Value.Id.Value, [.. done.RoleAssignments.Select(g => g.Role).Distinct()]),
+                    new AuditEntry("iam.invitation.accepted", "User", user.Value.Id.Value.ToString(), Details: new { roles = done.RoleAssignments }), c);
+            }
+
+            return done;
+        }, ct);
         if (accepted is null)
         {
             return Problems.NotFound(http);
@@ -531,6 +641,11 @@ v1.MapPost("/users/{userId:guid}/role-assignments", async (Guid userId, RoleAssi
             try
             {
                 AssignmentView? added = await users.AddAssignmentAsync(s, new UserId(userId), new RoleGrant(role, input.ScopeType, input.ScopeId), ctx.User!.Value, c);
+                if (added is not null)
+                {
+                    await Audit(http, s, ActorOf(ctx, http), new AuditEntry("iam.role.assigned", "User", userId.ToString(),
+                        Details: new { role, input.ScopeType, input.ScopeId, assignmentId = added.Id }), c);
+                }
                 return added is null ? Problems.NotFound(http) : Results.Created($"/api/v1/users/{userId}/role-assignments/{added.Id}", added);
             }
             catch (DuplicateAssignmentException)
@@ -563,6 +678,8 @@ v1.MapDelete("/users/{userId:guid}/role-assignments/{assignmentId:guid}", async 
             try
             {
                 await users.RemoveAssignmentAsync(s, new UserId(userId), assignmentId, c);
+                await Audit(http, s, ActorOf(ctx, http), new AuditEntry("iam.role.removed", "User", userId.ToString(),
+                    Details: new { role = existing.RoleName, existing.ScopeType, existing.ScopeId, assignmentId }), c);
                 return Results.NoContent();
             }
             catch (LastOwnerException)

@@ -14,6 +14,11 @@ CREATE TABLE audit.audit_record (
   occurred_at   timestamptz NOT NULL DEFAULT now(),
   actor_id      uuid,
   actor_kind    text NOT NULL CHECK (actor_kind IN ('User','Support','Worker','System')),
+  actor_roles   text[] NOT NULL DEFAULT '{}',          -- AUD-001.1 who: roles in the tenant at that moment
+  impersonated_by uuid,                                -- JIT support acting for a user (IAM-008)
+  branch_id     uuid,                                  -- AUD-001.1 where
+  terminal_id   uuid,
+  client_ip     inet,
   action        text NOT NULL,
   resource_type text NOT NULL,
   resource_id   text,
@@ -29,7 +34,8 @@ CREATE OR REPLACE FUNCTION audit.canonical(r audit.audit_record) RETURNS text
 LANGUAGE sql IMMUTABLE AS $$
   SELECT concat_ws('|', r.tenant_id, r.seq, r.id,
                    to_char(r.occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
-                   r.actor_id, r.actor_kind, r.action, r.resource_type, r.resource_id, r.reason, r.details::text)
+                   r.actor_id, r.actor_kind, array_to_string(r.actor_roles, ','), r.impersonated_by, r.branch_id, r.terminal_id,
+                   host(r.client_ip), r.action, r.resource_type, r.resource_id, r.reason, r.details::text)
 $$;
 
 -- AUD-002: seq + hash chain per tenant, assigned by the database (callers cannot choose them).
@@ -66,7 +72,25 @@ BEGIN
   RETURN NULL;
 END $$;
 
+-- AUD-002: daily anchors of each tenant's chain head. Kept here until the WORM object store (MinIO Object Lock, X-07)
+-- exists; insert-only for the worker, so a later rewrite of the chain contradicts an earlier anchor.
+CREATE TABLE audit.chain_anchor (
+  tenant_id   uuid NOT NULL,
+  anchored_at timestamptz NOT NULL DEFAULT now(),
+  last_seq    bigint NOT NULL,
+  last_hash   bytea NOT NULL,
+  intact      boolean NOT NULL,
+  broken_seq  bigint,
+  PRIMARY KEY (tenant_id, anchored_at),
+  CHECK (intact = (broken_seq IS NULL))
+);
+CALL core.enable_tenant_rls('audit.chain_anchor');
+CREATE TRIGGER tr_anchor_append_only BEFORE UPDATE OR DELETE ON audit.chain_anchor
+  FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
+
 GRANT USAGE ON SCHEMA audit TO rc_app, rc_worker, rc_reporting;
+GRANT SELECT, INSERT ON audit.chain_anchor TO rc_worker;
+GRANT SELECT ON audit.chain_anchor TO rc_reporting;
 GRANT SELECT, INSERT ON audit.audit_record TO rc_app, rc_worker;
 GRANT SELECT ON audit.audit_record TO rc_reporting;
 GRANT EXECUTE ON FUNCTION audit.verify_chain() TO rc_worker;

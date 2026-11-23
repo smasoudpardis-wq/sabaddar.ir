@@ -66,6 +66,12 @@ groups:
         annotations:
           summary: "Application role hit row-level security denials (DET-01)"
           runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-05"
+      - alert: RCAuditChainBroken
+        expr: sum(increase(rc_audit_chain_broken_total[1d])) > 0
+        labels: {severity: page}
+        annotations:
+          summary: "Daily audit chain verification found a broken hash chain (AUD-002, Sev-1)"
+          runbook_url: "docs/07-operations/D11-DevOps-Runbook-SLO.md#rb-22"
       - alert: RCPartitionDefaultRows
         expr: max by (table) (rc_partition_default_rows) > 0
         for: 15m
