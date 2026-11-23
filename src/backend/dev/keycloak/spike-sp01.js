@@ -73,7 +73,8 @@ async function token(realm, form) {
   const aud = [].concat(at.aud || []);
   check('C5 access token aud contains merchant-api', aud.includes('merchant-api'), JSON.stringify(at.aud));
   check('C6 issuer is the merchant realm', at.iss === `${KC}/realms/merchant`, at.iss);
-  check('C7 access token lifetime is 10 minutes (AUTH-05)', at.exp - at.iat === 600, `${at.exp - at.iat}s`);
+  // Keycloak computes iat and exp from separate clock reads, so the difference can come out one second long
+  check('C7 access token lifetime is 10 minutes (AUTH-05)', Math.abs(at.exp - at.iat - 600) <= 1, `${at.exp - at.iat}s`);
   check('C8 authorized party is the BFF client', at.azp === M.client, at.azp);
   // C8b — the API keys users on (iss, sub); realm-as-code must declare the 'basic' scope (found by the US-021 E2E)
   check('C8b access token carries sub and auth_time, no email', typeof at.sub === 'string' && at.sub.length > 0 && typeof at.auth_time === 'number' && !('email' in at),
