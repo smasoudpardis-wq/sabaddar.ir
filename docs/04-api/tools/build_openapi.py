@@ -330,7 +330,9 @@ schema("ShiftClose", countedCash="money", expectedVersion="int", **{"denominatio
 schema("PosContext", terminalId="uuid", branchId="uuid",
        registers=[{"id": "uuid", "code": "str", "mayOpenShift": "bool",
                    "shift": ("desc", {"id": "uuid", "status": "str", "mine": "bool", "openedAt": "dt"}, "The register's shift not yet closed; null if none")}])
-schema("SaleCreate", registerId="uuid", clientDraftId=("desc", "str", "8-64 of A-Z a-z 0-9 _ - (DI-010)"))
+schema("SaleCreate", registerId="uuid", clientDraftId=("desc", "str", "8-64 of A-Z a-z 0-9 _ - (DI-010)"),
+       **{"lines?": ("desc", ["#SaleLineInput"], "SAL-013: a cart built offline, added at server prices when the sale is created; ignored when "
+                     "the clientDraftId already exists (no line is added twice)")})
 schema("SaleLineInput", **{"variantId?": "uuid", "barcode?": ("desc", "str", "Exactly one of barcode or variantId; a scale label sets its own quantity (CAT-007)"),
                             "unit?": ("desc", "str", "Default: the scanned barcode's packaging unit, else the base unit (BR-044)")},
        qty=("desc", "qty", "Added to the line of the same item and unit, if there is one"))
@@ -353,7 +355,9 @@ schema("Sale", id="uuid", status=("enum", ["Draft", "Held", "PendingPayment", "F
        totals={"gross": "money", "discount": "money", "net": "money", "tax": "money", "total": "money",
                "paid": "money", "remaining": "money", "change": "money"},
        finalizedAt="dt?", receiptUrl="str?", version="int",
-       warnings=[("enum", ["missing-tax-code", "price-preview-only", "negative-stock-allowed"])])
+       rejectedLines=("desc", [{"index": "int", "code": "str?"}],
+                      "Only in the response to createSale with offline lines: lines the store could not add (e.g. barcode-not-found)"),
+       warnings=[("enum", ["missing-tax-code", "price-preview-only", "negative-stock-allowed", "offline-lines-rejected"])])
 schema("SaleCustomer", tenantCustomerId="uuid", maskedName="str", hasCreditAccount="bool",
        **{"availableCredit?": ("desc", "money", "Shown only with sales.credit.sell (D-25)")})
 schema("SaleDiscountInput", expectedVersion="int", kind=("enum", ["Percent", "Amount"]), value="str",
@@ -1035,7 +1039,8 @@ op("get", "/pos/context", "getPosContext", "POS", "دستگاه فعلی: شعب
    desc="Only on a registered device (403 terminal-not-registered otherwise).")
 op("post", "/pos/sales", "createSale", "POS", "ایجاد سبد (Idempotent با clientDraftId برای Sync آفلاین)", perm="pos.sell",
    scope="Register", body="SaleCreate", resp="Sale", resp_code="201", reqs=["SAL-001", "SAL-013", "DI-010", "ABAC-04"],
-   conflict=True, desc="Repeating the same clientDraftId returns the existing sale (200) instead of creating a new one.")
+   conflict=True, desc="Repeating the same clientDraftId returns the existing sale (200) instead of creating a new one; offline lines "
+        "sent with it are not added again. A line the store cannot add is reported in rejectedLines, not fatal.")
 op("get", "/pos/sales/{saleId}", "getSale", "POS", "سبد یا فاکتور", perm="pos.sell", scope="Register", resp="Sale", reqs=["SAL-001"])
 op("post", "/pos/sales/{saleId}/lines", "addSaleLine", "POS", "افزودن قلم با اسکن یا انتخاب (قیمت پیش‌نمایش سمت سرور)",
    perm="pos.sell", scope="OwnShift", body="SaleLineInput", resp="Sale", reqs=["SAL-001", "SAL-005.1", "CAT-007", "BR-018"],

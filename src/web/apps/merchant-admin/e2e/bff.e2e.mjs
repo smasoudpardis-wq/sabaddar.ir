@@ -594,6 +594,34 @@ try {
   await page.getByTestId('pos-aside-submit').click();
   await page.locator('[data-testid="pos-lines"] tbody tr').first().waitFor({ state: 'detached' });
   check('V10', 'a cart without payments is cancelled with a reason (SAL-004)', true);
+  // OF01–OF02 US-084: the network drops; the register keeps scanning into a cart held on the device (no payment), and when the
+  // network returns the cart is sent once and priced by the server; a code the store does not have is reported (SAL-013, AT-071)
+  await page.context().setOffline(true);
+  await page.getByTestId('pos-offline').waitFor();
+  for (const n of [1, 2]) {
+    await page.waitForTimeout(1600);
+    await page.locator('h1').click();
+    await page.keyboard.type('4006381333931');
+    await page.keyboard.press('Enter');
+    await page.locator(`[data-testid="pos-offline-lines"] [data-code="4006381333931"][data-qty="${n}"]`).waitFor();
+  }
+  await page.getByTestId('pos-manual').fill('E2E-NONE');
+  await page.getByTestId('pos-manual-submit').click();
+  await page.locator('[data-testid="pos-offline-lines"] [data-code="E2E-NONE"]').waitFor();
+  const offlineRow = (await page.locator('[data-testid="pos-offline-lines"] [data-code="4006381333931"]').textContent()) ?? '';
+  check('OF01', 'offline: a banner shows, scans go to a cart on the device with cached names, and payment is not offered',
+    offlineRow.includes('نوشابه آزمایشی') && (await page.getByTestId('pos-pay').count()) === 0 && (await page.getByTestId('pos-finalize').count()) === 0, offlineRow);
+  await page.context().setOffline(false);
+  await page.getByTestId('pos-synced').waitFor();
+  await page.locator('[data-testid="pos-lines"] [data-sku="E2E-COLA"][data-qty="2"]').waitFor();
+  const synced = (await page.getByTestId('pos-synced').textContent()) ?? '';
+  check('OF02', 'back online the cart is synced once at server prices and the unknown code is reported',
+    synced.includes('E2E-NONE') && (await page.getByTestId('pos-offline-cart').count()) === 0
+    && (await page.locator('[data-testid="pos-lines"] tbody tr').count()) === 1, synced);
+  await page.getByTestId('pos-cancel').click();
+  await page.getByTestId('pos-aside-text').fill('آزمون آفلاین');
+  await page.getByTestId('pos-aside-submit').click();
+  await page.locator('[data-testid="pos-lines"] tbody tr').first().waitFor({ state: 'detached' });
   await shot(page, 'pos');
   // F01 US-064: one damaged bottle moves from the shop floor to the returns warehouse at its average cost
   await page.goto(`${BFF}/transfers`);

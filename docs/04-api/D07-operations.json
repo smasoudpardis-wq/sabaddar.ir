@@ -1160,6 +1160,7 @@
   "pathParams": [],
   "bodyProps": [
    "clientDraftId",
+   "lines",
    "registerId"
   ],
   "idempotent": false

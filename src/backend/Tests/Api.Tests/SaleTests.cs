@@ -160,6 +160,42 @@ public sealed class SaleTests : IClassFixture<ApiFactory>, IAsyncLifetime
     }
 
     [DbFact]
+    public async Task AT071_a_cart_built_offline_syncs_once_with_its_lines_at_server_prices_and_reports_what_it_could_not_add()
+    {
+        await OpenShift("cashier", _r1);
+        await Product("SL-OFF", "50000", 0, new { code = "SL-OFF", isInternal = true });
+        object offline = new
+        {
+            registerId = _r1, clientDraftId = "offline-" + Guid.NewGuid().ToString("N")[..12],
+            lines = new object[] { new { barcode = "SL-OFF", qty = "2" }, new { barcode = "SL-NONE", qty = "1" }, new { barcode = "SL-OFF", qty = "1" } },
+        };
+
+        HttpResponseMessage first = await As("cashier").PostAsJsonAsync("/api/v1/pos/sales", offline);
+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
+        JsonElement synced = await Body(first);
+        JsonElement line = synced.GetProperty("lines").EnumerateArray().Single();
+        Assert.Equal(("3", "50000"), (line.GetProperty("qty").GetString(), line.GetProperty("unitPrice").GetString()));   // the server's price, added up
+        JsonElement rejected = synced.GetProperty("rejectedLines").EnumerateArray().Single();
+        Assert.Equal((1, "barcode-not-found"), (rejected.GetProperty("index").GetInt32(), rejected.GetProperty("code").GetString()));
+        Assert.Contains("offline-lines-rejected", synced.GetProperty("warnings").EnumerateArray().Select(w => w.GetString()));
+
+        // the connection dropped before the answer arrived and the device sends the same cart again: nothing is added twice
+        HttpResponseMessage again = await As("cashier").PostAsJsonAsync("/api/v1/pos/sales", offline);
+        Assert.Equal(HttpStatusCode.OK, again.StatusCode);
+        JsonElement same = await Body(again);
+        Assert.Equal(synced.GetProperty("id").GetGuid(), same.GetProperty("id").GetGuid());
+        Assert.Equal("3", same.GetProperty("lines").EnumerateArray().Single().GetProperty("qty").GetString());
+        Assert.Equal("150000", same.GetProperty("totals").GetProperty("total").GetString());
+
+        HttpResponseMessage tooMany = await As("cashier").PostAsJsonAsync("/api/v1/pos/sales", new
+        {
+            registerId = _r1, clientDraftId = "offline-too-many-lines",
+            lines = Enumerable.Range(0, 301).Select(_ => new { barcode = "SL-OFF", qty = "1" }).ToArray(),
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, tooMany.StatusCode);
+    }
+
+    [DbFact]
     public async Task BR013_lines_are_priced_on_the_server_a_rescan_adds_up_a_carton_is_its_own_line_and_the_largest_rule_applies()
     {
         await OpenShift("cashier", _r1);

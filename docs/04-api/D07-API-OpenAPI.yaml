@@ -3888,7 +3888,8 @@ paths:
       tags:
       - POS
       summary: ایجاد سبد (Idempotent با clientDraftId برای Sync آفلاین)
-      description: Repeating the same clientDraftId returns the existing sale (200) instead of creating a new one.
+      description: Repeating the same clientDraftId returns the existing sale (200) instead of creating a new one; offline
+        lines sent with it are not added again. A line the store cannot add is reported in rejectedLines, not fatal.
       security: *id001
       requestBody:
         required: true
@@ -12750,6 +12751,23 @@ components:
         version:
           type: integer
           format: int32
+        rejectedLines:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              index:
+                type: integer
+                format: int32
+              code:
+                type:
+                - string
+                - 'null'
+            required:
+            - index
+            - code
+          description: 'Only in the response to createSale with offline lines: lines the store could not add (e.g. barcode-not-found)'
         warnings:
           type: array
           items:
@@ -12758,6 +12776,7 @@ components:
             - missing-tax-code
             - price-preview-only
             - negative-stock-allowed
+            - offline-lines-rejected
       required:
       - id
       - status
@@ -12774,6 +12793,7 @@ components:
       - finalizedAt
       - receiptUrl
       - version
+      - rejectedLines
       - warnings
     SaleCreate:
       type: object
@@ -12785,6 +12805,12 @@ components:
         clientDraftId:
           type: string
           description: 8-64 of A-Z a-z 0-9 _ - (DI-010)
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/SaleLineInput'
+          description: 'SAL-013: a cart built offline, added at server prices when the sale is created; ignored when the clientDraftId
+            already exists (no line is added twice)'
       required:
       - registerId
       - clientDraftId

@@ -37,6 +37,13 @@ const ERRORS: Record<string, string> = {
   'sale-not-held': 'این سبد دیگر نگه‌داشته نیست.',
 };
 
+// SAL-013 (US-084): what the register keeps on the device while the network is down. Only names and prices of the store's
+// products and the offline cart's codes and quantities: no customer data, no tokens (SEC-T-004).
+type OfflineLine = { code: string; qty: number; name: string; price: number | null };
+type OfflineCart = { clientDraftId: string; lines: OfflineLine[]; parked: { id: string; version: number } | null };
+const CATALOG = 'rc-pos-catalog';
+const gtin14 = (code: string) => (/^\d{8}$|^\d{12,13}$/.test(code) ? code.padStart(14, '0') : code);
+
 const store = {
   get: (k: string) => { try { return localStorage.getItem(k); } catch { return null; } },
   set: (k: string, v: string | null) => { try { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch { /* private mode */ } },
@@ -46,6 +53,8 @@ const store = {
  * US-082 / SAL-001 / SAL-002: the register screen. A barcode reader that types like a keyboard (keyboard wedge) is read
  * on this page wherever the focus is; a code can also be typed by hand, or read by the camera where the browser can.
  * Prices, discounts and tax come from the server; the cart is a draft until payment (EP-07).
+ * US-084 / SAL-013: without network the register keeps scanning into a cart held on the device (cached names, approximate
+ * prices, no payment); when the network returns the cart is sent once with its clientDraftId and priced by the server.
  */
 export default function PosPage() {
   const [context, setContext] = useState<Context | null>(null);
@@ -67,6 +76,10 @@ export default function PosPage() {
   const buffer = useRef({ text: '', at: 0 });
   const busy = useRef<Promise<void>>(Promise.resolve());
   const video = useRef<HTMLVideoElement | null>(null);
+  const [offline, setOffline] = useState(false);
+  const [off, setOff] = useState<OfflineCart | null>(null);
+  const [syncNote, setSyncNote] = useState('');
+  const offRef = useRef<OfflineCart | null>(null);
   const current = useRef<Sale | null>(null);   // queued scans see the latest cart, not the render they were queued in
   useEffect(() => { current.current = sale; }, [sale]);
 
@@ -101,6 +114,92 @@ export default function PosPage() {
     })();
   }, [registerId, register?.shift?.mine, draftKey]);
 
+  // SAL-013: the offline cart of this register, and the product cache that lets a scan show a name while offline
+  const offlineKey = `rc-pos-offline-${registerId}`;
+  const keepOffline = useCallback((c: OfflineCart | null) => {
+    offRef.current = c;
+    setOff(c);
+    store.set(offlineKey, c ? JSON.stringify(c) : null);
+  }, [offlineKey]);
+  useEffect(() => {
+    if (!registerId) return;
+    try { const kept = store.get(offlineKey); keepOffline(kept ? JSON.parse(kept) : null); } catch { keepOffline(null); }
+  }, [registerId, offlineKey, keepOffline]);
+  useEffect(() => {
+    setOffline(!navigator.onLine);
+    const down = () => setOffline(true);
+    const up = () => setOffline(false);
+    window.addEventListener('offline', down);
+    window.addEventListener('online', up);
+    return () => { window.removeEventListener('offline', down); window.removeEventListener('online', up); };
+  }, []);
+  useEffect(() => {
+    if (!context || offline) return;
+    void (async () => {
+      const r = await fetch('/bff/products?limit=200', { cache: 'no-store' }).catch(() => null);
+      if (!r?.ok) return;
+      const items: { name: string; variants: { sku: string; unitPrice: string | null; barcodes: { code: string; codeNormalized: string }[] }[] }[] = (await r.json()).items;
+      const map: Record<string, { name: string; price: number | null }> = {};
+      for (const p of items) {
+        for (const v of p.variants) {
+          const entry = { name: p.name, price: v.unitPrice === null ? null : Number(v.unitPrice) };
+          map[v.sku] = entry;
+          for (const b of v.barcodes) { map[b.code] = entry; map[b.codeNormalized] = entry; }
+        }
+      }
+      store.set(CATALOG, JSON.stringify(map));
+    })();
+  }, [context, offline]);
+
+  function addOffline(code: string) {
+    let cart = offRef.current;
+    if (!cart) {
+      const open = current.current;
+      // a cart already on the server is put aside when the connection returns, so nothing is lost or mixed
+      cart = { clientDraftId: crypto.randomUUID(), lines: [], parked: open && open.lines.length > 0 ? { id: open.id, version: open.version } : null };
+      current.current = null;
+      setSale(null);
+    }
+    let cached: Record<string, { name: string; price: number | null }> = {};
+    try { cached = JSON.parse(store.get(CATALOG) ?? '{}'); } catch { /* no cache yet */ }
+    const hit = cached[code] ?? cached[gtin14(code)];
+    const lines = cart.lines.some((l) => l.code === code)
+      ? cart.lines.map((l) => (l.code === code ? { ...l, qty: l.qty + 1 } : l))
+      : [...cart.lines, { code, qty: 1, name: hit?.name ?? 'کالای ناشناس (پس از اتصال بررسی می‌شود)', price: hit?.price ?? null }];
+    keepOffline({ ...cart, lines });
+  }
+
+  // back online: the offline cart is sent once with its clientDraftId; a repeated send returns the same cart (DI-010)
+  const sync = useCallback(async () => {
+    const cart = offRef.current;
+    if (!cart || !registerId) return;
+    try {
+      if (cart.parked) {
+        await fetch(`/bff/pos/sales/${cart.parked.id}/hold`, {
+          method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf() },
+          body: JSON.stringify({ expectedVersion: cart.parked.version, note: 'پیش از قطعی اینترنت' }),
+        });
+      }
+      const r = await fetch('/bff/pos/sales', {
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf() },
+        body: JSON.stringify({ registerId, clientDraftId: cart.clientDraftId, lines: cart.lines.map((l) => ({ barcode: l.code, qty: String(l.qty) })) }),
+      });
+      const p = await r.json().catch(() => null);
+      if (!r.ok) { setError(p?.code ?? `http-${r.status}`); return; }
+      const rejected: { index: number }[] = p.rejectedLines ?? [];
+      setSyncNote(rejected.length === 0 ? 'سبد آفلاین با سرور هماهنگ شد؛ قیمت‌ها از سرور آمد.'
+        : `سبد آفلاین هماهنگ شد؛ این اقلام اضافه نشدند: ${rejected.map((x) => cart.lines[x.index]?.code).join('، ')}`);
+      store.set(draftKey, cart.clientDraftId);
+      keepOffline(null);
+      current.current = p;
+      setSale(p);
+      void loadHeld();
+    } catch {
+      setOffline(true);   // still no network: try again on the next "online"
+    }
+  }, [registerId, draftKey, keepOffline]);
+  useEffect(() => { if (!offline && off && register?.shift?.mine) void sync(); }, [offline, off, register?.shift?.mine, sync]);
+
   async function openShift(e: React.FormEvent) {
     e.preventDefault();
     setError('');
@@ -129,11 +228,14 @@ export default function PosPage() {
 
   async function addCode(code: string) {
     setError('');
-    const s = await ensureSale();
+    if (offline || offRef.current) { addOffline(code); return; }
+    const s = await ensureSale().catch(() => undefined);
+    if (s === undefined) { setOffline(true); addOffline(code); return; }
     if (!s) return;
     const r = await fetch(`/bff/pos/sales/${s.id}/lines`, {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf() }, body: JSON.stringify({ barcode: code, qty: '1' }),
-    });
+    }).catch(() => null);
+    if (!r) { setOffline(true); addOffline(code); return; }   // the network went down mid-scan
     const body = await r.json().catch(() => null);
     if (r.ok) { current.current = body; setSale(body); } else setError(body?.code ?? `http-${r.status}`);
   }
@@ -377,6 +479,12 @@ export default function PosPage() {
 
       {register?.shift?.mine && (
         <>
+          {offline && (
+            <p role="status" data-testid="pos-offline" style={{ background: '#5B3A8C', color: '#fff', padding: 8 }}>
+              اتصال اینترنت قطع است. اسکن ادامه دارد و سبد روی همین دستگاه نگه داشته می‌شود؛ پرداخت و صدور فاکتور پس از اتصال.
+            </p>
+          )}
+          {syncNote && <p role="status" data-testid="pos-synced">{syncNote}</p>}
           <p data-testid="pos-ready">بارکدخوان آماده است؛ کافی است اسکن کنید.</p>
           <form onSubmit={(e) => { e.preventDefault(); onScan(manual); setManual(''); }}>
             <label>ورود دستی کد <input value={manual} onChange={(e) => setManual(e.target.value)} dir="ltr" size={16} inputMode="numeric"
@@ -386,6 +494,22 @@ export default function PosPage() {
           </form>
           {camera && <video ref={video} muted playsInline style={{ maxWidth: '100%', maxHeight: 240 }} />}
           {ignored > 0 && <p role="status" data-testid="pos-ignored" data-count={ignored}>اسکن تکراری (کمتر از ۱٫۵ ثانیه) نادیده گرفته شد.</p>}
+          {off && (
+            <div data-testid="pos-offline-cart">
+              <h2>سبد آفلاین (قیمت‌ها تقریبی است؛ قیمت نهایی را سرور تعیین می‌کند)</h2>
+              <table data-testid="pos-offline-lines">
+                <thead><tr><th>کالا</th><th>کد</th><th>مقدار</th><th>فی تقریبی</th></tr></thead>
+                <tbody>
+                  {off.lines.map((l) => (
+                    <tr key={l.code} data-code={l.code} data-qty={l.qty}>
+                      <td>{l.name}</td><td dir="ltr">{l.code}</td><td>{l.qty.toLocaleString('fa-IR')}</td><td>{l.price === null ? '—' : rial(String(l.price))}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p>جمع تقریبی: {rial(String(off.lines.reduce((t, l) => t + (l.price ?? 0) * l.qty, 0)))} ریال</p>
+            </div>
+          )}
           <table data-testid="pos-lines">
             <thead><tr><th>کالا</th><th>مقدار</th><th>واحد</th><th>فی</th><th>تخفیف</th><th>جمع</th><th /></tr></thead>
             <tbody>
@@ -425,7 +549,7 @@ export default function PosPage() {
               <strong>قابل پرداخت: {rial(sale.totals.total)} ریال</strong>
             </p>
           )}
-          {sale && sale.status === 'Draft' && sale.lines.length > 0 && sale.tenders.every((t) => t.status === 'Voided') && (
+          {!offline && sale && sale.status === 'Draft' && sale.lines.length > 0 && sale.tenders.every((t) => t.status === 'Voided') && (
             aside ? (
               <form onSubmit={(e) => void putAside(e)} data-testid="pos-aside-form">
                 <label>{aside.kind === 'hold' ? 'نام یا یادداشت (اختیاری)' : 'دلیل لغو'}{' '}
@@ -455,7 +579,7 @@ export default function PosPage() {
               </ul>
             </div>
           )}
-          {sale && sale.lines.length > 0 && (
+          {!offline && !off && sale && sale.lines.length > 0 && (
             <div data-testid="pos-pay" data-remaining={sale.totals.remaining}>
               <h2>پرداخت</h2>
               <ul data-testid="pos-tenders">

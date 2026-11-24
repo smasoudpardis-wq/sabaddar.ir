@@ -2003,7 +2003,7 @@ v1.MapGet("/purchase-returns", async (RequestContext ctx, IUnitOfWork uow, IProc
 // worked on a registered device of the branch (ABAC-04, BR-050); every amount is the server's (BR-013..BR-018).
 string Money(long v) => v.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
-object SaleJson(SaleView s, IReadOnlyList<string>? warnings = null, IReadOnlyList<PaymentView>? payments = null)
+object SaleJson(SaleView s, IReadOnlyList<string>? warnings = null, IReadOnlyList<PaymentView>? payments = null, IReadOnlyList<object>? rejectedLines = null)
 {
     var t = SaleMath.Totals(s.Lines);
     long change = payments?.Where(p => p.Status != "Voided").Sum(p => p.Change ?? 0) ?? 0;
@@ -2038,7 +2038,7 @@ object SaleJson(SaleView s, IReadOnlyList<string>? warnings = null, IReadOnlyLis
             gross = Money(t.Gross), discount = Money(t.Discount), net = Money(t.Net), tax = Money(t.Tax), total = Money(t.Total),
             paid = Money(s.Paid), remaining = Money(s.Remaining), change = Money(change),
         },
-        s.FinalizedAt, receiptUrl = (string?)null, s.Version,
+        s.FinalizedAt, receiptUrl = (string?)null, s.Version, rejectedLines,
         warnings = warnings ?? (s.Status is "Draft" or "Held" ? ["price-preview-only"] : []),
     };
 }
@@ -2141,6 +2141,7 @@ v1.MapPost("/pos/sales", async (SaleCreateInput body, RequestContext ctx, IUnitO
             errors["clientDraftId"] = ["8-64 of A-Z a-z 0-9 _ -"];
         }
 
+        if (body.Lines is { Length: > SaleMath.MaxLines }) errors["lines"] = [$"up to {SaleMath.MaxLines} lines"];
         if (errors.Count > 0) return Problems.Validation(http, errors);
         PricingMode mode = Enum.Parse<PricingMode>((await profiles.GetAsync(ctx.ActiveTenant!.Value, ct))!.PricingMode);
         return await uow.ExecuteAsync(ctx, async (s, c) =>
@@ -2161,7 +2162,36 @@ v1.MapPost("/pos/sales", async (SaleCreateInput body, RequestContext ctx, IUnitO
             var (result, created) = await sales.CreateAsync(s, body.ClientDraftId!, new SaleOrigin(register.BranchId.Value, body.RegisterId.Value, shift.Id,
                 ctx.User!.Value.Value, ctx.Terminal!.TerminalId, "POS", mode), c);
             if (result.Outcome != SaleOutcome.Done) return SaleProblem(http, result.Outcome);
-            return created ? Results.Created($"/api/v1/pos/sales/{result.Sale!.Id}", SaleJson(result.Sale)) : Results.Ok(SaleJson(result.Sale!));
+            if (!created)
+            {
+                return Results.Ok(SaleJson(result.Sale!));   // SAL-013: a cart synced again keeps what it has; its lines are not added twice
+            }
+
+            // SAL-013: a cart built offline arrives with its lines, added at today's server prices in this transaction; a line
+            // the store cannot sell now (an unknown code, no price) is left out and reported, not fatal to the rest
+            SaleView sale = result.Sale!;
+            var rejected = new List<object>();
+            for (int i = 0; i < (body.Lines?.Length ?? 0); i++)
+            {
+                var (after, problem) = await AddSaleLine(http, ctx, s, sale.Id, body.Lines![i], c);
+                if (after is not null)
+                {
+                    sale = after;
+                }
+                else
+                {
+                    rejected.Add(new { index = i, code = (problem as Microsoft.AspNetCore.Http.HttpResults.ProblemHttpResult)?.ProblemDetails.Extensions["code"]?.ToString() });
+                }
+            }
+
+            if (body.Lines is { Length: > 0 })
+            {
+                await Audit(http, s, ActorOf(ctx, http), new AuditEntry("pos.sale.synced-offline", "Sale", sale.Id.ToString(), null,
+                    new { clientDraftId = body.ClientDraftId, lines = body.Lines.Length, rejected = rejected.Count }), c);
+            }
+
+            return Results.Created($"/api/v1/pos/sales/{sale.Id}", SaleJson(sale, rejected.Count > 0 ? ["offline-lines-rejected", "price-preview-only"] : null,
+                rejectedLines: body.Lines is null ? null : rejected));
         }, ct);
     })
     .RequirePermission(Permissions.PosSell);
@@ -2177,103 +2207,112 @@ v1.MapGet("/pos/sales/{saleId:guid}", async (Guid saleId, RequestContext ctx, IU
     })
     .RequirePermission(Permissions.PosSell);
 
-v1.MapPost("/pos/sales/{saleId:guid}/lines", async (Guid saleId, SaleLineInput body, RequestContext ctx, IUnitOfWork uow, ISales sales,
-        IProductCatalog catalog, IWeightedBarcodeProfiles weighted, HttpContext http, CancellationToken ct) =>
-    {
-        var errors = new Dictionary<string, string[]>();
-        if ((body.VariantId is null) == (body.Barcode is null)) errors["barcode"] = ["exactly one of barcode or variantId"];
-        if (body.Barcode is { } b && (b.Length is < 1 or > 32 || string.IsNullOrWhiteSpace(b))) errors["barcode"] = ["1-32 characters"];
-        if (body.Qty is null || !ProductRules.TryFactor(body.Qty, out decimal qty)) { errors["qty"] = ["positive decimal, up to 6 places"]; qty = 0; }
-        if (body.Unit is not null && !ProductRules.ValidUnit(body.Unit)) errors["unit"] = ["1-10 of A-Z 0-9"];
-        if (errors.Count > 0) return Problems.Validation(http, errors);
+// SAL-001 / SAL-002 / CAT-003 / CAT-007: one scan or pick added to a draft cart in the caller's transaction (addSaleLine,
+// and createSale's offline lines, SAL-013). A refusal changes nothing and comes back as the problem.
+async Task<(SaleView? Sale, IResult? Problem)> AddSaleLine(HttpContext http, RequestContext ctx, IUnitOfWorkScope s, Guid saleId, SaleLineInput body,
+    CancellationToken c)
+{
+    ISales sales = http.RequestServices.GetRequiredService<ISales>();
+    IProductCatalog catalog = http.RequestServices.GetRequiredService<IProductCatalog>();
+    IWeightedBarcodeProfiles weighted = http.RequestServices.GetRequiredService<IWeightedBarcodeProfiles>();
+    var errors = new Dictionary<string, string[]>();
+    if ((body.VariantId is null) == (body.Barcode is null)) errors["barcode"] = ["exactly one of barcode or variantId"];
+    if (body.Barcode is { } b && (b.Length is < 1 or > 32 || string.IsNullOrWhiteSpace(b))) errors["barcode"] = ["1-32 characters"];
+    if (body.Qty is null || !ProductRules.TryFactor(body.Qty, out decimal qty)) { errors["qty"] = ["positive decimal, up to 6 places"]; qty = 0; }
+    if (body.Unit is not null && !ProductRules.ValidUnit(body.Unit)) errors["unit"] = ["1-10 of A-Z 0-9"];
+    if (errors.Count > 0) return (null, Problems.Validation(http, errors));
 
-        string? code = body.Barcode is null ? null : Gtin.NormalizeDigits(body.Barcode.Trim());
-        bool gs1 = code is not null && Gtin.TryParse(code, out _);
-        if (code is not null && !gs1 && (code.All(char.IsAsciiDigit) && code.Length is 8 or 12 or 13 or 14 || !InternalCode.IsValid(code)))
+    string? code = body.Barcode is null ? null : Gtin.NormalizeDigits(body.Barcode.Trim());
+    bool gs1 = code is not null && Gtin.TryParse(code, out _);
+    if (code is not null && !gs1 && (code.All(char.IsAsciiDigit) && code.Length is 8 or 12 or 13 or 14 || !InternalCode.IsValid(code)))
+    {
+        return (null, InputProblem(http, new Dictionary<string, string[]> { ["barcode"] = ["not a valid EAN-8, UPC-A, EAN-13, GTIN-14 or internal code"] }, true));
+    }
+
+    SaleResult locked = await sales.LockDraftAsync(s, saleId, null, c);
+    if (locked.Outcome == SaleOutcome.NotFound) return (null, Problems.NotFound(http));
+    if (await MayWorkOn(http, ctx, s, locked.Sale!, c) is { } denied) return (null, denied);
+    if (locked.Outcome != SaleOutcome.Done) return (null, SaleProblem(http, locked.Outcome));
+    if (locked.Sale!.HasPayments) return (null, PaidInto(http));
+    SaleView sale = locked.Sale!;
+
+    // CAT-003 / CAT-007: a scale label first, then the code itself; an unknown code is for UC-01 (define) or a name search
+    Guid variantId;
+    string? unit = body.Unit, weightedCode = null;
+    decimal? fixedQty = null;
+    long? labelValue = null;
+    WeightedValueType? labelType = null;
+    if (code is not null)
+    {
+        var (status, label) = WeightedBarcodes.Decode((await weighted.GetAsync(s, c)).Profiles, code);
+        if (status == WeightedDecodeStatus.Invalid)
         {
-            return InputProblem(http, new Dictionary<string, string[]> { ["barcode"] = ["not a valid EAN-8, UPC-A, EAN-13, GTIN-14 or internal code"] }, true);
+            return (null, InputProblem(http, new Dictionary<string, string[]> { ["barcode"] = ["weighted label: the value check digit does not match"] }, true));
         }
 
-        return await uow.ExecuteAsync(ctx, async (s, c) =>
+        BarcodeMatch? match = await catalog.FindByCodeAsync(s, status == WeightedDecodeStatus.Decoded ? label!.ItemCode
+            : Gtin.TryParse(code, out Gtin g) ? g.Normalized14 : code, c);
+        if (match is null) return (null, Problems.Create(http, StatusCodes.Status404NotFound, "barcode-not-found", "No product of this store has this code"));
+        variantId = match.VariantId;
+        if (status == WeightedDecodeStatus.Decoded)
         {
-            SaleResult locked = await sales.LockDraftAsync(s, saleId, null, c);
-            if (locked.Outcome == SaleOutcome.NotFound) return Problems.NotFound(http);
-            if (await MayWorkOn(http, ctx, s, locked.Sale!, c) is { } denied) return denied;
-            if (locked.Outcome != SaleOutcome.Done) return SaleProblem(http, locked.Outcome);
-            if (locked.Sale!.HasPayments) return PaidInto(http);
-            SaleView sale = locked.Sale!;
+            weightedCode = code;
+            unit = match.BaseUnit;
+            labelType = label!.Profile.ValueType;
+            if (labelType == WeightedValueType.Weight) fixedQty = label.Value;
+            else labelValue = (long)label.Value;
+        }
+        else if (unit is null && match.UnitFactor != 1)
+        {
+            unit = match.PackagingUnit;   // a carton's barcode sells a carton (BR-044)
+        }
+    }
+    else
+    {
+        variantId = body.VariantId!.Value;
+    }
 
-            // CAT-003 / CAT-007: a scale label first, then the code itself; an unknown code is for UC-01 (define) or a name search
-            Guid variantId;
-            string? unit = body.Unit, weightedCode = null;
-            decimal? fixedQty = null;
-            long? labelValue = null;
-            WeightedValueType? labelType = null;
-            if (code is not null)
-            {
-                var (status, label) = WeightedBarcodes.Decode((await weighted.GetAsync(s, c)).Profiles, code);
-                if (status == WeightedDecodeStatus.Invalid)
-                {
-                    return InputProblem(http, new Dictionary<string, string[]> { ["barcode"] = ["weighted label: the value check digit does not match"] }, true);
-                }
+    if (await catalog.SellableAsync(s, variantId, c) is not { } v) return (null, Problems.NotFound(http));
+    unit ??= v.BaseUnit;
+    if (!(await catalog.UnitsAsync(s, [variantId], c))[variantId].Factors.TryGetValue(unit, out decimal factor))
+    {
+        return (null, Problems.Create(http, StatusCodes.Status422UnprocessableEntity, "unknown-unit", "This unit has no conversion to the product's base unit"));
+    }
 
-                BarcodeMatch? match = await catalog.FindByCodeAsync(s, status == WeightedDecodeStatus.Decoded ? label!.ItemCode
-                    : Gtin.TryParse(code, out Gtin g) ? g.Normalized14 : code, c);
-                if (match is null) return Problems.Create(http, StatusCodes.Status404NotFound, "barcode-not-found", "No product of this store has this code");
-                variantId = match.VariantId;
-                if (status == WeightedDecodeStatus.Decoded)
-                {
-                    weightedCode = code;
-                    unit = match.BaseUnit;
-                    labelType = label!.Profile.ValueType;
-                    if (labelType == WeightedValueType.Weight) fixedQty = label.Value;
-                    else labelValue = (long)label.Value;
-                }
-                else if (unit is null && match.UnitFactor != 1)
-                {
-                    unit = match.PackagingUnit;   // a carton's barcode sells a carton (BR-044)
-                }
-            }
-            else
-            {
-                variantId = body.VariantId!.Value;
-            }
+    long? labelAmount = null;
+    if (labelValue is { } amount)
+    {
+        if (v.UnitPrice is not long price || price <= 0)
+        {
+            return (null, Problems.Create(http, StatusCodes.Status422UnprocessableEntity, "price-missing", "This product has no price yet"));
+        }
 
-            if (await catalog.SellableAsync(s, variantId, c) is not { } v) return Problems.NotFound(http);
-            unit ??= v.BaseUnit;
-            if (!(await catalog.UnitsAsync(s, [variantId], c))[variantId].Factors.TryGetValue(unit, out decimal factor))
-            {
-                return Problems.Create(http, StatusCodes.Status422UnprocessableEntity, "unknown-unit", "This unit has no conversion to the product's base unit");
-            }
+        (fixedQty, labelAmount) = WeightedBarcodes.PriceLabelLine(amount, price);
+    }
 
-            long? labelAmount = null;
-            if (labelValue is { } amount)
-            {
-                if (v.UnitPrice is not long price || price <= 0)
-                {
-                    return Problems.Create(http, StatusCodes.Status422UnprocessableEntity, "price-missing", "This product has no price yet");
-                }
+    if (fixedQty is <= 0)
+    {
+        return (null, InputProblem(http, new Dictionary<string, string[]> { ["barcode"] = ["the label's quantity is zero"] }, true));
+    }
 
-                (fixedQty, labelAmount) = WeightedBarcodes.PriceLabelLine(amount, price);
-            }
+    // a repeated scan of the same item and unit adds to its line; a scale label is always a line of its own
+    SaleLineView? same = weightedCode is null ? sale.Lines.FirstOrDefault(l => l.VariantId == variantId && l.Unit == unit && l.WeightedCode is null) : null;
+    if (same is null && sale.Lines.Count >= SaleMath.MaxLines)
+    {
+        return (null, Problems.Validation(http, new Dictionary<string, string[]> { ["lines"] = [$"up to {SaleMath.MaxLines} lines"] }));
+    }
 
-            if (fixedQty is <= 0)
-            {
-                return InputProblem(http, new Dictionary<string, string[]> { ["barcode"] = ["the label's quantity is zero"] }, true);
-            }
+    decimal lineQty = fixedQty ?? (same?.Qty ?? 0) + qty;
+    var (line, problem) = await PriceLine(http, s, sale, v, lineQty, unit, factor, weightedCode, labelAmount, c);
+    if (problem is not null) return (null, problem);
+    return (await sales.WriteLineAsync(s, saleId, same?.LineNo, line!, c), null);
+}
 
-            // a repeated scan of the same item and unit adds to its line; a scale label is always a line of its own
-            SaleLineView? same = weightedCode is null ? sale.Lines.FirstOrDefault(l => l.VariantId == variantId && l.Unit == unit && l.WeightedCode is null) : null;
-            if (same is null && sale.Lines.Count >= SaleMath.MaxLines)
-            {
-                return Problems.Validation(http, new Dictionary<string, string[]> { ["lines"] = [$"up to {SaleMath.MaxLines} lines"] });
-            }
-
-            decimal lineQty = fixedQty ?? (same?.Qty ?? 0) + qty;
-            var (line, problem) = await PriceLine(http, s, sale, v, lineQty, unit, factor, weightedCode, labelAmount, c);
-            if (problem is not null) return problem;
-            return Results.Ok(SaleJson(await sales.WriteLineAsync(s, saleId, same?.LineNo, line!, c)));
-        }, ct);
+v1.MapPost("/pos/sales/{saleId:guid}/lines", async (Guid saleId, SaleLineInput body, RequestContext ctx, IUnitOfWork uow, HttpContext http,
+        CancellationToken ct) =>
+    {
+        var (sale, problem) = await uow.ExecuteAsync(ctx, (s, c) => AddSaleLine(http, ctx, s, saleId, body, c), ct);
+        return problem ?? Results.Ok(SaleJson(sale!));
     })
     .RequirePermission(Permissions.PosSell);
 
@@ -3900,7 +3939,7 @@ internal sealed record TenderVoidInput(int? ExpectedVersion, string? Reason);
 internal sealed record FinalizeInput(int? ExpectedVersion, string? ExpectedTotal);
 internal sealed record TenderInput(string? Method, string? Amount, string? Tendered, string? ReferenceNo, string? TerminalNo, string? CardLast4,
     Guid? ApprovalId);
-internal sealed record SaleCreateInput(Guid? RegisterId, string? ClientDraftId);
+internal sealed record SaleCreateInput(Guid? RegisterId, string? ClientDraftId, SaleLineInput[]? Lines);
 internal sealed record SaleLineInput(Guid? VariantId, string? Barcode, string? Unit, string? Qty);
 internal sealed record SaleLinePatchInput(int? ExpectedVersion, string? Qty, string? Unit);
 internal sealed record SupplierInput(string? Name, string? NationalId, string? EconomicCode, string? Phone);
