@@ -258,7 +258,10 @@ schema("GoodsReceipt", id="uuid", supplierId="uuid", warehouseId="uuid", total="
        journalEntryId="uuid", warnings=["str"], postedAt="dt")
 schema("AdjustmentCreate", warehouseId="uuid", reason=("enum", ["Damage", "Expiry", "Theft", "CountError", "Other"]),
        lines=[{"variantId": "uuid", "qtyDelta": ("desc", "str", "Signed decimal")}], **{"note?": "str"})
-schema("Adjustment", id="uuid", value="money", journalEntryId="uuid", postedAt="dt")
+schema("Adjustment", id="uuid", warehouseId="uuid", reason="str", note="str?", lineCount="int",
+       value=("desc", "money", "Σ |Δqty| × WAC of the moment (BR-033) = shrinkage + overage"), shrinkage="money", overage="money",
+       journalEntryId=("desc", "uuid?", "Null only when the adjustment moved no value (WAC 0)"), approvalId="uuid?", createdBy="uuid",
+       postedAt="dt", warnings=["str"])
 schema("TransferCreate", fromWarehouseId="uuid", toWarehouseId="uuid", lines=[{"variantId": "uuid", "qty": "qty"}])
 schema("Transfer", id="uuid", status=("enum", ["Completed"]), postedAt="dt")
 schema("CountCreate", warehouseId="uuid", scope=("enum", ["All", "Categories"]), **{"categoryIds?": ["uuid"]},
@@ -524,6 +527,7 @@ ERROR_CATALOG = {
     "payment-failed": (409, "Gateway verify failed"),
     "period-closed": (409, "Fiscal period closed (DI-042)"),
     "no-open-period": (422, "No fiscal period covers this date (ACC-001.1)"),
+    "account-role-unmapped": (422, "An automatic entry needs an account role with no account mapped (ACC-004, D-30)"),
     "journal-not-draft": (409, "Only a draft entry can be posted (ACC-003)"),
     "journal-already-reversed": (409, "An entry is reversed once (DI-045)"),
     "sale-finalized": (409, "Finalized sale is immutable (DI-003)"),
@@ -882,6 +886,8 @@ op("post", "/inventory/adjustments", "postAdjustment", "Inventory", "تعدیل 
    scope="Warehouse", idem=True, body="AdjustmentCreate", resp="Adjustment", resp_code="201",
    reqs=["INV-002", "BR-033"], audited=True, approval="value > tenant threshold (BR-033)",
    params=[{"name": "X-Approval-Id", "in": "header", "required": False, "schema": {"type": "string", "format": "uuid"}}])
+op("get", "/inventory/adjustments", "listAdjustments", "Inventory", "تعدیل‌ها و ارزش آن‌ها (کشف AB-05)", perm="reports.view",
+   resp="Adjustment", list_of=True, reqs=["INV-002", "BR-033", "AB-05"])
 op("post", "/inventory/transfers", "postTransfer", "Inventory", "انتقال بین انبارها (تک‌مرحله‌ای MVP)", perm="inventory.transfer",
    scope="Warehouse", idem=True, body="TransferCreate", resp="Transfer", resp_code="201", reqs=["INV-008"], audited=True)
 op("post", "/inventory/counts", "createCount", "Inventory", "شروع انبارگردانی (Snapshot)", perm="inventory.count",

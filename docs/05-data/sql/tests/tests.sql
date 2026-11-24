@@ -206,6 +206,21 @@ SELECT t.expect_error('T180 a tenant-level negative-stock policy names the tenan
   $$INSERT INTO inv.negative_stock_policy (tenant_id, scope_type, scope_id, policy) VALUES (core.current_tenant(), 'Tenant', gen_random_uuid(), 'Forbid')$$);
 SELECT t.expect_error('T181 the application cannot create partitions', '42501',
   $$SELECT inv.ensure_movement_partitions(1)$$);
+-- US-063 adjustments (INV-002, BR-033)
+SELECT t.expect_error('T193 an adjustment for «Other» needs a note (INV-002)', '23514',
+  $$INSERT INTO inv.stock_adjustment (tenant_id, id, warehouse_id, reason, note, line_count, value, shrinkage, overage, journal_entry_id, created_by)
+    VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000003', 'Other', ' ', 1, 0, 0, 0, NULL, gen_random_uuid())$$);
+SELECT t.expect_error('T194 a valued adjustment always has its journal entry', '23514',
+  $$INSERT INTO inv.stock_adjustment (tenant_id, id, warehouse_id, reason, line_count, value, shrinkage, overage, journal_entry_id, created_by)
+    VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000003', 'Damage', 1, 5000, 5000, 0, NULL, gen_random_uuid())$$);
+SELECT t.expect_error('T195 the value is the shrinkage plus the overage', '23514',
+  $$INSERT INTO inv.stock_adjustment (tenant_id, id, warehouse_id, reason, line_count, value, shrinkage, overage, journal_entry_id, created_by)
+    VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000003', 'Theft', 1, 100, 5000, 0, gen_random_uuid(), gen_random_uuid())$$);
+INSERT INTO inv.stock_adjustment (tenant_id, id, warehouse_id, reason, line_count, value, shrinkage, overage, journal_entry_id, created_by)
+  VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000095', 'a0000000-0000-0000-0000-000000000003', 'Expiry', 1, 5000, 5000, 0,
+          gen_random_uuid(), gen_random_uuid());
+SELECT t.expect_error('T196 an adjustment is never changed by the app (AB-05)', '42501',
+  $$UPDATE inv.stock_adjustment SET value = 0, shrinkage = 0, journal_entry_id = NULL WHERE id = 'a0000000-0000-0000-0000-000000000095'$$);
 SELECT t.expect_error('T14 stock movement is append-only for the app role', '42501',
   $$UPDATE inv.stock_movement SET qty_base = -2$$);
 SELECT t.expect_error('T15 movement for another tenant via parent rejected', '42501',

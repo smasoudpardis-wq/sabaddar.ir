@@ -14,6 +14,16 @@ public static class Problems
                 ["traceId"] = Activity.Current?.TraceId.ToString() ?? http.TraceIdentifier,
             });
 
+    /// <summary>A coded problem with a <c>context</c> object (e.g. insufficient-stock's shortages, D07 x-error-catalog).</summary>
+    public static IResult WithContext(HttpContext http, int status, string code, string title, object context) =>
+        Results.Problem(statusCode: status, title: title, type: $"https://errors.retailcloud.example/{code}",
+            extensions: new Dictionary<string, object?>
+            {
+                ["code"] = code,
+                ["context"] = context,
+                ["traceId"] = Activity.Current?.TraceId.ToString() ?? http.TraceIdentifier,
+            });
+
     /// <summary>404 for "does not exist" and "belongs to another tenant" alike (BR-003, D-48).</summary>
     public static IResult NotFound(HttpContext http) => Create(http, StatusCodes.Status404NotFound, "not-found", "Not found");
 

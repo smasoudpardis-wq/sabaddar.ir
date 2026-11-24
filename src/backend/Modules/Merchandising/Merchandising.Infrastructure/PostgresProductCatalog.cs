@@ -138,6 +138,21 @@ public sealed class PostgresProductCatalog(IOutbox outbox) : IProductCatalog
             : null;
     }
 
+    public async Task<IReadOnlySet<Guid>> ExistingVariantsAsync(IUnitOfWorkScope scope, IReadOnlyCollection<Guid> variantIds,
+        CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command("SELECT id FROM merch.tenant_variant WHERE id = ANY($1)");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = variantIds.ToArray(), NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Uuid });
+        var found = new HashSet<Guid>();
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await r.ReadAsync(cancellationToken))
+        {
+            found.Add(r.GetGuid(0));
+        }
+
+        return found;
+    }
+
     public async Task<CatalogOutcome> SetVariantStatusAsync(IUnitOfWorkScope scope, Guid productId, Guid variantId, int expectedVersion, string status,
         CancellationToken cancellationToken)
     {

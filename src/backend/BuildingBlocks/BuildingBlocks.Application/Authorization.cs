@@ -46,6 +46,7 @@ public static class Permissions
     public const string CatalogProductManage = "catalog.product.manage";
     public const string CatalogPriceManage = "catalog.price.manage";
     public const string InventoryReceiptCreate = "inventory.receipt.create";
+    public const string InventoryAdjust = "inventory.adjust";
     public const string ReportsView = "reports.view";
     public const string ShiftManage = "shift.manage";
     public const string ShiftSupervise = "shift.supervise";

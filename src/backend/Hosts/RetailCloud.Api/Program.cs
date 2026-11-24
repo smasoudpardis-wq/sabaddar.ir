@@ -32,6 +32,7 @@ builder.Services.AddSingleton<IWeightedBarcodeProfiles, PostgresWeightedBarcodeP
 builder.Services.AddSingleton<IPriceLists, PostgresPriceLists>();
 builder.Services.AddSingleton<IDiscounts, PostgresDiscounts>();
 builder.Services.AddSingleton<IStockLedger, RetailCloud.Inventory.Infrastructure.PostgresStockLedger>();
+builder.Services.AddSingleton<IStockAdjustments, RetailCloud.Inventory.Infrastructure.PostgresStockAdjustments>();
 builder.Services.AddSingleton<IShifts, PostgresShifts>();
 builder.Services.AddSingleton<IJournals, PostgresJournals>();
 ObjectStorageOptions? storage = builder.Configuration.GetSection("Storage").Get<ObjectStorageOptions>();
@@ -1309,6 +1310,142 @@ v1.MapPut("/inventory/negative-stock-policies", async (NegativeStockPolicyInput 
     })
     .RequirePermission(Permissions.TenantSettingsManage);
 
+// ---------------- US-063: manual stock adjustments with a reason (INV-002), an approval above the threshold (BR-033, AB-05)
+// and their journal entry in the same transaction (D02 §5.8.1). BR-033 [ASM]: a tenant setting later; until then
+// Inventory:AdjustmentApprovalThreshold (rials, default 50,000,000).
+long adjustmentThreshold = builder.Configuration.GetValue<long?>("Inventory:AdjustmentApprovalThreshold") ?? AdjustmentRules.DefaultApprovalThreshold;
+
+static string ReasonFa(string reason) => reason switch
+{
+    "Damage" => "آسیب", "Expiry" => "انقضا", "Theft" => "سرقت", "CountError" => "خطای شمارش", _ => "سایر",
+};
+
+object AdjustmentJson(AdjustmentRecord a, IReadOnlyList<string>? warnings = null) => new
+{
+    a.Id, a.WarehouseId, a.Reason, a.Note, a.LineCount, value = Rial(a.Value), shrinkage = Rial(a.Shrinkage), overage = Rial(a.Overage),
+    a.JournalEntryId, a.ApprovalId, a.CreatedBy, a.PostedAt, warnings = warnings ?? [],
+};
+
+v1.MapIdempotentPost<AdjustmentInput>("/inventory/adjustments", "inventory.post-adjustment", async (body, scope, http, ct) =>
+    {
+        RequestContext ctx = http.RequestServices.GetRequiredService<RequestContext>();
+        var errors = new Dictionary<string, string[]>();
+        if (body.WarehouseId is null) errors["warehouseId"] = ["required"];
+        if (body.Reason is null || !AdjustmentRules.Reasons.Contains(body.Reason)) errors["reason"] = ["Damage|Expiry|Theft|CountError|Other"];
+        string? note = string.IsNullOrWhiteSpace(body.Note) ? null : body.Note.Trim();
+        if (note is { Length: > AdjustmentRules.MaxNote }) errors["note"] = [$"up to {AdjustmentRules.MaxNote} characters"];
+        else if (body.Reason == "Other" && note is null) errors["note"] = ["required when the reason is Other"];
+        var lines = new List<AdjustmentLine>();
+        if (body.Lines is not { Length: >= 1 and <= AdjustmentRules.MaxLines }) errors["lines"] = [$"1-{AdjustmentRules.MaxLines} lines"];
+        for (int i = 0; i < (body.Lines?.Length ?? 0) && body.Lines!.Length <= AdjustmentRules.MaxLines; i++)
+        {
+            AdjustmentLineInput? l = body.Lines[i];
+            if (l?.VariantId is null) errors[$"lines[{i}].variantId"] = ["required"];
+            if (!AdjustmentRules.TryDelta(l?.QtyDelta, out decimal delta)) errors[$"lines[{i}].qtyDelta"] = ["signed non-zero decimal in the base unit, up to 6 places"];
+            else if (l?.VariantId is { } v) lines.Add(new AdjustmentLine(v, delta));
+        }
+
+        if (lines.Select(l => l.VariantId).Distinct().Count() != lines.Count) errors["lines"] = ["one line per variant"];
+        if (errors.Count > 0) return CommandResult.Fail(Problems.Validation(http, errors));
+
+        Guid warehouseId = body.WarehouseId!.Value;
+        if (await ResolveScope(scope, http.RequestServices.GetServices<IScopeLookup>(), ScopeType.Warehouse, warehouseId, ct) is not { } warehouse)
+        {
+            return CommandResult.Fail(Problems.Validation(http, new Dictionary<string, string[]> { ["warehouseId"] = ["not a warehouse of this store"] }));
+        }
+
+        if (!AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.InventoryAdjust, warehouse)) return CommandResult.Fail(Forbidden(http));
+        IReadOnlySet<Guid> known = await http.RequestServices.GetRequiredService<IProductCatalog>().ExistingVariantsAsync(scope, [.. lines.Select(l => l.VariantId)], ct);
+        if (lines.FindIndex(l => !known.Contains(l.VariantId)) is var unknown and >= 0)
+        {
+            return CommandResult.Fail(Problems.Validation(http, new Dictionary<string, string[]> { [$"lines[{unknown}].variantId"] = ["not a variant of this store"] }));
+        }
+
+        // the movements are posted first: their value is the WAC of this moment, under the balances' locks (INV-004, INV-006)
+        Guid id = Guid.CreateVersion7();
+        DateTimeOffset now = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
+        StockResult posted = await http.RequestServices.GetRequiredService<IStockLedger>().PostAsync(scope, new StockDocument("StockAdjustment", id, now,
+            [.. lines.Select((l, i) => new StockLine(i + 1, warehouseId, l.VariantId, AdjustmentRules.TypeOf(l.QtyDelta), l.QtyDelta))]), ct);
+        if (posted.Outcome == StockOutcome.InsufficientStock)
+        {
+            return CommandResult.Fail(Problems.WithContext(http, StatusCodes.Status409Conflict, "insufficient-stock", "Not enough stock", new
+            {
+                shortages = posted.Shortages.Select(s => new { s.WarehouseId, s.VariantId, available = Qty(s.Available), requested = Qty(s.Requested) }),
+            }));
+        }
+
+        if (posted.Outcome != StockOutcome.Done) throw new InvalidOperationException($"adjustment {id}: {posted.Outcome}");
+        (long value, long shrinkage, long overage) = AdjustmentRules.ValueOf(posted.Movements);
+
+        Guid? approvalId = null;
+        if (AdjustmentRules.NeedsApproval(value, adjustmentThreshold))
+        {
+            // D-61: bound to this exact adjustment and its value; failing here rolls the movements back
+            var ask = new ApprovalAsk(Permissions.InventoryAdjust, "StockAdjustment", AdjustmentRules.Binding(warehouseId, body.Reason!, lines), warehouse,
+                "value-threshold", Rial(value), Rial(adjustmentThreshold), $"{ReasonFa(body.Reason!)}{(note is null ? "" : ": " + note)}");
+            IApprovals approvals = http.RequestServices.GetRequiredService<IApprovals>();
+            bool approved = Guid.TryParse(http.Request.Headers["X-Approval-Id"], out Guid given)
+                && await approvals.ConsumeAsync(scope, given, ask, ctx.User!.Value, ct);
+            if (!approved)
+            {
+                if (given != Guid.Empty && await approvals.GetAsync(scope, given, ct) is { Status: "Pending" } open
+                    && open.RequestedBy == ctx.User!.Value.Value && open.ResourceId == ask.ResourceId && open.Value == ask.Value)
+                {
+                    return CommandResult.Fail(Problems.ApprovalRequired(http, given, ask.Condition, ask.Value, ask.Limit));
+                }
+
+                Guid requested = await http.RequestServices.GetRequiredService<IUnitOfWork>()
+                    .ExecuteAsync(ctx, (s, c) => approvals.RequestAsync(s, ask, ctx.User!.Value, c), ct);
+                return CommandResult.Fail(Problems.ApprovalRequired(http, requested, ask.Condition, ask.Value, ask.Limit));
+            }
+
+            approvalId = given;
+        }
+
+        Guid? journalId = null;
+        if (InventoryAdjustmentRule.For(id, shrinkage, overage, now, ReasonFa(body.Reason!)) is { } draft)
+        {
+            AccountingResult<JournalView> entry = await http.RequestServices.GetRequiredService<IJournals>().PostAutomaticAsync(scope, draft, ct);
+            if (entry.Outcome == AccountingOutcome.UnknownRole)
+            {
+                return CommandResult.Fail(Problems.Create(http, StatusCodes.Status422UnprocessableEntity, "account-role-unmapped",
+                    $"No account is mapped to the role {entry.Detail}; set it in the account mappings"));
+            }
+
+            if (entry.Outcome != AccountingOutcome.Done) return CommandResult.Fail(AccountingProblem(http, entry.Outcome, entry.Detail));
+            journalId = entry.Value!.Id;
+        }
+
+        AdjustmentRecord record = await http.RequestServices.GetRequiredService<IStockAdjustments>().RecordAsync(scope, new AdjustmentRecord(id, warehouseId,
+            body.Reason!, note, lines.Count, value, shrinkage, overage, journalId, approvalId, ctx.User!.Value.Value, now), ct);
+        await Audit(http, scope, ActorOf(ctx, http), new AuditEntry("inventory.adjustment.posted", "StockAdjustment", id.ToString(), note, new
+        {
+            warehouseId, reason = body.Reason, value, shrinkage, overage, journalId, approvalId,
+            lines = lines.Take(50).Select(l => new { l.VariantId, qtyDelta = Qty(l.QtyDelta) }),
+        }), ct);
+        return CommandResult.Created(AdjustmentJson(record, posted.Warnings));
+    })
+    .RequirePermission(Permissions.InventoryAdjust);
+
+// AB-05 detection: the adjustments and their value, for whoever may see reports of each warehouse's branch (TM-014)
+v1.MapGet("/inventory/adjustments", async (RequestContext ctx, IUnitOfWork uow, IStockAdjustments adjustments, HttpContext http, CancellationToken ct) =>
+    {
+        var lookups = http.RequestServices.GetServices<IScopeLookup>();
+        return Results.Ok(await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            var rows = await adjustments.ListAsync(s, null, c);
+            var canSee = new Dictionary<Guid, bool>();
+            foreach (Guid w in rows.Select(a => a.WarehouseId).Distinct())
+            {
+                canSee[w] = await ResolveScope(s, lookups, ScopeType.Warehouse, w, c) is { } scope
+                            && AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.ReportsView, scope);
+            }
+
+            return new { items = rows.Where(a => canSee[a.WarehouseId]).Select(a => AdjustmentJson(a)) };
+        }, ct));
+    })
+    .RequirePermission(Permissions.ReportsView);
+
 // ---------------- US-053: automatic discount rules (CAT-010, D-18) and manual discount caps (BR-021)
 object RuleJson(DiscountRuleView r) => new
 {
@@ -2121,6 +2258,8 @@ internal sealed record DiscountTargetInput(string? Kind, Guid? Id);
 internal sealed record DiscountRuleInput(string? Name, DiscountTargetInput? Target, int? Percent, DateTimeOffset? ValidFrom, DateTimeOffset? ValidTo, Guid[]? BranchIds);
 internal sealed record DiscountCapsInput(Dictionary<string, int>? Caps);
 internal sealed record NegativeStockPolicyInput(string? ScopeType, Guid? ScopeId, string? Policy);
+internal sealed record AdjustmentLineInput(Guid? VariantId, string? QtyDelta);
+internal sealed record AdjustmentInput(Guid? WarehouseId, string? Reason, AdjustmentLineInput?[]? Lines, string? Note);
 internal sealed record PriceItemInput(Guid? VariantId, string? UnitPrice);
 internal sealed record PriceSetInput(PriceItemInput?[]? Items, DateTimeOffset? ValidFrom, string? Reason);
 internal sealed record WeightedProfileInput(Guid? Id, string? Prefix, int? ItemCodeLength, string? ValueType, int? ValueLength, int? Decimals,

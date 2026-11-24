@@ -115,6 +115,34 @@ CREATE TABLE inv.negative_stock_policy (
   CHECK (scope_type <> 'Tenant' OR scope_id = tenant_id)
 );
 CALL core.enable_tenant_rls('inv.negative_stock_policy');
+
+-- INV-002 / BR-033 (US-063): the header of a manual adjustment; its lines are the AdjustmentIn/Out movements whose source
+-- is this row. Facts only: never changed or removed (AB-05: the history of adjustments is the evidence).
+CREATE TABLE inv.stock_adjustment (
+  tenant_id        uuid NOT NULL,
+  id               uuid NOT NULL,
+  warehouse_id     uuid NOT NULL,
+  reason           text NOT NULL CHECK (reason IN ('Damage','Expiry','Theft','CountError','Other')),
+  note             text CHECK (char_length(note) <= 500),
+  line_count       int NOT NULL CHECK (line_count BETWEEN 1 AND 200),
+  value            bigint NOT NULL CHECK (value >= 0),           -- Σ |Δqty| × WAC of the moment, rials (BR-033)
+  shrinkage        bigint NOT NULL CHECK (shrinkage >= 0),       -- value taken out
+  overage          bigint NOT NULL CHECK (overage >= 0),         -- value brought in
+  journal_entry_id uuid,                                        -- acc.journal_entry (cross-module: no FK)
+  approval_id      uuid,                                        -- iam.approval_request when above the threshold
+  created_by       uuid NOT NULL,
+  posted_at        timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, id),
+  FOREIGN KEY (tenant_id, warehouse_id) REFERENCES inv.warehouse (tenant_id, id),
+  CHECK (reason <> 'Other' OR btrim(coalesce(note, '')) <> ''),  -- INV-002: «سایر» needs an explanation
+  CHECK (value = shrinkage + overage),
+  CHECK ((value = 0) = (journal_entry_id IS NULL))               -- a valued adjustment always has its entry
+);
+CALL core.enable_tenant_rls('inv.stock_adjustment');
+CREATE INDEX ix_adjustment_posted ON inv.stock_adjustment (tenant_id, posted_at DESC);
+CREATE TRIGGER tr_adjustment_append_only BEFORE UPDATE OR DELETE ON inv.stock_adjustment
+  FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
+
 CREATE TRIGGER tr_movement_append_only BEFORE UPDATE OR DELETE ON inv.stock_movement
   FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
 
@@ -123,6 +151,8 @@ GRANT SELECT, INSERT, UPDATE ON inv.warehouse, inv.stock_balance TO rc_app;
 GRANT SELECT, INSERT ON inv.posted_source TO rc_app;
 GRANT SELECT, INSERT, UPDATE ON inv.negative_stock_policy TO rc_app;
 GRANT SELECT ON inv.negative_stock_policy TO rc_worker, rc_reporting;
+GRANT SELECT, INSERT ON inv.stock_adjustment TO rc_app;
+GRANT SELECT ON inv.stock_adjustment TO rc_worker, rc_reporting;
 GRANT EXECUTE ON FUNCTION inv.ensure_movement_partitions(int) TO rc_worker;
 -- INV-001 rebuild (operator command run by Workers): balances only, never the ledger
 GRANT INSERT, UPDATE ON inv.stock_balance TO rc_worker;

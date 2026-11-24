@@ -24,3 +24,34 @@ public static class CashVarianceRule
             [new RoleLine("CashOnHand", variance, 0), new RoleLine("CashOverage", 0, variance)]),
     };
 }
+
+/// <summary>
+/// D02 §5.8.1 «تعدیل موجودی»: a shortage debits InventoryShrinkage and credits Inventory; an overage debits Inventory and
+/// credits InventoryOverage. One entry per adjustment carries both sides when lines go both ways; no value, no entry.
+/// Version 1 (the accountant's review is OQ-05).
+/// </summary>
+public static class InventoryAdjustmentRule
+{
+    public const int Version = 1;
+
+    public static PostingDraft? For(Guid adjustmentId, long shrinkage, long overage, DateTimeOffset postedAt, string reasonText)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(shrinkage);
+        ArgumentOutOfRangeException.ThrowIfNegative(overage);
+        var lines = new List<RoleLine>();
+        if (shrinkage > 0)
+        {
+            lines.Add(new RoleLine("InventoryShrinkage", shrinkage, 0));
+            lines.Add(new RoleLine("Inventory", 0, shrinkage));
+        }
+
+        if (overage > 0)
+        {
+            lines.Add(new RoleLine("Inventory", overage, 0));
+            lines.Add(new RoleLine("InventoryOverage", 0, overage));
+        }
+
+        return lines.Count == 0 ? null : new PostingDraft("StockAdjustment", adjustmentId, "inventory-adjustment", Version, postedAt,
+            "تعدیل موجودی: " + reasonText, lines);
+    }
+}

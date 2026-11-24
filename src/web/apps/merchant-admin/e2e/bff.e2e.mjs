@@ -335,6 +335,35 @@ try {
   await page.getByTestId('discount-saved').waitFor();
   const capsNow = await page.evaluate(async () => (await fetch('/bff/discount-caps', { cache: 'no-store' })).json());
   check('K02', "the cashier's manual cap is set to 5% (BR-021)", capsNow?.caps?.Cashier === 500, JSON.stringify(capsNow));
+  // J01–J03 US-063: a manual adjustment with a reason; «Other» needs a note; the list shows it with its value
+  await page.goto(`${BFF}/adjustments`);
+  await page.locator('[data-testid="adjust-warehouse"] option').first().waitFor({ state: 'attached' });
+  await page.getByTestId('adjust-sku-0').fill('E2E-COLA');
+  await page.getByTestId('adjust-delta-0').fill('۵');
+  await page.getByTestId('adjust-reason').selectOption('CountError');
+  await page.getByTestId('adjust-submit').click();
+  await page.getByTestId('adjust-done').waitFor();
+  check('J01', 'the owner adds 5 found in a count to a product (INV-002)', true);
+  await page.getByTestId('adjust-reason').selectOption('Other');
+  const noteRequired = await page.getByTestId('adjust-note').evaluate((el) => el.required);
+  await page.getByTestId('adjust-sku-0').fill('E2E-COLA');
+  await page.getByTestId('adjust-delta-0').fill('-2');
+  await page.getByTestId('adjust-note').fill('نمونه برای آزمایشگاه');
+  await page.getByTestId('adjust-submit').click();
+  await page.locator('[data-testid="adjust-list"] [data-reason="Other"]').waitFor();
+  check('J02', '«Other» asks for a note and the decrease is posted', noteRequired);
+  const stock = await page.evaluate(async () => {
+    const p = (await (await fetch('/bff/products?q=E2E-COLA', { cache: 'no-store' })).json()).items[0];
+    return (await (await fetch(`/bff/inventory/balances?variantId=${p.variants[0].id}`, { cache: 'no-store' })).json()).items[0]?.onHand;
+  });
+  await page.getByTestId('adjust-delta-0').fill('-9');
+  await page.getByTestId('adjust-sku-0').fill('E2E-COLA');
+  await page.getByTestId('adjust-reason').selectOption('Theft');
+  await page.getByTestId('adjust-submit').click();
+  await page.getByTestId('adjust-error').waitFor();
+  const refused = (await page.getByTestId('adjust-error').textContent()) ?? '';
+  check('J03', 'the balance is 3 and taking 9 is refused for lack of stock (BR-040)', stock === '3' && refused.includes('موجودی کافی نیست'), `${stock} ${refused}`);
+  await shot(page, 'adjustments');
   // W01–W03 US-045: the owner sets a scale label format; a printed label then decodes to the item and its weight
   await page.goto(`${BFF}/products`);
   await page.getByTestId('product-name').fill('پنیر فله آزمایشی');

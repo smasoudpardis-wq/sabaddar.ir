@@ -83,6 +83,9 @@ public interface IProductCatalog
     Task<BarcodeMatch?> FindByCodeAsync(IUnitOfWorkScope scope, string codeNormalized, CancellationToken cancellationToken);
 
     Task<CatalogOutcome> RemoveBarcodeAsync(IUnitOfWorkScope scope, Guid productId, Guid variantId, Guid barcodeId, CancellationToken cancellationToken);
+
+    /// <summary>Which of these ids are variants of this store, active or switched off (stock of either can be adjusted).</summary>
+    Task<IReadOnlySet<Guid>> ExistingVariantsAsync(IUnitOfWorkScope scope, IReadOnlyCollection<Guid> variantIds, CancellationToken cancellationToken);
 }
 
 /// <summary>CAT-001/002 input rules; error codes are D07 validation codes (invalid-barcode is 422 on its own).</summary>

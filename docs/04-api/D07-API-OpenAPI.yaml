@@ -2646,6 +2646,45 @@ paths:
       - BR-033
       x-audited: true
       x-approval: value > tenant threshold (BR-033)
+    get:
+      operationId: listAdjustments
+      tags:
+      - Inventory
+      summary: تعدیل‌ها و ارزش آن‌ها (کشف AB-05)
+      security: *id001
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - items
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Adjustment'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: reports.view
+      x-idempotent: false
+      x-requirements:
+      - INV-002
+      - BR-033
+      - AB-05
   /inventory/transfers:
     post:
       operationId: postTransfer
@@ -8478,19 +8517,60 @@ components:
         id:
           type: string
           format: uuid
+        warehouseId:
+          type: string
+          format: uuid
+        reason:
+          type: string
+        note:
+          type:
+          - string
+          - 'null'
+        lineCount:
+          type: integer
+          format: int32
         value:
           $ref: '#/components/schemas/Money'
+          description: Σ |Δqty| × WAC of the moment (BR-033) = shrinkage + overage
+        shrinkage:
+          $ref: '#/components/schemas/Money'
+        overage:
+          $ref: '#/components/schemas/Money'
         journalEntryId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: Null only when the adjustment moved no value (WAC 0)
+        approvalId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        createdBy:
           type: string
           format: uuid
         postedAt:
           type: string
           format: date-time
+        warnings:
+          type: array
+          items:
+            type: string
       required:
       - id
+      - warehouseId
+      - reason
+      - note
+      - lineCount
       - value
+      - shrinkage
+      - overage
       - journalEntryId
+      - approvalId
+      - createdBy
       - postedAt
+      - warnings
     AdjustmentCreate:
       type: object
       additionalProperties: false
@@ -13431,6 +13511,9 @@ x-error-catalog:
   no-open-period:
     status: 422
     meaning: No fiscal period covers this date (ACC-001.1)
+  account-role-unmapped:
+    status: 422
+    meaning: An automatic entry needs an account role with no account mapped (ACC-004, D-30)
   journal-not-draft:
     status: 409
     meaning: Only a draft entry can be posted (ACC-003)

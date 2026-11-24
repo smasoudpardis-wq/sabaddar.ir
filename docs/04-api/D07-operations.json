@@ -783,6 +783,17 @@
   "idempotent": true
  },
  {
+  "operationId": "listAdjustments",
+  "method": "GET",
+  "path": "/inventory/adjustments",
+  "permission": "reports.view",
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
+ },
+ {
   "operationId": "postTransfer",
   "method": "POST",
   "path": "/inventory/transfers",
