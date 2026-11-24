@@ -49,6 +49,7 @@ public static class Permissions
     public const string InventoryAdjust = "inventory.adjust";
     public const string ReportsView = "reports.view";
     public const string ShiftManage = "shift.manage";
+    public const string PosSell = "pos.sell";
     public const string ShiftSupervise = "shift.supervise";
     public const string AccountingRead = "accounting.read";
     public const string AccountingJournalPost = "accounting.journal.post";

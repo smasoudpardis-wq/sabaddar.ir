@@ -310,6 +310,31 @@ SELECT t.expect_error('T29 duplicate client draft id (DI-010)', '23505',
     VALUES (core.current_tenant(), gen_random_uuid(), gen_random_uuid(), gen_random_uuid(),
             'a0000000-0000-0000-0000-000000000030', gen_random_uuid(), gen_random_uuid(), 'draft-0001', 'TaxExclusive')$$);
 
+-- US-082 cart (SAL-001, SAL-010)
+INSERT INTO sales.sale (tenant_id, id, branch_id, register_id, shift_id, cashier_id, terminal_id, client_draft_id, pricing_mode)
+  VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000042', 'a0000000-0000-0000-0000-000000000001', 'a0000000-0000-0000-0000-000000000002',
+          'a0000000-0000-0000-0000-000000000030', gen_random_uuid(), gen_random_uuid(), 'draft-0042', 'TaxExclusive');
+INSERT INTO sales.sale_line (tenant_id, sale_id, line_no, variant_id, qty, unit, unit_factor, unit_price, gross, discount, discount_source, discount_bp,
+                             discount_rule_id, net, tax_rate_bp, tax, line_total)
+  VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000042', 1, 'a0000000-0000-0000-0000-000000000011', 1, 'CT', 24, 1200000, 1200000,
+          120000, 'Rule', 1000, gen_random_uuid(), 1080000, 1000, 108000, 1188000);
+SELECT t.expect_error('T202 a discount is never more than the line', '23514',
+  $$UPDATE sales.sale_line SET discount = 1200001 WHERE sale_id = 'a0000000-0000-0000-0000-000000000042'$$);
+SELECT t.expect_error('T203 an automatic discount names its rule; a line without discount has no source', '23514',
+  $$UPDATE sales.sale_line SET discount_rule_id = NULL WHERE sale_id = 'a0000000-0000-0000-0000-000000000042'$$,
+  $$UPDATE sales.sale_line SET discount = 0, discount_rule_id = NULL WHERE sale_id = 'a0000000-0000-0000-0000-000000000042'$$);
+UPDATE sales.sale SET status = 'Held' WHERE id = 'a0000000-0000-0000-0000-000000000042';
+SELECT t.expect_error('T204 lines of a held cart do not change (resume it first)', 'RC026',
+  $$UPDATE sales.sale_line SET qty = 2 WHERE sale_id = 'a0000000-0000-0000-0000-000000000042'$$);
+SELECT t.expect_error('T205 a client draft id is 8-64 of A-Z a-z 0-9 _ -', '23514',
+  $$INSERT INTO sales.sale (tenant_id, id, branch_id, register_id, shift_id, cashier_id, terminal_id, client_draft_id, pricing_mode)
+    VALUES (core.current_tenant(), gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000030', gen_random_uuid(),
+            gen_random_uuid(), 'x y', 'TaxExclusive')$$);
+SELECT t.expect_error('T206 a sale says which channel made it: POS, Admin or API (SAL-010)', '23514',
+  $$INSERT INTO sales.sale (tenant_id, id, branch_id, register_id, shift_id, cashier_id, terminal_id, client_draft_id, pricing_mode, channel)
+    VALUES (core.current_tenant(), gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000030', gen_random_uuid(),
+            gen_random_uuid(), 'draft-0206', 'TaxExclusive', 'Phone')$$);
+
 ------------------------------------------------------------------ accounting
 \echo '== accounting'
 SELECT t.expect_error('T30 unbalanced posted journal rejected at commit (DI-040)', 'RC010',

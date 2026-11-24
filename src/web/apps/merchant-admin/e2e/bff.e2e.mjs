@@ -396,6 +396,40 @@ try {
   await page.getByTestId('receipt-done').waitFor();
   check('G03', 'a zero-cost line is posted only after the user confirms it (UC-05)', asked.includes('بهای صفر'), asked);
   await shot(page, 'receipts');
+  // V01–V04 US-082: on a paired device the owner opens a shift; a barcode reader is read without focus (keyboard wedge),
+  // a double read within 1.5 s is ignored, a later scan adds to the line, and a line can be removed
+  await page.goto(`${BFF}/terminals`);
+  await page.getByTestId('issue-code').click();
+  await page.fill('input[name=pairingCode]', (await page.getByTestId('pairing-code').textContent()).trim());
+  await page.fill('input[name=deviceName]', 'صندوق-فروش');
+  await page.getByTestId('pair-submit').click();
+  await page.getByTestId('this-device').filter({ hasText: 'ثبت‌شده است' }).waitFor();
+  await page.goto(`${BFF}/pos`);
+  await page.getByTestId('pos-open-submit').click();
+  await page.getByTestId('pos-ready').waitFor();
+  check('V01', 'the owner opens a shift on this registered device (BR-050)', true);
+  await page.locator('h1').click();   // focus on no field: the reader types into the page itself
+  await page.keyboard.type('4006381333931');
+  await page.keyboard.press('Enter');
+  await page.keyboard.type('4006381333931');
+  await page.keyboard.press('Enter');
+  await page.locator('[data-testid="pos-lines"] [data-sku="E2E-COLA"]').waitFor();
+  await page.getByTestId('pos-ignored').waitFor();
+  const firstQty = await page.locator('[data-sku="E2E-COLA"]').getAttribute('data-qty');
+  const total = Number(await page.getByTestId('pos-total').getAttribute('data-total'));
+  check('V02', 'a keyboard-wedge scan adds the item at the server price, with no field focused (SAL-002)', firstQty === '1' && total > 0, `${firstQty} ${total}`);
+  await page.waitForTimeout(1600);
+  await page.keyboard.type('4006381333931');
+  await page.keyboard.press('Enter');
+  await page.locator('[data-sku="E2E-COLA"][data-qty="2"]').waitFor();
+  check('V03', 'the double read was ignored; a scan after 1.5 s adds one more (AT-061)', true);
+  await page.getByTestId('pos-remove-E2E-COLA').click();
+  await page.locator('[data-testid="pos-total"][data-total="0"]').waitFor();
+  check('V04', 'a line is removed and the total follows (SAL-001)', true);
+  await shot(page, 'pos');
+  await page.goto(`${BFF}/terminals`);
+  await page.getByTestId('revoke-صندوق-فروش').click();
+  await page.getByTestId('this-device').filter({ hasText: 'نیست' }).waitFor();
   // W01–W03 US-045: the owner sets a scale label format; a printed label then decodes to the item and its weight
   await page.goto(`${BFF}/products`);
   await page.getByTestId('product-name').fill('پنیر فله آزمایشی');

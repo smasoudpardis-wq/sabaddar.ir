@@ -48,10 +48,16 @@ public sealed class PostgresShifts(IOutbox outbox) : IShifts
         return new(ShiftOutcome.Done, await GetAsync(scope, id, cancellationToken));
     }
 
-    public async Task<ShiftView?> GetAsync(IUnitOfWorkScope scope, Guid shiftId, CancellationToken cancellationToken)
+    public Task<ShiftView?> GetAsync(IUnitOfWorkScope scope, Guid shiftId, CancellationToken cancellationToken) =>
+        ReadOneAsync((PostgresUnitOfWorkScope)scope, "id = $1", shiftId, cancellationToken);
+
+    public Task<ShiftView?> CurrentAsync(IUnitOfWorkScope scope, Guid registerId, CancellationToken cancellationToken) =>
+        ReadOneAsync((PostgresUnitOfWorkScope)scope, "register_id = $1 AND status <> 'Closed'", registerId, cancellationToken);
+
+    private static async Task<ShiftView?> ReadOneAsync(PostgresUnitOfWorkScope s, string where, Guid arg, CancellationToken cancellationToken)
     {
-        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command($"SELECT {Columns} FROM sales.shift WHERE id = $1");
-        cmd.Parameters.Add(new NpgsqlParameter { Value = shiftId });
+        await using NpgsqlCommand cmd = s.Command($"SELECT {Columns} FROM sales.shift WHERE {where}");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = arg });
         await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(cancellationToken);
         if (!await r.ReadAsync(cancellationToken))
         {

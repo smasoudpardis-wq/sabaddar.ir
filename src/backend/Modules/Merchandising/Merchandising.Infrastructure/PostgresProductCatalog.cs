@@ -127,14 +127,15 @@ public sealed class PostgresProductCatalog(IOutbox outbox) : IProductCatalog
         await using NpgsqlCommand cmd = s.Command(
             "SELECT p.id, v.id, p.name, v.sku, p.base_unit_code, b.is_internal, " +
             "(SELECT i.unit_price FROM merch.price_list_item i JOIN merch.price_list l ON l.tenant_id = i.tenant_id AND l.id = i.price_list_id " +
-            "AND l.is_default WHERE i.variant_id = v.id AND i.valid @> statement_timestamp()) FROM merch.tenant_product_barcode b " +
+            "AND l.is_default WHERE i.variant_id = v.id AND i.valid @> statement_timestamp()), b.packaging_unit, b.unit_factor FROM merch.tenant_product_barcode b " +
             "JOIN merch.tenant_variant v ON v.tenant_id = b.tenant_id AND v.id = b.variant_id " +
             "JOIN merch.tenant_product p ON p.tenant_id = v.tenant_id AND p.id = v.product_id " +
             "WHERE b.active AND b.code_normalized = $1 AND v.status = 'Active' AND p.status = 'Active'");   // never sell what is switched off
         cmd.Parameters.Add(new NpgsqlParameter { Value = codeNormalized });
         await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(cancellationToken);
         return await r.ReadAsync(cancellationToken)
-            ? new BarcodeMatch(r.GetGuid(0), r.GetGuid(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetBoolean(5), r.IsDBNull(6) ? null : r.GetInt64(6))
+            ? new BarcodeMatch(r.GetGuid(0), r.GetGuid(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetBoolean(5), r.IsDBNull(6) ? null : r.GetInt64(6),
+                r.GetString(7), r.GetDecimal(8))
             : null;
     }
 
@@ -180,6 +181,26 @@ public sealed class PostgresProductCatalog(IOutbox outbox) : IProductCatalog
         }
 
         return result;
+    }
+
+    public async Task<SellableVariant?> SellableAsync(IUnitOfWorkScope scope, Guid variantId, CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
+            "SELECT p.id, v.id, p.name, v.sku, p.base_unit_code, p.tax_rate_bp, " +
+            "(SELECT i.unit_price FROM merch.price_list_item i JOIN merch.price_list l ON l.tenant_id = i.tenant_id AND l.id = i.price_list_id " +
+            "AND l.is_default WHERE i.variant_id = v.id AND i.valid @> statement_timestamp()), v.status = 'Active' AND p.status = 'Active', " +
+            "(SELECT string_agg(e.value #>> '{}', '، ' ORDER BY e.key) FROM jsonb_each(v.axis_values) e) " +
+            "FROM merch.tenant_variant v JOIN merch.tenant_product p ON p.tenant_id = v.tenant_id AND p.id = v.product_id WHERE v.id = $1");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = variantId });
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(cancellationToken);
+        if (!await r.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        string name = r.IsDBNull(8) ? r.GetString(2) : $"{r.GetString(2)} ({r.GetString(8)})";
+        return new SellableVariant(r.GetGuid(0), r.GetGuid(1), name, r.GetString(3), r.GetString(4), r.GetInt32(5), r.IsDBNull(6) ? null : r.GetInt64(6),
+            r.GetBoolean(7));
     }
 
     public async Task<IReadOnlySet<Guid>> ExistingVariantsAsync(IUnitOfWorkScope scope, IReadOnlyCollection<Guid> variantIds,

@@ -33,7 +33,15 @@ public sealed record BarcodeSpec(string Code, string Normalized, string Packagin
     }
 }
 
-public sealed record BarcodeMatch(Guid ProductId, Guid VariantId, string Name, string Sku, string BaseUnit, bool IsInternal, long? UnitPrice);
+/// <summary><paramref name="PackagingUnit"/> / <paramref name="UnitFactor"/>: what one scan of this barcode is (a carton of 24, BR-044).</summary>
+public sealed record BarcodeMatch(Guid ProductId, Guid VariantId, string Name, string Sku, string BaseUnit, bool IsInternal, long? UnitPrice,
+    string PackagingUnit = "EA", decimal UnitFactor = 1);
+
+/// <summary>
+/// What the POS needs to price a variant (SAL-001): the name with the matrix values, the tax rate, the default list's price
+/// per base unit now (null: no price), and whether both the product and the variant are active.
+/// </summary>
+public sealed record SellableVariant(Guid ProductId, Guid VariantId, string Name, string Sku, string BaseUnit, int TaxRateBp, long? UnitPrice, bool Active);
 
 public sealed record VariantUnits(string BaseUnit, IReadOnlyDictionary<string, decimal> Factors);
 
@@ -92,6 +100,8 @@ public interface IProductCatalog
     /// packaging unit of each active barcode. A unit whose barcodes disagree on the factor is left out (ambiguous).
     /// </summary>
     Task<IReadOnlyDictionary<Guid, VariantUnits>> UnitsAsync(IUnitOfWorkScope scope, IReadOnlyCollection<Guid> variantIds, CancellationToken cancellationToken);
+
+    Task<SellableVariant?> SellableAsync(IUnitOfWorkScope scope, Guid variantId, CancellationToken cancellationToken);
 
     Task<IReadOnlySet<Guid>> ExistingVariantsAsync(IUnitOfWorkScope scope, IReadOnlyCollection<Guid> variantIds, CancellationToken cancellationToken);
 }

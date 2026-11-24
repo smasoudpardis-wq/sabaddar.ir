@@ -34,6 +34,7 @@ builder.Services.AddSingleton<IDiscounts, PostgresDiscounts>();
 builder.Services.AddSingleton<IStockLedger, RetailCloud.Inventory.Infrastructure.PostgresStockLedger>();
 builder.Services.AddSingleton<IStockAdjustments, RetailCloud.Inventory.Infrastructure.PostgresStockAdjustments>();
 builder.Services.AddSingleton<IProcurement, RetailCloud.Inventory.Infrastructure.PostgresProcurement>();
+builder.Services.AddSingleton<ISales, PostgresSales>();
 builder.Services.AddSingleton<IShifts, PostgresShifts>();
 builder.Services.AddSingleton<IJournals, PostgresJournals>();
 ObjectStorageOptions? storage = builder.Configuration.GetSection("Storage").Get<ObjectStorageOptions>();
@@ -1627,6 +1628,324 @@ v1.MapGet("/inventory/receipts", async (RequestContext ctx, IUnitOfWork uow, IPr
     })
     .RequirePermission(Permissions.ReportsView);
 
+// ---------------- US-082: the POS cart (SAL-001, SAL-002, SAL-010). A cart is the cashier's own, on their open shift,
+// worked on a registered device of the branch (ABAC-04, BR-050); every amount is the server's (BR-013..BR-018).
+string Money(long v) => v.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+object SaleJson(SaleView s, IReadOnlyList<string>? warnings = null)
+{
+    var t = SaleMath.Totals(s.Lines);
+    return new
+    {
+        s.Id, s.Status, s.ReturnStatus, s.BranchId, s.RegisterId, s.ShiftId, cashierId = s.CashierId, terminalId = s.TerminalId, s.Channel,
+        s.ClientDraftId, pricingMode = s.PricingMode.ToString(), s.InvoiceNo, customer = (object?)null,
+        lines = s.Lines.Select(l => new
+        {
+            l.LineNo, l.VariantId, l.Name, l.Sku, qty = Qty(l.Qty), l.Unit, unitFactor = Qty(l.UnitFactor), weighted = l.WeightedCode is not null,
+            unitPrice = Money(l.UnitPrice), gross = Money(l.Gross),
+            discounts = l.DiscountSource is null ? [] : new[]
+            {
+                new { kind = "Percent", value = (l.DiscountBp ?? 0).ToString(System.Globalization.CultureInfo.InvariantCulture), source = l.DiscountSource,
+                      amount = Money(l.Discount), approvalId = (Guid?)null },
+            },
+            net = Money(l.Net), taxRate = l.TaxRateBp, tax = Money(l.Tax), lineTotal = Money(l.LineTotal), returnedQty = Qty(l.ReturnedQty),
+        }),
+        saleDiscount = (object?)null, tenders = Array.Empty<object>(),
+        totals = new
+        {
+            gross = Money(t.Gross), discount = Money(t.Discount), net = Money(t.Net), tax = Money(t.Tax), total = Money(t.Total),
+            paid = "0", remaining = Money(t.Total), change = "0",
+        },
+        s.FinalizedAt, receiptUrl = (string?)null, s.Version,
+        warnings = warnings ?? (s.Status is "Draft" or "Held" ? ["price-preview-only"] : []),
+    };
+}
+
+IResult SaleProblem(HttpContext http, SaleOutcome outcome) => outcome switch
+{
+    SaleOutcome.NotFound or SaleOutcome.LineNotFound => Problems.NotFound(http),
+    SaleOutcome.NotDraft => Problems.Create(http, StatusCodes.Status409Conflict, "sale-not-draft", "Only a draft cart can change"),
+    SaleOutcome.VersionConflict => Problems.Create(http, StatusCodes.Status409Conflict, "version-conflict", "The cart changed; reload and retry"),
+    _ => Problems.Create(http, StatusCodes.Status409Conflict, "client-draft-id-taken", "This clientDraftId belongs to another sale"),
+};
+
+// a cart is changed only by its cashier, on a registered device of its branch, while its shift is open
+async Task<IResult?> MayWorkOn(HttpContext http, RequestContext ctx, IUnitOfWorkScope scope, SaleView sale, CancellationToken ct)
+{
+    if (sale.CashierId != ctx.User!.Value.Value) return Problems.NotFound(http);
+    if (!AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.PosSell, new ScopeRef(ScopeType.Register, sale.RegisterId, sale.BranchId)))
+    {
+        return Forbidden(http);
+    }
+
+    if (OnTerminalOf(http, ctx, sale.BranchId) is { } device) return device;
+    return await http.RequestServices.GetRequiredService<IShifts>().GetAsync(scope, sale.ShiftId, ct) is { Status: "Open" }
+        ? null
+        : Problems.Create(http, StatusCodes.Status409Conflict, "shift-not-open", "The cart's shift is not open (BR-050)");
+}
+
+// BR-013 / BR-016 / CAT-010: one line priced now, in this branch: the default list's price for the unit, the largest rule
+// discount, the product's tax rate in the cart's pricing mode. labelAmount: a price label's amount is the gross (CAT-007.1).
+async Task<(SaleLineSpec? Line, IResult? Problem)> PriceLine(HttpContext http, IUnitOfWorkScope scope, SaleView sale, SellableVariant v, decimal qty,
+    string unit, decimal factor, string? weightedCode, long? labelAmount, CancellationToken ct)
+{
+    if (!v.Active)
+    {
+        return (null, Problems.Create(http, StatusCodes.Status422UnprocessableEntity, "not-sellable", "This product or combination is switched off"));
+    }
+
+    if (v.UnitPrice is not long basePrice)
+    {
+        return (null, Problems.Create(http, StatusCodes.Status422UnprocessableEntity, "price-missing", "This product has no price yet"));
+    }
+
+    long unitPrice = SaleMath.UnitPrice(basePrice, factor);
+    long gross = labelAmount ?? SaleMath.Gross(qty, unitPrice);
+    DateTimeOffset now = DateTimeOffset.UtcNow;
+    DiscountRuleView? rule = DiscountPolicy.Best(await http.RequestServices.GetRequiredService<IDiscounts>().RulesForAsync(scope, [v.ProductId], now, ct),
+        v.ProductId, sale.BranchId, now);
+    long discount = rule is null ? 0 : DiscountPolicy.AmountOff(gross, rule.PercentBp);
+    LineAmounts amounts = SaleMath.Line(gross, discount, v.TaxRateBp, sale.PricingMode);
+    return (new SaleLineSpec(v.VariantId, v.Name, v.Sku, qty, unit, factor, weightedCode, unitPrice, amounts, discount > 0 ? "Rule" : null,
+        discount > 0 ? rule!.PercentBp : null, discount > 0 ? rule!.Id : null, v.TaxRateBp), null);
+}
+
+// SAL-010 / BR-050: the POS starts from its device: the branch, its registers and each one's current shift
+v1.MapGet("/pos/context", async (RequestContext ctx, IUnitOfWork uow, IShifts shifts, HttpContext http, CancellationToken ct) =>
+    {
+        if (ctx.Terminal is not { } terminal)
+        {
+            return Problems.Create(http, StatusCodes.Status403Forbidden, "terminal-not-registered", "Use a registered device of this branch (ABAC-04)");
+        }
+
+        return Results.Ok(await uow.ExecuteAsync<object>(ctx, async (s, c) =>
+        {
+            var registers = new List<(Guid Id, string Code)>();
+            await using (NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)s).Command("SELECT id, code FROM platform.register WHERE branch_id = $1 ORDER BY code"))
+            {
+                cmd.Parameters.Add(new NpgsqlParameter { Value = terminal.BranchId });
+                await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(c);
+                while (await r.ReadAsync(c)) registers.Add((r.GetGuid(0), r.GetString(1)));
+            }
+
+            var items = new List<object>();
+            foreach ((Guid id, string code) in registers)
+            {
+                ShiftView? shift = await shifts.CurrentAsync(s, id, c);
+                items.Add(new
+                {
+                    id, code,
+                    mayOpenShift = AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.ShiftManage, new ScopeRef(ScopeType.Register, id, terminal.BranchId)),
+                    shift = shift is null ? null : new { shift.Id, shift.Status, mine = shift.CashierId == ctx.User!.Value.Value, shift.OpenedAt },
+                });
+            }
+
+            return new { terminalId = terminal.TerminalId, branchId = terminal.BranchId, registers = items };
+        }, ct));
+    })
+    .RequirePermission(Permissions.PosSell);
+
+v1.MapPost("/pos/sales", async (SaleCreateInput body, RequestContext ctx, IUnitOfWork uow, IShifts shifts, ISales sales, ITenantProfileQuery profiles,
+        HttpContext http, CancellationToken ct) =>
+    {
+        var errors = new Dictionary<string, string[]>();
+        if (body.RegisterId is null) errors["registerId"] = ["required"];
+        if (body.ClientDraftId is not { Length: >= 8 and <= 64 } || !body.ClientDraftId.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_'))
+        {
+            errors["clientDraftId"] = ["8-64 of A-Z a-z 0-9 _ -"];
+        }
+
+        if (errors.Count > 0) return Problems.Validation(http, errors);
+        PricingMode mode = Enum.Parse<PricingMode>((await profiles.GetAsync(ctx.ActiveTenant!.Value, ct))!.PricingMode);
+        return await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            if (await ResolveScope(s, http.RequestServices.GetServices<IScopeLookup>(), ScopeType.Register, body.RegisterId, c) is not { } register)
+            {
+                return Problems.NotFound(http);
+            }
+
+            if (!AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.PosSell, register)) return Forbidden(http);
+            if (OnTerminalOf(http, ctx, register.BranchId!.Value) is { } device) return device;
+            // BR-050: a cart lives on the cashier's own open shift on this register
+            if (await shifts.CurrentAsync(s, body.RegisterId!.Value, c) is not { Status: "Open" } shift || shift.CashierId != ctx.User!.Value.Value)
+            {
+                return Problems.Create(http, StatusCodes.Status409Conflict, "shift-not-open", "Open your shift on this register first (BR-050)");
+            }
+
+            var (result, created) = await sales.CreateAsync(s, body.ClientDraftId!, new SaleOrigin(register.BranchId.Value, body.RegisterId.Value, shift.Id,
+                ctx.User!.Value.Value, ctx.Terminal!.TerminalId, "POS", mode), c);
+            if (result.Outcome != SaleOutcome.Done) return SaleProblem(http, result.Outcome);
+            return created ? Results.Created($"/api/v1/pos/sales/{result.Sale!.Id}", SaleJson(result.Sale)) : Results.Ok(SaleJson(result.Sale!));
+        }, ct);
+    })
+    .RequirePermission(Permissions.PosSell);
+
+v1.MapGet("/pos/sales/{saleId:guid}", async (Guid saleId, RequestContext ctx, IUnitOfWork uow, ISales sales, HttpContext http, CancellationToken ct) =>
+        await uow.ExecuteAsync(ctx, (s, c) => sales.GetAsync(s, saleId, c), ct) is { } sale
+        && AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.PosSell, new ScopeRef(ScopeType.Register, sale.RegisterId, sale.BranchId))
+            ? Results.Ok(SaleJson(sale))
+            : Problems.NotFound(http))
+    .RequirePermission(Permissions.PosSell);
+
+v1.MapPost("/pos/sales/{saleId:guid}/lines", async (Guid saleId, SaleLineInput body, RequestContext ctx, IUnitOfWork uow, ISales sales,
+        IProductCatalog catalog, IWeightedBarcodeProfiles weighted, HttpContext http, CancellationToken ct) =>
+    {
+        var errors = new Dictionary<string, string[]>();
+        if ((body.VariantId is null) == (body.Barcode is null)) errors["barcode"] = ["exactly one of barcode or variantId"];
+        if (body.Barcode is { } b && (b.Length is < 1 or > 32 || string.IsNullOrWhiteSpace(b))) errors["barcode"] = ["1-32 characters"];
+        if (body.Qty is null || !ProductRules.TryFactor(body.Qty, out decimal qty)) { errors["qty"] = ["positive decimal, up to 6 places"]; qty = 0; }
+        if (body.Unit is not null && !ProductRules.ValidUnit(body.Unit)) errors["unit"] = ["1-10 of A-Z 0-9"];
+        if (errors.Count > 0) return Problems.Validation(http, errors);
+
+        string? code = body.Barcode is null ? null : Gtin.NormalizeDigits(body.Barcode.Trim());
+        bool gs1 = code is not null && Gtin.TryParse(code, out _);
+        if (code is not null && !gs1 && (code.All(char.IsAsciiDigit) && code.Length is 8 or 12 or 13 or 14 || !InternalCode.IsValid(code)))
+        {
+            return InputProblem(http, new Dictionary<string, string[]> { ["barcode"] = ["not a valid EAN-8, UPC-A, EAN-13, GTIN-14 or internal code"] }, true);
+        }
+
+        return await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            SaleResult locked = await sales.LockDraftAsync(s, saleId, null, c);
+            if (locked.Outcome == SaleOutcome.NotFound) return Problems.NotFound(http);
+            if (await MayWorkOn(http, ctx, s, locked.Sale!, c) is { } denied) return denied;
+            if (locked.Outcome != SaleOutcome.Done) return SaleProblem(http, locked.Outcome);
+            SaleView sale = locked.Sale!;
+
+            // CAT-003 / CAT-007: a scale label first, then the code itself; an unknown code is for UC-01 (define) or a name search
+            Guid variantId;
+            string? unit = body.Unit, weightedCode = null;
+            decimal? fixedQty = null;
+            long? labelValue = null;
+            WeightedValueType? labelType = null;
+            if (code is not null)
+            {
+                var (status, label) = WeightedBarcodes.Decode((await weighted.GetAsync(s, c)).Profiles, code);
+                if (status == WeightedDecodeStatus.Invalid)
+                {
+                    return InputProblem(http, new Dictionary<string, string[]> { ["barcode"] = ["weighted label: the value check digit does not match"] }, true);
+                }
+
+                BarcodeMatch? match = await catalog.FindByCodeAsync(s, status == WeightedDecodeStatus.Decoded ? label!.ItemCode
+                    : Gtin.TryParse(code, out Gtin g) ? g.Normalized14 : code, c);
+                if (match is null) return Problems.Create(http, StatusCodes.Status404NotFound, "barcode-not-found", "No product of this store has this code");
+                variantId = match.VariantId;
+                if (status == WeightedDecodeStatus.Decoded)
+                {
+                    weightedCode = code;
+                    unit = match.BaseUnit;
+                    labelType = label!.Profile.ValueType;
+                    if (labelType == WeightedValueType.Weight) fixedQty = label.Value;
+                    else labelValue = (long)label.Value;
+                }
+                else if (unit is null && match.UnitFactor != 1)
+                {
+                    unit = match.PackagingUnit;   // a carton's barcode sells a carton (BR-044)
+                }
+            }
+            else
+            {
+                variantId = body.VariantId!.Value;
+            }
+
+            if (await catalog.SellableAsync(s, variantId, c) is not { } v) return Problems.NotFound(http);
+            unit ??= v.BaseUnit;
+            if (!(await catalog.UnitsAsync(s, [variantId], c))[variantId].Factors.TryGetValue(unit, out decimal factor))
+            {
+                return Problems.Create(http, StatusCodes.Status422UnprocessableEntity, "unknown-unit", "This unit has no conversion to the product's base unit");
+            }
+
+            long? labelAmount = null;
+            if (labelValue is { } amount)
+            {
+                if (v.UnitPrice is not long price || price <= 0)
+                {
+                    return Problems.Create(http, StatusCodes.Status422UnprocessableEntity, "price-missing", "This product has no price yet");
+                }
+
+                (fixedQty, labelAmount) = WeightedBarcodes.PriceLabelLine(amount, price);
+            }
+
+            if (fixedQty is <= 0)
+            {
+                return InputProblem(http, new Dictionary<string, string[]> { ["barcode"] = ["the label's quantity is zero"] }, true);
+            }
+
+            // a repeated scan of the same item and unit adds to its line; a scale label is always a line of its own
+            SaleLineView? same = weightedCode is null ? sale.Lines.FirstOrDefault(l => l.VariantId == variantId && l.Unit == unit && l.WeightedCode is null) : null;
+            if (same is null && sale.Lines.Count >= SaleMath.MaxLines)
+            {
+                return Problems.Validation(http, new Dictionary<string, string[]> { ["lines"] = [$"up to {SaleMath.MaxLines} lines"] });
+            }
+
+            decimal lineQty = fixedQty ?? (same?.Qty ?? 0) + qty;
+            var (line, problem) = await PriceLine(http, s, sale, v, lineQty, unit, factor, weightedCode, labelAmount, c);
+            if (problem is not null) return problem;
+            return Results.Ok(SaleJson(await sales.WriteLineAsync(s, saleId, same?.LineNo, line!, c)));
+        }, ct);
+    })
+    .RequirePermission(Permissions.PosSell);
+
+v1.MapPatch("/pos/sales/{saleId:guid}/lines/{lineNo:int}", async (Guid saleId, int lineNo, SaleLinePatchInput body, RequestContext ctx, IUnitOfWork uow,
+        ISales sales, IProductCatalog catalog, HttpContext http, CancellationToken ct) =>
+    {
+        var errors = new Dictionary<string, string[]>();
+        if (body.ExpectedVersion is null) errors["expectedVersion"] = ["required"];
+        decimal qty = 0;
+        if (body.Qty is not null && !ProductRules.TryFactor(body.Qty, out qty)) errors["qty"] = ["positive decimal, up to 6 places"];
+        if (body.Unit is not null && !ProductRules.ValidUnit(body.Unit)) errors["unit"] = ["1-10 of A-Z 0-9"];
+        if (body.Qty is null && body.Unit is null) errors["qty"] = ["qty or unit"];
+        if (errors.Count > 0) return Problems.Validation(http, errors);
+        return await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            SaleResult locked = await sales.LockDraftAsync(s, saleId, body.ExpectedVersion, c);
+            if (locked.Outcome == SaleOutcome.NotFound) return Problems.NotFound(http);
+            if (await MayWorkOn(http, ctx, s, locked.Sale!, c) is { } denied) return denied;
+            if (locked.Outcome != SaleOutcome.Done) return SaleProblem(http, locked.Outcome);
+            if (locked.Sale!.Lines.FirstOrDefault(l => l.LineNo == lineNo) is not { } old) return Problems.NotFound(http);
+            if (old.WeightedCode is not null)
+            {
+                return Problems.Create(http, StatusCodes.Status409Conflict, "weighted-line", "A weighed item's quantity comes from its label; remove and scan again");
+            }
+
+            if (await catalog.SellableAsync(s, old.VariantId, c) is not { } v) return Problems.NotFound(http);
+            string unit = body.Unit ?? old.Unit;
+            if (!(await catalog.UnitsAsync(s, [old.VariantId], c))[old.VariantId].Factors.TryGetValue(unit, out decimal factor))
+            {
+                return Problems.Create(http, StatusCodes.Status422UnprocessableEntity, "unknown-unit", "This unit has no conversion to the product's base unit");
+            }
+
+            var (line, problem) = await PriceLine(http, s, locked.Sale, v, body.Qty is null ? old.Qty : qty, unit, factor, null, null, c);
+            if (problem is not null) return problem;
+            return Results.Ok(SaleJson(await sales.WriteLineAsync(s, saleId, lineNo, line!, c)));
+        }, ct);
+    })
+    .RequirePermission(Permissions.PosSell);
+
+// AB-03 / D-44: a removed line is audited (who, what, how much) to find lines scanned and then taken off
+v1.MapDelete("/pos/sales/{saleId:guid}/lines/{lineNo:int}", async (Guid saleId, int lineNo, int? expectedVersion, RequestContext ctx, IUnitOfWork uow,
+        ISales sales, HttpContext http, CancellationToken ct) =>
+    {
+        return await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            // another store's or another cashier's cart is not found, whatever the query says (BR-003)
+            SaleResult locked = await sales.LockDraftAsync(s, saleId, expectedVersion, c);
+            if (locked.Outcome == SaleOutcome.NotFound) return Problems.NotFound(http);
+            if (await MayWorkOn(http, ctx, s, locked.Sale!, c) is { } denied) return denied;
+            if (expectedVersion is null) return Problems.Validation(http, new Dictionary<string, string[]> { ["expectedVersion"] = ["required"] });
+            if (locked.Outcome != SaleOutcome.Done) return SaleProblem(http, locked.Outcome);
+            if (locked.Sale!.Lines.FirstOrDefault(l => l.LineNo == lineNo) is not { } old) return Problems.NotFound(http);
+            SaleView after = await sales.RemoveLineAsync(s, saleId, lineNo, c);
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry("sales.line.removed", "Sale", saleId.ToString(), null, new
+            {
+                lineNo, old.VariantId, old.Sku, qty = Qty(old.Qty), old.Unit, lineTotal = old.LineTotal, after.RegisterId, after.ShiftId,
+                terminalId = ctx.Terminal?.TerminalId,
+            }), c);
+            return Results.Ok(SaleJson(after));
+        }, ct);
+    })
+    .RequirePermission(Permissions.PosSell);
+
 // ---------------- US-053: automatic discount rules (CAT-010, D-18) and manual discount caps (BR-021)
 object RuleJson(DiscountRuleView r) => new
 {
@@ -2441,6 +2760,9 @@ internal sealed record DiscountCapsInput(Dictionary<string, int>? Caps);
 internal sealed record NegativeStockPolicyInput(string? ScopeType, Guid? ScopeId, string? Policy);
 internal sealed record AdjustmentLineInput(Guid? VariantId, string? QtyDelta);
 internal sealed record AdjustmentInput(Guid? WarehouseId, string? Reason, AdjustmentLineInput?[]? Lines, string? Note);
+internal sealed record SaleCreateInput(Guid? RegisterId, string? ClientDraftId);
+internal sealed record SaleLineInput(Guid? VariantId, string? Barcode, string? Unit, string? Qty);
+internal sealed record SaleLinePatchInput(int? ExpectedVersion, string? Qty, string? Unit);
 internal sealed record SupplierInput(string? Name, string? NationalId, string? EconomicCode, string? Phone);
 internal sealed record ReceiptLineInput(Guid? VariantId, string? Qty, string? Unit, string? UnitCost, string? Discount, string? InputVat);
 internal sealed record ReceiptInput(Guid? SupplierId, Guid? WarehouseId, ReceiptLineInput?[]? Lines, string? SupplierInvoiceNo, string? EffectiveDate,

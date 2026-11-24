@@ -1060,6 +1060,17 @@
   "idempotent": false
  },
  {
+  "operationId": "getPosContext",
+  "method": "GET",
+  "path": "/pos/context",
+  "permission": "pos.sell",
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
+ },
+ {
   "operationId": "createSale",
   "method": "POST",
   "path": "/pos/sales",

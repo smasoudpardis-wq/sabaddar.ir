@@ -3576,6 +3576,44 @@ paths:
       - UC-06
       - SoD-01
       x-audited: true
+  /pos/context:
+    get:
+      operationId: getPosContext
+      tags:
+      - POS
+      summary: 'دستگاه فعلی: شعبه، صندوق‌ها و شیفت جاری هر صندوق'
+      description: Only on a registered device (403 terminal-not-registered otherwise).
+      security: *id001
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PosContext'
+          headers:
+            ETag:
+              schema:
+                type: string
+              description: Weak ETag of version
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: pos.sell
+      x-idempotent: false
+      x-requirements:
+      - SAL-010
+      - BR-050
+      - ABAC-04
   /pos/sales:
     post:
       operationId: createSale
@@ -10566,6 +10604,8 @@ components:
           enum:
           - Manual
           - Rule
+        amount:
+          $ref: '#/components/schemas/Money'
         approvalId:
           type:
           - string
@@ -11037,6 +11077,58 @@ components:
       required:
       - expiresAt
       - isNewCustomer
+    PosContext:
+      type: object
+      additionalProperties: false
+      properties:
+        terminalId:
+          type: string
+          format: uuid
+        branchId:
+          type: string
+          format: uuid
+        registers:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              id:
+                type: string
+                format: uuid
+              code:
+                type: string
+              mayOpenShift:
+                type: boolean
+              shift:
+                type: object
+                additionalProperties: false
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+                  mine:
+                    type: boolean
+                  openedAt:
+                    type: string
+                    format: date-time
+                required:
+                - id
+                - status
+                - mine
+                - openedAt
+                description: The register's shift not yet closed; null if none
+            required:
+            - id
+            - code
+            - mayOpenShift
+            - shift
+      required:
+      - terminalId
+      - branchId
+      - registers
     PriceList:
       type: object
       additionalProperties: false
@@ -11884,6 +11976,25 @@ components:
         shiftId:
           type: string
           format: uuid
+        cashierId:
+          type: string
+          format: uuid
+        terminalId:
+          type: string
+          format: uuid
+        channel:
+          type: string
+          enum:
+          - POS
+          - Admin
+          - API
+        clientDraftId:
+          type: string
+        pricingMode:
+          type: string
+          enum:
+          - TaxExclusive
+          - TaxInclusive
         invoiceNo:
           type:
           - string
@@ -11980,6 +12091,7 @@ components:
           format: uuid
         clientDraftId:
           type: string
+          description: 8-64 of A-Z a-z 0-9 _ - (DI-010)
       required:
       - registerId
       - clientDraftId
@@ -12043,6 +12155,13 @@ components:
           $ref: '#/components/schemas/Quantity'
         unit:
           type: string
+        unitFactor:
+          $ref: '#/components/schemas/Quantity'
+        weighted:
+          type: boolean
+          description: 'From a scale label: the quantity is fixed'
+        gross:
+          $ref: '#/components/schemas/Money'
         unitPrice:
           $ref: '#/components/schemas/Money'
         discounts:
@@ -12082,10 +12201,13 @@ components:
           format: uuid
         barcode:
           type: string
+          description: Exactly one of barcode or variantId; a scale label sets its own quantity (CAT-007)
         unit:
           type: string
+          description: 'Default: the scanned barcode''s packaging unit, else the base unit (BR-044)'
         qty:
           $ref: '#/components/schemas/Quantity'
+          description: Added to the line of the same item and unit, if there is one
       required:
       - qty
     SaleLinePatch:
@@ -13631,6 +13753,24 @@ x-error-catalog:
   no-open-period:
     status: 422
     meaning: No fiscal period covers this date (ACC-001.1)
+  barcode-not-found:
+    status: 404
+    meaning: 'No product of this store has this code: define it (UC-01) or search by name (UC-02 2a)'
+  price-missing:
+    status: 422
+    meaning: The product has no price in the default list yet (CAT-009)
+  not-sellable:
+    status: 422
+    meaning: The product or its combination is switched off (CAT-008)
+  weighted-line:
+    status: 409
+    meaning: A weighed item's quantity comes from its label (CAT-007)
+  sale-not-draft:
+    status: 409
+    meaning: Only a draft cart changes (RC026)
+  client-draft-id-taken:
+    status: 409
+    meaning: The clientDraftId belongs to another sale (DI-010)
   account-role-unmapped:
     status: 422
     meaning: An automatic entry needs an account role with no account mapped (ACC-004, D-30)

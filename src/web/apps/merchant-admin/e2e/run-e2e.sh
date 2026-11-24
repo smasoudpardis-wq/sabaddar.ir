@@ -41,6 +41,11 @@ DELETE FROM iam.support_access_request WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM iam.role_assignment WHERE user_id IN (SELECT id FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$CASHIER_SUB');
 DELETE FROM iam.tenant_membership WHERE user_id IN (SELECT id FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$CASHIER_SUB');
 DELETE FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$CASHIER_SUB';
+DELETE FROM sales.sale_line WHERE tenant_id IN ('$T1','$T2','$TF');
+DELETE FROM sales.sale_tender WHERE tenant_id IN ('$T1','$T2','$TF');
+DELETE FROM sales.sale WHERE tenant_id IN ('$T1','$T2','$TF');
+DELETE FROM sales.cash_movement WHERE tenant_id IN ('$T1','$T2','$TF');
+DELETE FROM sales.shift WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM inv.goods_receipt_line WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM inv.goods_receipt WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM inv.supplier WHERE tenant_id IN ('$T1','$T2','$TF');
@@ -72,6 +77,7 @@ INSERT INTO platform.tenant (id, legal_name, industry_code) VALUES
 UPDATE platform.tenant SET status = 'Suspended' WHERE id = '$T2';   -- US-015: store B is read-only (the E2E user is only a cashier there)
 INSERT INTO platform.branch (tenant_id, id, code, name) VALUES ('$T1', gen_random_uuid(), 'B1', 'مرکزی');
 INSERT INTO inv.warehouse (tenant_id, id, branch_id, code) SELECT '$T1', gen_random_uuid(), id, 'B1-MAIN' FROM platform.branch WHERE tenant_id = '$T1';
+INSERT INTO platform.register (tenant_id, id, branch_id, code) SELECT '$T1', gen_random_uuid(), id, 'R1' FROM platform.branch WHERE tenant_id = '$T1';
 INSERT INTO iam.approval_request (tenant_id, id, action, resource_type, resource_id, scope_type, condition, value, limit_value, reason, binding_hash, requested_by, expires_at)
   VALUES ('$T1', '$APPROVAL', 'pos.discount.apply', 'SaleLine', 'sale-e2e/1', 'Tenant', 'amount-limit', '20', '0', 'مشتری ثابت', sha256('e2e'), gen_random_uuid(), now() + interval '30 minutes');
 INSERT INTO iam.support_access_request (tenant_id, id, requested_by, reason, duration_minutes)

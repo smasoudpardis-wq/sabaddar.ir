@@ -103,7 +103,8 @@ CREATE TABLE sales.sale (
   shift_id        uuid NOT NULL,
   cashier_id      uuid NOT NULL,
   terminal_id     uuid NOT NULL,
-  client_draft_id text NOT NULL,
+  client_draft_id text NOT NULL CHECK (client_draft_id ~ '^[A-Za-z0-9_-]{8,64}$'),
+  channel         text NOT NULL DEFAULT 'POS' CHECK (channel IN ('POS','Admin','API')),    -- SAL-010
   status          text NOT NULL DEFAULT 'Draft'
                   CHECK (status IN ('Draft','Held','PendingPayment','Finalized','Cancelled')),
   return_status   text NOT NULL DEFAULT 'None' CHECK (return_status IN ('None','Partial','Full')),
@@ -134,7 +135,16 @@ CREATE TABLE sales.sale_line (
   sale_id      uuid NOT NULL,
   line_no      int  NOT NULL CHECK (line_no > 0),
   variant_id   uuid NOT NULL,
-  qty          numeric(18,6) NOT NULL CHECK (qty > 0),
+  name         text NOT NULL DEFAULT '',            -- what the cashier saw (the snapshot at Finalize is authoritative, SAL-005)
+  sku          text NOT NULL DEFAULT '',
+  qty          numeric(18,6) NOT NULL CHECK (qty > 0),             -- in unit
+  unit         text NOT NULL DEFAULT 'EA' CHECK (unit ~ '^[A-Z0-9]{1,10}$'),
+  unit_factor  numeric(18,6) NOT NULL DEFAULT 1 CHECK (unit_factor > 0),   -- to the base unit (BR-044)
+  weighted_code text,                               -- the scale label it came from (CAT-007): its quantity is fixed
+  gross        bigint NOT NULL DEFAULT 0 CHECK (gross >= 0),        -- round(qty × unit_price), or a price label's amount
+  discount_source text CHECK (discount_source IN ('Rule','Manual')),
+  discount_bp  int CHECK (discount_bp BETWEEN 1 AND 10000),
+  discount_rule_id uuid,
   returned_qty numeric(18,6) NOT NULL DEFAULT 0,
   unit_price   bigint NOT NULL CHECK (unit_price >= 0),
   discount     bigint NOT NULL DEFAULT 0 CHECK (discount >= 0),
@@ -147,6 +157,8 @@ CREATE TABLE sales.sale_line (
   PRIMARY KEY (tenant_id, sale_id, line_no),
   FOREIGN KEY (tenant_id, sale_id) REFERENCES sales.sale (tenant_id, id),
   CONSTRAINT ck_line_total CHECK (line_total = net + tax),                       -- DI-001 (line level)
+  CONSTRAINT ck_line_discount CHECK (discount <= gross AND (discount = 0) = (discount_source IS NULL)
+                                     AND (discount_source = 'Rule') = (discount_rule_id IS NOT NULL)),
   CONSTRAINT ck_returned_qty CHECK (returned_qty >= 0 AND returned_qty <= qty)   -- DI-005
 );
 CALL core.enable_tenant_rls('sales.sale_line');
@@ -176,6 +188,9 @@ DECLARE v_status text;
 BEGIN
   SELECT status INTO v_status FROM sales.sale
    WHERE tenant_id = COALESCE(OLD.tenant_id, NEW.tenant_id) AND id = COALESCE(OLD.sale_id, NEW.sale_id);
+  IF v_status IN ('Held','PendingPayment','Cancelled') THEN
+    RAISE EXCEPTION 'lines change only while the sale is a Draft (it is %)', v_status USING ERRCODE = 'RC026';
+  END IF;
   IF v_status = 'Finalized' THEN
     IF TG_OP <> 'UPDATE'
        OR (to_jsonb(NEW) - 'returned_qty') IS DISTINCT FROM (to_jsonb(OLD) - 'returned_qty')

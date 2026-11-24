@@ -303,17 +303,25 @@ schema("Shift", id="uuid", registerId="uuid", branchId="uuid", cashierId="uuid",
        varianceReason="str?", openedAt="dt", closedAt="dt?", version="int")
 schema("CashMovementCreate", direction=("enum", ["In", "Out"]), amount="money", reason="str")
 schema("ShiftClose", countedCash="money", expectedVersion="int", **{"denominations?": [{"value": "money", "count": "int"}], "varianceReason?": "str"})
-schema("SaleCreate", registerId="uuid", clientDraftId="str")
-schema("SaleLineInput", **{"variantId?": "uuid", "barcode?": "str", "unit?": "str"}, qty="qty")
+schema("PosContext", terminalId="uuid", branchId="uuid",
+       registers=[{"id": "uuid", "code": "str", "mayOpenShift": "bool",
+                   "shift": ("desc", {"id": "uuid", "status": "str", "mine": "bool", "openedAt": "dt"}, "The register's shift not yet closed; null if none")}])
+schema("SaleCreate", registerId="uuid", clientDraftId=("desc", "str", "8-64 of A-Z a-z 0-9 _ - (DI-010)"))
+schema("SaleLineInput", **{"variantId?": "uuid", "barcode?": ("desc", "str", "Exactly one of barcode or variantId; a scale label sets its own quantity (CAT-007)"),
+                            "unit?": ("desc", "str", "Default: the scanned barcode's packaging unit, else the base unit (BR-044)")},
+       qty=("desc", "qty", "Added to the line of the same item and unit, if there is one"))
 schema("SaleLinePatch", expectedVersion="int", **{"qty?": "qty", "unit?": "str"})
 schema("LineDiscount", kind=("enum", ["Percent", "Amount"]), value=("desc", "str", "basis points for Percent, IRR for Amount"),
-       source=("enum", ["Manual", "Rule"]), approvalId="uuid?")
-schema("SaleLine", lineNo="int", variantId="uuid", name="str", sku="str", qty="qty", unit="str", unitPrice="money",
+       source=("enum", ["Manual", "Rule"]), **{"amount?": "money"}, approvalId="uuid?")
+schema("SaleLine", lineNo="int", variantId="uuid", name="str", sku="str", qty="qty", unit="str",
+       **{"unitFactor?": "qty", "weighted?": ("desc", "bool", "From a scale label: the quantity is fixed"), "gross?": "money"}, unitPrice="money",
        discounts=["#LineDiscount"], net="money", taxRate="bp", tax="money", lineTotal="money", returnedQty="qty")
 schema("Tender", seq="int", method=("enum", ["Cash", "ExternalCardTerminal", "OnlineGateway", "CustomerCredit", "StoreCredit"]),
        amount="money", status=("enum", ["Confirmed", "Pending", "Failed"]), paymentId="uuid?", reference="str?")
 schema("Sale", id="uuid", status=("enum", ["Draft", "Held", "PendingPayment", "Finalized", "Cancelled"]),
        returnStatus=("enum", ["None", "Partial", "Full"]), branchId="uuid", registerId="uuid", shiftId="uuid",
+       **{"cashierId?": "uuid", "terminalId?": "uuid", "channel?": ("enum", ["POS", "Admin", "API"]), "clientDraftId?": "str",
+          "pricingMode?": ("enum", ["TaxExclusive", "TaxInclusive"])},
        invoiceNo="str?", customer=("desc", "#SaleCustomer?", "Masked; never phone/global id (BR-061)"),
        lines=["#SaleLine"], saleDiscount="#LineDiscount?", tenders=["#Tender"],
        totals={"gross": "money", "discount": "money", "net": "money", "tax": "money", "total": "money",
@@ -535,6 +543,12 @@ ERROR_CATALOG = {
     "payment-failed": (409, "Gateway verify failed"),
     "period-closed": (409, "Fiscal period closed (DI-042)"),
     "no-open-period": (422, "No fiscal period covers this date (ACC-001.1)"),
+    "barcode-not-found": (404, "No product of this store has this code: define it (UC-01) or search by name (UC-02 2a)"),
+    "price-missing": (422, "The product has no price in the default list yet (CAT-009)"),
+    "not-sellable": (422, "The product or its combination is switched off (CAT-008)"),
+    "weighted-line": (409, "A weighed item's quantity comes from its label (CAT-007)"),
+    "sale-not-draft": (409, "Only a draft cart changes (RC026)"),
+    "client-draft-id-taken": (409, "The clientDraftId belongs to another sale (DI-010)"),
     "account-role-unmapped": (422, "An automatic entry needs an account role with no account mapped (ACC-004, D-30)"),
     "journal-not-draft": (409, "Only a draft entry can be posted (ACC-003)"),
     "journal-already-reversed": (409, "An entry is reversed once (DI-045)"),
@@ -953,6 +967,9 @@ op("post", "/shifts/{shiftId}/close", "closeShift", "POS", "شمارش و بست
    approval="|variance| > threshold → shift.supervise (UC-06)")
 op("post", "/shifts/{shiftId}/variance-approval", "approveShiftVariance", "POS", "تأیید مغایرت توسط سرپرست",
    perm="shift.supervise", scope="Branch", body="ApprovalDecision", resp="Shift", reqs=["UC-06", "SoD-01"], audited=True, conflict=True)
+op("get", "/pos/context", "getPosContext", "POS", "دستگاه فعلی: شعبه، صندوق‌ها و شیفت جاری هر صندوق", perm="pos.sell",
+   resp="PosContext", reqs=["SAL-010", "BR-050", "ABAC-04"],
+   desc="Only on a registered device (403 terminal-not-registered otherwise).")
 op("post", "/pos/sales", "createSale", "POS", "ایجاد سبد (Idempotent با clientDraftId برای Sync آفلاین)", perm="pos.sell",
    scope="Register", body="SaleCreate", resp="Sale", resp_code="201", reqs=["SAL-001", "SAL-013", "DI-010", "ABAC-04"],
    conflict=True, desc="Repeating the same clientDraftId returns the existing sale (200) instead of creating a new one.")

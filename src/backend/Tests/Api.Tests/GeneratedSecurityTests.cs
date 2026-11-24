@@ -47,13 +47,18 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
         ["closeShift"] = _ => new { countedCash = "0", expectedVersion = 1 },
         ["approveShiftVariance"] = _ => new { decision = "Approve" },
         ["reverseJournal"] = _ => new { reason = "آزمون" },
+        ["addSaleLine"] = _ => new { barcode = "GEN-NONE", qty = "1" },
+        ["updateSaleLine"] = _ => new { expectedVersion = 1, qty = "2" },
         ["setPrices"] = f => new { items = new[] { new { variantId = f.Variant, unitPrice = "1000" } }, validFrom = DateTimeOffset.UtcNow.AddDays(1) },
     };
 
     private sealed record Fixture(Guid Tenant, Guid Branch, Guid Branch2, Guid Terminal, Guid Terminal2, Guid User, Guid Assignment,
         Guid Approval, Guid Export, Guid SupportRequest, Guid Product, Guid Variant, Guid Barcode, Guid Shift, Guid Journal,
-        Guid PriceList, Guid DiscountRule)
+        Guid PriceList, Guid DiscountRule, Guid Sale)
     {
+        /// <summary>A path value: ids from the fixture; a line number is a position inside the sale (line 1 exists).</summary>
+        public string Path(string param) => param == "lineNo" ? "1" : Id(param).ToString();
+
         public Guid Id(string param) => param switch
         {
             "branchId" => Branch,
@@ -70,6 +75,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
             "journalId" => Journal,
             "priceListId" => PriceList,
             "ruleId" => DiscountRule,
+            "saleId" => Sale,
             _ => throw new InvalidOperationException($"No fixture for path parameter '{param}': add one to GeneratedSecurityTests (US-010)"),
         };
     }
@@ -136,7 +142,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
         Guid t = Guid.CreateVersion7(), b1 = Guid.CreateVersion7(), b2 = Guid.CreateVersion7(), term = Guid.CreateVersion7(), term2 = Guid.CreateVersion7(),
             owner = Guid.CreateVersion7(), member = Guid.CreateVersion7(), assignment = Guid.CreateVersion7(), approval = Guid.CreateVersion7(),
             export = Guid.CreateVersion7(), support = Guid.CreateVersion7(), product = Guid.CreateVersion7(), variant = Guid.CreateVersion7(),
-            barcode = Guid.CreateVersion7(), register = Guid.CreateVersion7(), shift = Guid.CreateVersion7(), journal = Guid.CreateVersion7(), priceList = Guid.CreateVersion7(), rule = Guid.CreateVersion7(),
+            barcode = Guid.CreateVersion7(), register = Guid.CreateVersion7(), shift = Guid.CreateVersion7(), journal = Guid.CreateVersion7(), priceList = Guid.CreateVersion7(), rule = Guid.CreateVersion7(), sale = Guid.CreateVersion7(),
             cash = Guid.CreateVersion7(), sales = Guid.CreateVersion7(), period = Guid.CreateVersion7();
         await using var ds = NpgsqlDataSource.Create(Cs);
         var uow = new PostgresUnitOfWork(ds);
@@ -168,6 +174,10 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
             await Exec(s, ct, "INSERT INTO platform.register (tenant_id, id, branch_id, code) VALUES ($1, $2, $3, 'R1')", t, register, b1);
             await Exec(s, ct, "INSERT INTO sales.shift (tenant_id, id, register_id, branch_id, cashier_id, opening_cash) VALUES ($1, $2, $3, $4, $5, 0)",
                 t, shift, register, b1, member);
+            await Exec(s, ct, "INSERT INTO sales.sale (tenant_id, id, branch_id, register_id, shift_id, cashier_id, terminal_id, client_draft_id, pricing_mode) " +
+                              "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'TaxExclusive')", t, sale, b1, register, shift, member, term, "gen-" + sale.ToString("N"));
+            await Exec(s, ct, "INSERT INTO sales.sale_line (tenant_id, sale_id, line_no, variant_id, qty, unit_price, gross, net, tax_rate_bp, tax, line_total) " +
+                              "VALUES ($1, $2, 1, $3, 1, 1000, 1000, 1000, 0, 0, 1000)", t, sale, variant);
             await Exec(s, ct, "INSERT INTO acc.account (tenant_id, id, code, name, account_type) VALUES ($1, $2, '1101', 'صندوق', 'Asset'), ($1, $3, '4101', 'فروش', 'Revenue')",
                 t, cash, sales);
             await Exec(s, ct, "INSERT INTO acc.fiscal_period (tenant_id, id, fiscal_year, period_no, span) VALUES ($1, $2, 1405, 9, tstzrange(now() - interval '10 days', now() + interval '10 days'))",
@@ -185,7 +195,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
             return await Exec(s, ct, "INSERT INTO platform.export_job (tenant_id, id, requested_by, categories) VALUES ($1, $2, $3, '{Products}')", t, export, owner);
         });
         _roleSubjects[$"owner-{t}"] = $"gen-{_run}-owner-{t}";
-        return new Fixture(t, b1, b2, term, term2, member, assignment, approval, export, support, product, variant, barcode, shift, journal, priceList, rule);
+        return new Fixture(t, b1, b2, term, term2, member, assignment, approval, export, support, product, variant, barcode, shift, journal, priceList, rule, sale);
     }
 
     private static async Task<int> Exec(IUnitOfWorkScope s, CancellationToken ct, string sql, params object[] args)
@@ -273,7 +283,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
                 RoleGrant grant = RoleCatalog.AllowedScopes(role).Contains(ScopeType.Tenant)
                     ? new RoleGrant(role, ScopeType.Tenant, null) : new RoleGrant(role, ScopeType.Branch, _a.Branch);
                 bool allowed = AccessPolicy.HasAnywhere([grant], op.Permission!);
-                string path = PathWith(op, p => NotTenantResources.ContainsKey(p) ? new string('x', 40) : _a.Id(p).ToString());
+                string path = PathWith(op, p => NotTenantResources.ContainsKey(p) ? new string('x', 40) : _a.Path(p));
                 HttpResponseMessage r = await Send(As(_roleSubjects[role], _a.Tenant), op, path, null);
                 bool forbidden = r.StatusCode == HttpStatusCode.Forbidden && await Code(r) == "forbidden";
                 if (allowed == forbidden)
@@ -299,10 +309,10 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
                 continue;
             }
 
-            foreach (string param in op.PathParams.Where(p => !NotTenantResources.ContainsKey(p)))
+            foreach (string param in op.PathParams.Where(p => !NotTenantResources.ContainsKey(p) && p != "lineNo"))
             {
                 // only this parameter points into store B; the rest stay valid ids of store A
-                string path = PathWith(op, p => (p == param ? _b : _a).Id(p).ToString());
+                string path = PathWith(op, p => (p == param ? _b : _a).Path(p));
                 HttpResponseMessage r = await Send(owner, op, path, ValidBodies.TryGetValue(op.OperationId, out var body) ? body(_a) : null);
                 if (r.StatusCode != HttpStatusCode.NotFound)
                 {
@@ -323,7 +333,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
         Fixture otherBranch = _a with { Branch = _a.Branch2, Terminal = _a.Terminal2 };
         foreach (Operation op in Implemented().Where(o => o.Scope == "Branch" && o.PathParams.Any(p => p is "branchId" or "terminalId")))
         {
-            string path = PathWith(op, p => (p is "branchId" or "terminalId" ? otherBranch : _a).Id(p).ToString());
+            string path = PathWith(op, p => (p is "branchId" or "terminalId" ? otherBranch : _a).Path(p));
             HttpResponseMessage r = await Send(manager, op, path, ValidBodies.TryGetValue(op.OperationId, out var body) ? body(otherBranch) : null);
             if (r.StatusCode is not (HttpStatusCode.Forbidden or HttpStatusCode.NotFound))
             {
@@ -343,7 +353,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
         foreach (Operation op in Implemented().Where(o => o.BodyProps is not null))
         {
             string field = forbidden.First(f => !op.BodyProps!.Contains(f, StringComparer.Ordinal));
-            string path = PathWith(op, p => NotTenantResources.ContainsKey(p) ? new string('x', 40) : _a.Id(p).ToString());
+            string path = PathWith(op, p => NotTenantResources.ContainsKey(p) ? new string('x', 40) : _a.Path(p));
             HttpResponseMessage r = await Send(owner, op, path, new Dictionary<string, object> { [field] = Guid.NewGuid() });
             string text = await r.Content.ReadAsStringAsync();
             if (r.StatusCode != HttpStatusCode.BadRequest || !text.Contains($"\"{field}\":[\"unknown-field\"]", StringComparison.Ordinal))

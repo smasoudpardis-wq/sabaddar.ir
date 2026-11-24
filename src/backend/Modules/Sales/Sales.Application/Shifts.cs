@@ -28,6 +28,9 @@ public interface IShifts
     /// <summary>The shift as stored (with the expected cash); callers hide it before the count (D-24).</summary>
     Task<ShiftView?> GetAsync(IUnitOfWorkScope scope, Guid shiftId, CancellationToken cancellationToken);
 
+    /// <summary>The register's shift that is not yet closed (at most one, DI-008), if any.</summary>
+    Task<ShiftView?> CurrentAsync(IUnitOfWorkScope scope, Guid registerId, CancellationToken cancellationToken);
+
     Task<ShiftResult<CashMovementView>> RecordCashAsync(IUnitOfWorkScope scope, Guid shiftId, bool cashIn, long amount, string reason, Guid by,
         CancellationToken cancellationToken);
 
