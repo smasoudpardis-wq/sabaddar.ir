@@ -194,7 +194,7 @@ BEGIN
   -- once a payment is taken the bill is fixed: what was paid for cannot be changed underneath it (US-101)
   IF v_status = 'Draft'
      AND NOT (TG_OP = 'UPDATE' AND (to_jsonb(NEW) - ARRAY['snapshot','cost_at_sale']) = (to_jsonb(OLD) - ARRAY['snapshot','cost_at_sale']))  -- Finalize's snapshot (SAL-005)
-     AND EXISTS (SELECT 1 FROM sales.sale_tender t WHERE t.tenant_id = COALESCE(OLD.tenant_id, NEW.tenant_id)
+     AND EXISTS (SELECT 1 FROM sales.sale_tender t WHERE t.voided_at IS NULL AND t.tenant_id = COALESCE(OLD.tenant_id, NEW.tenant_id)
                                       AND t.sale_id = COALESCE(OLD.sale_id, NEW.sale_id)) THEN
     RAISE EXCEPTION 'lines of a sale with payments do not change' USING ERRCODE = 'RC026';
   END IF;
@@ -217,7 +217,11 @@ CREATE TABLE sales.sale_tender (
   method     text NOT NULL CHECK (method IN ('Cash','ExternalCardTerminal','OnlineGateway','CustomerCredit','StoreCredit')),
   amount     bigint NOT NULL CHECK (amount > 0),
   payment_id uuid,                       -- Payments ref; NULL for CustomerCredit (D-28)
+  voided_at   timestamptz,               -- a payment taken back before Finalize (it no longer counts anywhere)
+  voided_by   uuid,
+  void_reason text CHECK (char_length(btrim(void_reason)) BETWEEN 3 AND 200),
   PRIMARY KEY (tenant_id, sale_id, seq),
+  CHECK ((voided_at IS NULL) = (voided_by IS NULL) AND (voided_at IS NULL) = (void_reason IS NULL)),
   FOREIGN KEY (tenant_id, sale_id) REFERENCES sales.sale (tenant_id, id),
   CHECK ((method = 'CustomerCredit') = (payment_id IS NULL) OR method = 'StoreCredit')
 );
@@ -232,13 +236,30 @@ BEGIN
   IF v_status NOT IN ('Draft','PendingPayment') THEN
     RAISE EXCEPTION 'payments are taken only on an open sale (it is %)', v_status USING ERRCODE = 'RC027';
   END IF;
-  SELECT coalesce(sum(amount), 0) INTO v_paid FROM sales.sale_tender WHERE tenant_id = NEW.tenant_id AND sale_id = NEW.sale_id;
+  SELECT coalesce(sum(amount), 0) INTO v_paid FROM sales.sale_tender WHERE tenant_id = NEW.tenant_id AND sale_id = NEW.sale_id AND voided_at IS NULL;
   IF v_paid + NEW.amount > v_total THEN
     RAISE EXCEPTION 'payments % + % exceed the total %', v_paid, NEW.amount, v_total USING ERRCODE = 'RC027';
   END IF;
   RETURN NEW;
 END $$;
 CREATE TRIGGER tr_tender_guard BEFORE INSERT ON sales.sale_tender FOR EACH ROW EXECUTE FUNCTION sales.tender_guard();
+
+-- A tender is a fact: the only change is voiding it, once, while the sale is still open (RC028); never deleted.
+CREATE OR REPLACE FUNCTION sales.tender_void_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE v_status text;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'tenders are never deleted; void them' USING ERRCODE = 'RC028';
+  END IF;
+  SELECT status INTO v_status FROM sales.sale WHERE tenant_id = OLD.tenant_id AND id = OLD.sale_id;
+  IF OLD.voided_at IS NOT NULL
+     OR (to_jsonb(NEW) - ARRAY['voided_at','voided_by','void_reason']) IS DISTINCT FROM (to_jsonb(OLD) - ARRAY['voided_at','voided_by','void_reason'])
+     OR v_status NOT IN ('Draft','PendingPayment') THEN
+    RAISE EXCEPTION 'a tender is only voided, once, before the sale is finalized' USING ERRCODE = 'RC028';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tr_tender_void_guard BEFORE UPDATE OR DELETE ON sales.sale_tender FOR EACH ROW EXECUTE FUNCTION sales.tender_void_guard();
 
 -- Idempotency records live in core.idempotency_record (shared by every module, US-006).
 
@@ -249,7 +270,8 @@ CREATE TRIGGER tr_tender_guard BEFORE INSERT ON sales.sale_tender FOR EACH ROW E
 CREATE OR REPLACE FUNCTION sales.shift_expected_cash(p_shift uuid) RETURNS bigint LANGUAGE sql STABLE SET search_path = pg_catalog AS $$
   SELECT sh.opening_cash
        + coalesce((SELECT sum(t.amount) FROM sales.sale s JOIN sales.sale_tender t ON t.tenant_id = s.tenant_id AND t.sale_id = s.id
-                   WHERE s.tenant_id = sh.tenant_id AND s.shift_id = sh.id AND s.status = 'Finalized' AND t.method = 'Cash'), 0)
+                   WHERE s.tenant_id = sh.tenant_id AND s.shift_id = sh.id AND s.status = 'Finalized' AND t.method = 'Cash'
+                     AND t.voided_at IS NULL), 0)
        + coalesce((SELECT sum(CASE m.direction WHEN 'In' THEN m.amount ELSE -m.amount END) FROM sales.cash_movement m
                    WHERE m.tenant_id = sh.tenant_id AND m.shift_id = sh.id), 0)
   FROM sales.shift sh WHERE sh.id = p_shift AND sh.tenant_id = core.current_tenant()

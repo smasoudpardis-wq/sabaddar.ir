@@ -175,6 +175,31 @@ public sealed class PostgresSales : ISales
         return (await GetAsync(s, saleId, cancellationToken))!;
     }
 
+    public async Task<SaleView?> VoidTenderAsync(IUnitOfWorkScope scope, Guid saleId, int seq, Guid by, string reason, CancellationToken cancellationToken)
+    {
+        var s = (PostgresUnitOfWorkScope)scope;
+        await using (NpgsqlCommand cmd = s.Command(
+            "UPDATE sales.sale_tender SET voided_at = now(), voided_by = $3, void_reason = $4 WHERE sale_id = $1 AND seq = $2 AND voided_at IS NULL"))
+        {
+            cmd.Parameters.Add(new NpgsqlParameter { Value = saleId });
+            cmd.Parameters.Add(new NpgsqlParameter { Value = seq });
+            cmd.Parameters.Add(new NpgsqlParameter { Value = by });
+            cmd.Parameters.Add(new NpgsqlParameter { Value = reason });
+            if (await cmd.ExecuteNonQueryAsync(cancellationToken) == 0)
+            {
+                return null;
+            }
+        }
+
+        await using (NpgsqlCommand touch = s.Command("UPDATE sales.sale SET version = version + 1, last_activity_at = now() WHERE id = $1"))
+        {
+            touch.Parameters.Add(new NpgsqlParameter { Value = saleId });
+            await touch.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        return await GetAsync(s, saleId, cancellationToken);
+    }
+
     public async Task<SaleView> AddTenderAsync(IUnitOfWorkScope scope, Guid saleId, string method, long amount, Guid? paymentId, CancellationToken cancellationToken)
     {
         var s = (PostgresUnitOfWorkScope)scope;
@@ -253,7 +278,7 @@ public sealed class PostgresSales : ISales
         }
 
         var tenders = new Dictionary<Guid, List<SaleTenderView>>();
-        await using (NpgsqlCommand cmd = s.Command("SELECT sale_id, seq, method, amount, payment_id FROM sales.sale_tender WHERE sale_id = ANY($1) ORDER BY sale_id, seq"))
+        await using (NpgsqlCommand cmd = s.Command("SELECT sale_id, seq, method, amount, payment_id, voided_at, void_reason FROM sales.sale_tender WHERE sale_id = ANY($1) ORDER BY sale_id, seq"))
         {
             cmd.Parameters.Add(new NpgsqlParameter { Value = sales.Select(x => x.Id).ToArray(), NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Uuid });
             await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct);
@@ -265,7 +290,8 @@ public sealed class PostgresSales : ISales
                     tenders[sale] = list = [];
                 }
 
-                list.Add(new SaleTenderView(r.GetInt32(1), r.GetString(2), r.GetInt64(3), r.IsDBNull(4) ? null : r.GetGuid(4)));
+                list.Add(new SaleTenderView(r.GetInt32(1), r.GetString(2), r.GetInt64(3), r.IsDBNull(4) ? null : r.GetGuid(4),
+                    r.IsDBNull(5) ? null : r.GetFieldValue<DateTimeOffset>(5), r.IsDBNull(6) ? null : r.GetString(6)));
             }
         }
 

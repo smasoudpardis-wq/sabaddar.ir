@@ -317,7 +317,8 @@ schema("SaleLine", lineNo="int", variantId="uuid", name="str", sku="str", qty="q
        **{"unitFactor?": "qty", "weighted?": ("desc", "bool", "From a scale label: the quantity is fixed"), "gross?": "money"}, unitPrice="money",
        discounts=["#LineDiscount"], net="money", taxRate="bp", tax="money", lineTotal="money", returnedQty="qty")
 schema("Tender", seq="int", method=("enum", ["Cash", "ExternalCardTerminal", "OnlineGateway", "CustomerCredit", "StoreCredit"]),
-       amount="money", status=("enum", ["Confirmed", "Pending", "Failed"]), paymentId="uuid?", reference="str?",
+       amount="money", status=("enum", ["Confirmed", "Pending", "Failed", "Voided"]), paymentId="uuid?", reference="str?",
+       **{"voidReason?": "str?"},
        **{"tendered?": ("desc", "money?", "Cash: what was handed over"), "change?": ("desc", "money?", "Cash: what was given back (SAL-006.1)")})
 schema("Sale", id="uuid", status=("enum", ["Draft", "Held", "PendingPayment", "Finalized", "Cancelled"]),
        returnStatus=("enum", ["None", "Partial", "Full"]), branchId="uuid", registerId="uuid", shiftId="uuid",
@@ -341,6 +342,7 @@ schema("TenderInput", method=("enum", ["Cash", "ExternalCardTerminal", "Customer
           "terminalNo?": "str", "cardLast4?": "str",
           "approvalId?": ("desc", "uuid", "A manager's approval to record a repeated card reference (PAY-002.1)")})
 schema("VersionOnly", expectedVersion="int")
+schema("TenderVoid", expectedVersion="int", reason=("desc", "str", "3-200 characters, audited"))
 schema("CancelRequest", expectedVersion="int", reason="str")
 schema("JournalReverse", reason=("desc", "str", "3-200 characters; becomes the reversal's description"))
 schema("FinalizeRequest", expectedVersion="int", expectedTotal="money",
@@ -1011,6 +1013,10 @@ op("post", "/pos/sales/{saleId}/tenders", "recordTender", "POS", "ثبت پرد�
                                            "terminalNo": "8899", "cardLast4": "1234"}),
              "credit": ex("نسیه", {"method": "CustomerCredit", "amount": "1100000"})})
 
+op("post", "/pos/sales/{saleId}/tenders/{seq}/void", "voidTender", "POS", "باطل کردن پرداخت پیش از نهایی‌سازی",
+   perm="pos.sale.cancel", scope="OwnShift", idem=True, body="TenderVoid", resp="Sale", reqs=["SAL-006", "AB-03"], audited=True, conflict=True,
+   desc="The tender is kept, marked Voided with its reason; it no longer counts toward the bill, the drawer or the entry. A card "
+        "slip's reference stays taken (AB-14). When no payment is left the lines can change again.")
 tag("Sales", "نهایی‌سازی، فاکتور، برگشت و ارسال فاکتور (SAL)")
 op("post", "/sales/{saleId}/finalize", "finalizeSale", "Sales",
    "نهایی‌سازی اتمی: شماره فاکتور، گردش انبار، سند، نسیه و Outbox در یک تراکنش", perm="pos.sell", scope="OwnShift",

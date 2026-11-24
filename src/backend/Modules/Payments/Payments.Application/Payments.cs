@@ -32,6 +32,9 @@ public interface IPayments
     Task<PaymentResult> RecordManualCardAsync(IUnitOfWorkScope scope, long amount, string referenceNo, string? terminalNo, string? cardLast4,
         Guid? overrideApprovalId, PaymentOrigin origin, CancellationToken cancellationToken);
 
+    /// <summary>A payment taken back before its sale was finalized: Voided (a card slip's reference stays taken, AB-14).</summary>
+    Task VoidAsync(IUnitOfWorkScope scope, Guid paymentId, Guid by, CancellationToken cancellationToken);
+
     Task<IReadOnlyList<PaymentView>> ForSaleAsync(IUnitOfWorkScope scope, Guid saleId, CancellationToken cancellationToken);
 }
 

@@ -50,6 +50,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
         ["addSaleLine"] = _ => new { barcode = "GEN-NONE", qty = "1" },
         ["updateSaleLine"] = _ => new { expectedVersion = 1, qty = "2" },
         ["recordTender"] = _ => new { method = "Cash", amount = "1", tendered = "1" },
+        ["voidTender"] = _ => new { expectedVersion = 1, reason = "آزمون" },
         ["finalizeSale"] = _ => new { expectedVersion = 1, expectedTotal = "1000" },
         ["setPrices"] = f => new { items = new[] { new { variantId = f.Variant, unitPrice = "1000" } }, validFrom = DateTimeOffset.UtcNow.AddDays(1) },
     };
@@ -59,7 +60,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
         Guid PriceList, Guid DiscountRule, Guid Sale)
     {
         /// <summary>A path value: ids from the fixture; a line number is a position inside the sale (line 1 exists).</summary>
-        public string Path(string param) => param == "lineNo" ? "1" : Id(param).ToString();
+        public string Path(string param) => param is "lineNo" or "seq" ? "1" : Id(param).ToString();
 
         public Guid Id(string param) => param switch
         {
@@ -311,7 +312,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
                 continue;
             }
 
-            foreach (string param in op.PathParams.Where(p => !NotTenantResources.ContainsKey(p) && p != "lineNo"))
+            foreach (string param in op.PathParams.Where(p => !NotTenantResources.ContainsKey(p) && p is not ("lineNo" or "seq")))
             {
                 // only this parameter points into store B; the rest stay valid ids of store A
                 string path = PathWith(op, p => (p == param ? _b : _a).Path(p));

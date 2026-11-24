@@ -41,6 +41,15 @@ public sealed class PostgresPayments : IPayments
         }
     }
 
+    public async Task VoidAsync(IUnitOfWorkScope scope, Guid paymentId, Guid by, CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
+            "UPDATE pay.payment SET status = 'Voided', voided_at = now(), voided_by = $2 WHERE id = $1 AND status <> 'Voided'");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = paymentId });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = by });
+        await cmd.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     public async Task<IReadOnlyList<PaymentView>> ForSaleAsync(IUnitOfWorkScope scope, Guid saleId, CancellationToken cancellationToken)
     {
         await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command($"SELECT {Columns} FROM pay.payment WHERE sale_id = $1 ORDER BY recorded_at, id");

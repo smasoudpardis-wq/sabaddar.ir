@@ -1253,6 +1253,23 @@
   "idempotent": true
  },
  {
+  "operationId": "voidTender",
+  "method": "POST",
+  "path": "/pos/sales/{saleId}/tenders/{seq}/void",
+  "permission": "pos.sale.cancel",
+  "allowedWhenReadOnly": false,
+  "scope": "OwnShift",
+  "pathParams": [
+   "saleId",
+   "seq"
+  ],
+  "bodyProps": [
+   "expectedVersion",
+   "reason"
+  ],
+  "idempotent": true
+ },
+ {
   "operationId": "finalizeSale",
   "method": "POST",
   "path": "/sales/{saleId}/finalize",

@@ -365,6 +365,17 @@ SELECT t.expect_error('T212 once paid into, the lines of a bill do not change (R
 UPDATE sales.sale_line SET cost_at_sale = 300000, snapshot = '{"name":"شیر"}' WHERE sale_id = 'a0000000-0000-0000-0000-000000000043';
 SELECT t.ok('T214 Finalize may still write the snapshot and cost of a paid bill''s lines (SAL-005)',
   (SELECT cost_at_sale FROM sales.sale_line WHERE sale_id = 'a0000000-0000-0000-0000-000000000043') = 300000);
+SELECT t.expect_error('T215 a tender is never deleted (no grant; the trigger refuses it too)', '42501',
+  $$DELETE FROM sales.sale_tender WHERE sale_id = 'a0000000-0000-0000-0000-000000000043'$$);
+SELECT t.expect_error('T216 a tender''s amount never changes (RC028)', 'RC028',
+  $$UPDATE sales.sale_tender SET amount = 1 WHERE sale_id = 'a0000000-0000-0000-0000-000000000043'$$);
+UPDATE sales.sale_tender SET voided_at = now(), voided_by = gen_random_uuid(), void_reason = 'اشتباه در مبلغ'
+ WHERE sale_id = 'a0000000-0000-0000-0000-000000000043' AND seq = 1;
+SELECT t.expect_error('T217 a voided tender stays voided (RC028)', 'RC028',
+  $$UPDATE sales.sale_tender SET voided_at = NULL, voided_by = NULL, void_reason = NULL WHERE sale_id = 'a0000000-0000-0000-0000-000000000043'$$);
+INSERT INTO sales.sale_tender (tenant_id, sale_id, seq, method, amount, payment_id)
+  VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000043', 2, 'Cash', 1000, gen_random_uuid());
+SELECT t.ok('T218 a voided tender no longer counts toward the total (the whole 1,000 is paid again)', true);
 SELECT t.expect_error('T213 payments are taken only on an open sale (RC027)', 'RC027',
   $$INSERT INTO sales.sale_tender (tenant_id, sale_id, seq, method, amount, payment_id)
     VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000042', 1, 'Cash', 1, gen_random_uuid())$$);

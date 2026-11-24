@@ -283,4 +283,48 @@ public sealed class FinalizeTests : IClassFixture<ApiFactory>, IAsyncLifetime
         HttpResponseMessage moved = await Finalize("cashier", later);
         Assert.Equal(("price-changed", "137500"), (await Code(moved), (await Body(moved)).GetProperty("context").GetProperty("total").GetString()));
     }
+
+    [DbFact]
+    public async Task A_payment_taken_back_before_finalize_stops_counting_and_lets_the_bill_be_paid_at_the_new_price()
+    {
+        Guid gum = await Product("FN-GUM", "100000", "20", "40000");
+        await OpenShift("cashier", _r1);
+        HttpResponseMessage created = await As("cashier").PostAsJsonAsync("/api/v1/pos/sales", new { registerId = _r1, clientDraftId = "d-" + Guid.NewGuid().ToString("N") });
+        Guid saleId = (await Body(created)).GetProperty("id").GetGuid();
+        await As("cashier").PostAsJsonAsync($"/api/v1/pos/sales/{saleId}/lines", new { barcode = "FN-GUM", qty = "1" });   // 110,000
+        await Idem(As("cashier"), $"/api/v1/pos/sales/{saleId}/tenders", new { method = "ExternalCardTerminal", amount = "10000", referenceNo = "123123123123" });
+        JsonElement paid = await Body(await Idem(As("cashier"), $"/api/v1/pos/sales/{saleId}/tenders", new { method = "Cash", amount = "100000", tendered = "100000" }));
+
+        // the price moves after payment: Finalize refuses; the payments are taken back (with a reason, by the cart's cashier)
+        Guid list = (await Body(await As("owner", false).GetAsync("/api/v1/price-lists"))).GetProperty("items").EnumerateArray().Single(l => l.GetProperty("isDefault").GetBoolean())
+            .GetProperty("id").GetGuid();
+        await Idem(As("owner", false), $"/api/v1/price-lists/{list}/prices", new { items = new[] { new { variantId = gum, unitPrice = "120000" } }, validFrom = DateTimeOffset.UtcNow });
+        Assert.Equal("price-changed", await Code(await Finalize("cashier", paid)));
+        string path = $"/api/v1/pos/sales/{saleId}/tenders";
+        int v = paid.GetProperty("version").GetInt32();
+        Assert.Equal(HttpStatusCode.BadRequest, (await Idem(As("cashier"), $"{path}/2/void", new { expectedVersion = v, reason = "" })).StatusCode);
+        Assert.Equal("version-conflict", await Code(await Idem(As("cashier"), $"{path}/2/void", new { expectedVersion = v - 1, reason = "قیمت عوض شد" })));
+        Assert.Equal(HttpStatusCode.NotFound, (await Idem(As("cashier2"), $"{path}/2/void", new { expectedVersion = v, reason = "قیمت عوض شد" })).StatusCode);
+        JsonElement one = await Body(await Idem(As("cashier"), $"{path}/2/void", new { expectedVersion = v, reason = "قیمت عوض شد" }));
+        Assert.Equal(("Voided", "10000"), (one.GetProperty("tenders")[1].GetProperty("status").GetString(), one.GetProperty("totals").GetProperty("paid").GetString()));
+        Assert.Equal(HttpStatusCode.NotFound, (await Idem(As("cashier"), $"{path}/2/void", new { expectedVersion = one.GetProperty("version").GetInt32(), reason = "دوباره" })).StatusCode);
+        Assert.Equal("sale-has-payments", await Code(await As("cashier").PostAsJsonAsync($"/api/v1/pos/sales/{saleId}/lines", new { barcode = "FN-GUM", qty = "1" })));
+        JsonElement none = await Body(await Idem(As("cashier"), $"{path}/1/void", new { expectedVersion = one.GetProperty("version").GetInt32(), reason = "قیمت عوض شد" }));
+        Assert.Equal("0", none.GetProperty("totals").GetProperty("paid").GetString());
+
+        // the slip's reference stays taken (AB-14); paying again reprices the bill first, then it is finalized at 132,000
+        Assert.Equal("price-changed", await Code(await Idem(As("cashier"), path, new { method = "Cash", amount = "110000", tendered = "110000" })));
+        Assert.Equal("duplicate-reference", await Code(await Idem(As("cashier"), path, new { method = "ExternalCardTerminal", amount = "10000", referenceNo = "123123123123" })));
+        JsonElement repaid = await Body(await Idem(As("cashier"), path, new { method = "Cash", amount = "132000", tendered = "150000" }));
+        JsonElement done = await Body(await Finalize("cashier", repaid));
+        Assert.Equal(("Finalized", "132000", "18000"), (done.GetProperty("status").GetString(), done.GetProperty("totals").GetProperty("paid").GetString(),
+            done.GetProperty("totals").GetProperty("change").GetString()));
+
+        // the drawer and the entry count only what was kept: 132,000 cash, no card
+        Assert.Equal(132_000L, await Scalar<long>("SELECT sales.shift_expected_cash($1)", done.GetProperty("shiftId").GetGuid()));
+        var sold = await Entry(saleId, "sale");
+        Assert.Equal((132_000L, false), (sold["1101"].Debit, sold.ContainsKey("1104")));
+        Assert.Equal(2L, await Scalar<long>("SELECT count(*) FROM pay.payment WHERE sale_id = $1 AND status = 'Voided'", saleId));
+        Assert.Equal(2L, await Scalar<long>("SELECT count(*) FROM audit.audit_record WHERE action = 'sales.tender.voided' AND resource_id = $1", saleId.ToString()));
+    }
 }

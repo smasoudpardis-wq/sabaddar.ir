@@ -6,7 +6,7 @@ CREATE TABLE pay.payment (
   tenant_id     uuid NOT NULL,
   id            uuid NOT NULL,
   method        text NOT NULL CHECK (method IN ('Cash','ExternalCardTerminal','OnlineGateway','StoreCredit')),
-  status        text NOT NULL CHECK (status IN ('ConfirmedCash','ConfirmedManual','Pending','Confirmed','Failed','NeedsReview','Expired')),
+  status        text NOT NULL CHECK (status IN ('ConfirmedCash','ConfirmedManual','Pending','Confirmed','Failed','NeedsReview','Expired','Voided')),
   amount        bigint NOT NULL CHECK (amount > 0),                 -- what is applied to the bill (rials)
   tendered      bigint,                                             -- cash handed over (SAL-006.1)
   change_given  bigint,
@@ -20,11 +20,14 @@ CREATE TABLE pay.payment (
   recorded_by   uuid NOT NULL,
   override_approval_id uuid,                                        -- a manager allowed a repeated reference (audited)
   recorded_at   timestamptz NOT NULL DEFAULT now(),
+  voided_at     timestamptz,                                        -- taken back before the sale was finalized
+  voided_by     uuid,
   PRIMARY KEY (tenant_id, id),
   CHECK ((method = 'Cash') = (tendered IS NOT NULL)),
   CHECK (tendered IS NULL OR (tendered >= amount AND change_given = tendered - amount)),
-  CHECK (method <> 'Cash' OR status = 'ConfirmedCash'),
-  CHECK (method <> 'ExternalCardTerminal' OR (status = 'ConfirmedManual' AND reference_no IS NOT NULL)),
+  CHECK (method <> 'Cash' OR status IN ('ConfirmedCash','Voided')),
+  CHECK (method <> 'ExternalCardTerminal' OR (status IN ('ConfirmedManual','Voided') AND reference_no IS NOT NULL)),
+  CHECK ((status = 'Voided') = (voided_at IS NOT NULL) AND (voided_at IS NULL) = (voided_by IS NULL)),
   CHECK (status <> 'ConfirmedManual' OR method = 'ExternalCardTerminal'),
   CHECK (override_approval_id IS NULL OR method = 'ExternalCardTerminal')
 );
@@ -37,5 +40,6 @@ CALL core.enable_tenant_rls('pay.payment');
 
 GRANT USAGE ON SCHEMA pay TO rc_app, rc_worker, rc_reporting;
 GRANT SELECT, INSERT ON pay.payment TO rc_app;
+GRANT UPDATE (status, voided_at, voided_by) ON pay.payment TO rc_app;   -- voiding only; amounts and references never change
 GRANT SELECT ON pay.payment TO rc_worker, rc_reporting;
 RESET ROLE;

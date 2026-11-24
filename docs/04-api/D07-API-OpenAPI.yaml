@@ -4232,6 +4232,68 @@ paths:
       - PAY-002.1
       - CRD-002
       x-audited: true
+  /pos/sales/{saleId}/tenders/{seq}/void:
+    post:
+      operationId: voidTender
+      tags:
+      - POS
+      summary: باطل کردن پرداخت پیش از نهایی‌سازی
+      description: The tender is kept, marked Voided with its reason; it no longer counts toward the bill, the drawer or the
+        entry. A card slip's reference stays taken (AB-14). When no payment is left the lines can change again.
+      security: *id001
+      parameters:
+      - name: saleId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: seq
+        in: path
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenderVoid'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sale'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: pos.sale.cancel
+      x-scope: OwnShift
+      x-idempotent: true
+      x-requirements:
+      - SAL-006
+      - AB-03
+      x-audited: true
   /sales/{saleId}/finalize:
     post:
       operationId: finalizeSale
@@ -13302,12 +13364,17 @@ components:
           - Confirmed
           - Pending
           - Failed
+          - Voided
         paymentId:
           type:
           - string
           - 'null'
           format: uuid
         reference:
+          type:
+          - string
+          - 'null'
+        voidReason:
           type:
           - string
           - 'null'
@@ -13358,6 +13425,19 @@ components:
       required:
       - method
       - amount
+    TenderVoid:
+      type: object
+      additionalProperties: false
+      properties:
+        expectedVersion:
+          type: integer
+          format: int32
+        reason:
+          type: string
+          description: 3-200 characters, audited
+      required:
+      - expectedVersion
+      - reason
     Terminal:
       type: object
       additionalProperties: false

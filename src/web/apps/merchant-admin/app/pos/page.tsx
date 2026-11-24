@@ -6,7 +6,8 @@ type Register = { id: string; code: string; mayOpenShift: boolean; shift: { id: 
 type Context = { terminalId: string; branchId: string; registers: Register[] };
 type Line = { lineNo: number; name: string; sku: string; qty: string; unit: string; weighted: boolean; unitPrice: string; lineTotal: string;
   discounts: { amount: string }[] };
-type Tender = { seq: number; method: string; amount: string; reference: string | null; tendered: string | null; change: string | null };
+type Tender = { seq: number; method: string; amount: string; status: string; reference: string | null; tendered: string | null; change: string | null;
+  voidReason: string | null };
 type Sale = { id: string; version: number; status: string; invoiceNo: string | null; lines: Line[]; tenders: Tender[];
   totals: { gross: string; discount: string; tax: string; total: string; paid: string; remaining: string; change: string } };
 
@@ -58,6 +59,7 @@ export default function PosPage() {
   const [override, setOverride] = useState<{ approvalId: string; body: Record<string, unknown> } | null>(null);
   const [finalKey, setFinalKey] = useState<string | null>(null);   // kept until it succeeds: a retry is the same request (UC-02 6a)
   const [pendingFinal, setPendingFinal] = useState(false);
+  const [voiding, setVoiding] = useState<{ seq: number; reason: string } | null>(null);
   const last = useRef<{ code: string; at: number } | null>(null);
   const buffer = useRef({ text: '', at: 0 });
   const busy = useRef<Promise<void>>(Promise.resolve());
@@ -282,6 +284,19 @@ export default function PosPage() {
     setError('finalize-unknown');
   }
 
+  // a payment taken back before Finalize: the money goes back to the customer (or the card is reversed on the bank terminal)
+  async function voidTender(e: React.FormEvent) {
+    e.preventDefault();
+    if (!sale || !voiding) return;
+    setError('');
+    const r = await fetch(`/bff/pos/sales/${sale.id}/tenders/${voiding.seq}/void`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf(), 'idempotency-key': crypto.randomUUID() },
+      body: JSON.stringify({ expectedVersion: sale.version, reason: voiding.reason }),
+    });
+    const p = await r.json().catch(() => null);
+    if (r.ok) { current.current = p; setSale(p); setVoiding(null); } else setError(p?.code ?? `http-${r.status}`);
+  }
+
   function nextSale() {
     current.current = null;
     setSale(null);
@@ -375,10 +390,21 @@ export default function PosPage() {
               <h2>پرداخت</h2>
               <ul data-testid="pos-tenders">
                 {sale.tenders.map((t) => (
-                  <li key={t.seq} data-method={t.method}>
+                  <li key={t.seq} data-method={t.method} data-status={t.status} style={t.status === 'Voided' ? { textDecoration: 'line-through' } : undefined}>
                     {t.method === 'Cash' ? 'نقد' : 'کارتخوان'}: {rial(t.amount)} ریال
                     {t.reference ? ` (پیگیری ${t.reference})` : ''}
                     {t.change && t.change !== '0' ? ` · دریافتی ${rial(t.tendered ?? '0')} · باقیمانده به مشتری ${rial(t.change)}` : ''}
+                    {t.status === 'Voided' && ` (باطل: ${t.voidReason})`}
+                    {t.status !== 'Voided' && sale.status !== 'Finalized' && (voiding?.seq === t.seq ? (
+                      <form style={{ display: 'inline' }} onSubmit={(e) => void voidTender(e)}>
+                        {' '}<input required minLength={3} maxLength={200} value={voiding.reason} placeholder="دلیل" aria-label="دلیل باطل کردن"
+                          onChange={(e) => setVoiding({ ...voiding, reason: e.target.value })} data-testid={`pos-void-reason-${t.seq}`} />{' '}
+                        <button type="submit" style={{ minHeight: 44 }} data-testid={`pos-void-submit-${t.seq}`}>تأیید باطل</button>
+                      </form>
+                    ) : (
+                      <>{' '}<button type="button" style={{ minHeight: 44 }} onClick={() => setVoiding({ seq: t.seq, reason: '' })}
+                        data-testid={`pos-void-${t.seq}`}>باطل کردن</button></>
+                    ))}
                   </li>
                 ))}
               </ul>

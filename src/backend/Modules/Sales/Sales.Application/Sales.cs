@@ -17,13 +17,19 @@ public sealed record SaleLineView(int LineNo, Guid VariantId, string Name, strin
     long LineTotal, decimal ReturnedQty);
 
 /// <summary>A payment applied to the bill (SAL-006); the payment itself lives in Payments (<paramref name="PaymentId"/>).</summary>
-public sealed record SaleTenderView(int Seq, string Method, long Amount, Guid? PaymentId);
+public sealed record SaleTenderView(int Seq, string Method, long Amount, Guid? PaymentId, DateTimeOffset? VoidedAt = null, string? VoidReason = null)
+{
+    public bool Voided => VoidedAt is not null;
+}
 
 public sealed record SaleView(Guid Id, string Status, string ReturnStatus, Guid BranchId, Guid RegisterId, Guid ShiftId, Guid CashierId, Guid TerminalId,
     string Channel, string ClientDraftId, PricingMode PricingMode, string? InvoiceNo, long Total, DateTimeOffset? FinalizedAt, int Version,
     IReadOnlyList<SaleLineView> Lines, IReadOnlyList<SaleTenderView>? Tenders = null)
 {
-    public long Paid => Tenders?.Sum(t => t.Amount) ?? 0;
+    /// <summary>What the payments still in force bring (a voided one no longer counts).</summary>
+    public long Paid => Tenders?.Where(t => !t.Voided).Sum(t => t.Amount) ?? 0;
+
+    public bool HasPayments => Tenders?.Any(t => !t.Voided) ?? false;
 
     public long Remaining => Total - Paid;
 }
@@ -80,6 +86,9 @@ public interface ISales
     /// </summary>
     Task<SaleView> FinalizeAsync(IUnitOfWorkScope scope, Guid saleId, string invoiceNo, int fiscalYear, IReadOnlyList<FinalizedLine> lines,
         CancellationToken cancellationToken);
+
+    /// <summary>Takes a payment back before Finalize (it stops counting; the lines unfreeze when none is left). False: no such tender or already voided.</summary>
+    Task<SaleView?> VoidTenderAsync(IUnitOfWorkScope scope, Guid saleId, int seq, Guid by, string reason, CancellationToken cancellationToken);
 
     /// <summary>SAL-006: applies a payment to the locked bill (the database refuses more than the total, RC027); bumps the version.</summary>
     Task<SaleView> AddTenderAsync(IUnitOfWorkScope scope, Guid saleId, string method, long amount, Guid? paymentId, CancellationToken cancellationToken);

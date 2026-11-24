@@ -1637,7 +1637,7 @@ string Money(long v) => v.ToString(System.Globalization.CultureInfo.InvariantCul
 object SaleJson(SaleView s, IReadOnlyList<string>? warnings = null, IReadOnlyList<PaymentView>? payments = null)
 {
     var t = SaleMath.Totals(s.Lines);
-    long change = payments?.Sum(p => p.Change ?? 0) ?? 0;
+    long change = payments?.Where(p => p.Status != "Voided").Sum(p => p.Change ?? 0) ?? 0;
     return new
     {
         s.Id, s.Status, s.ReturnStatus, s.BranchId, s.RegisterId, s.ShiftId, cashierId = s.CashierId, terminalId = s.TerminalId, s.Channel,
@@ -1659,7 +1659,8 @@ object SaleJson(SaleView s, IReadOnlyList<string>? warnings = null, IReadOnlyLis
             PaymentView? p = payments?.FirstOrDefault(p => p.Id == x.PaymentId);
             return new
             {
-                x.Seq, x.Method, amount = Money(x.Amount), status = "Confirmed", x.PaymentId, reference = p?.ReferenceNo,
+                x.Seq, x.Method, amount = Money(x.Amount), status = x.Voided ? "Voided" : "Confirmed", x.PaymentId, reference = p?.ReferenceNo,
+                voidReason = x.VoidReason,
                 tendered = p?.Tendered is long td ? Money(td) : null, change = p?.Change is long ch ? Money(ch) : null,
             };
         }),
@@ -1830,7 +1831,7 @@ v1.MapPost("/pos/sales/{saleId:guid}/lines", async (Guid saleId, SaleLineInput b
             if (locked.Outcome == SaleOutcome.NotFound) return Problems.NotFound(http);
             if (await MayWorkOn(http, ctx, s, locked.Sale!, c) is { } denied) return denied;
             if (locked.Outcome != SaleOutcome.Done) return SaleProblem(http, locked.Outcome);
-            if (locked.Sale!.Tenders is { Count: > 0 }) return PaidInto(http);
+            if (locked.Sale!.HasPayments) return PaidInto(http);
             SaleView sale = locked.Sale!;
 
             // CAT-003 / CAT-007: a scale label first, then the code itself; an unknown code is for UC-01 (define) or a name search
@@ -1923,7 +1924,7 @@ v1.MapPatch("/pos/sales/{saleId:guid}/lines/{lineNo:int}", async (Guid saleId, i
             if (locked.Outcome == SaleOutcome.NotFound) return Problems.NotFound(http);
             if (await MayWorkOn(http, ctx, s, locked.Sale!, c) is { } denied) return denied;
             if (locked.Outcome != SaleOutcome.Done) return SaleProblem(http, locked.Outcome);
-            if (locked.Sale!.Tenders is { Count: > 0 }) return PaidInto(http);
+            if (locked.Sale!.HasPayments) return PaidInto(http);
             if (locked.Sale!.Lines.FirstOrDefault(l => l.LineNo == lineNo) is not { } old) return Problems.NotFound(http);
             if (old.WeightedCode is not null)
             {
@@ -1956,7 +1957,7 @@ v1.MapDelete("/pos/sales/{saleId:guid}/lines/{lineNo:int}", async (Guid saleId, 
             if (await MayWorkOn(http, ctx, s, locked.Sale!, c) is { } denied) return denied;
             if (expectedVersion is null) return Problems.Validation(http, new Dictionary<string, string[]> { ["expectedVersion"] = ["required"] });
             if (locked.Outcome != SaleOutcome.Done) return SaleProblem(http, locked.Outcome);
-            if (locked.Sale!.Tenders is { Count: > 0 }) return PaidInto(http);
+            if (locked.Sale!.HasPayments) return PaidInto(http);
             if (locked.Sale!.Lines.FirstOrDefault(l => l.LineNo == lineNo) is not { } old) return Problems.NotFound(http);
             SaleView after = await sales.RemoveLineAsync(s, saleId, lineNo, c);
             await Audit(http, s, ActorOf(ctx, http), new AuditEntry("sales.line.removed", "Sale", saleId.ToString(), null, new
@@ -2008,7 +2009,7 @@ v1.MapIdempotentPost<TenderInput>("/pos/sales/{saleId:guid}/tenders", "pos.recor
         IResult? changed = await http.RequestServices.GetRequiredService<IUnitOfWork>().ExecuteAsync(ctx, async (s, c) =>
         {
             SaleResult cart = await sales.LockDraftAsync(s, saleId, null, c);
-            if (cart.Outcome != SaleOutcome.Done || cart.Sale!.Tenders is { Count: > 0 } || cart.Sale.CashierId != ctx.User!.Value.Value) return (IResult?)null;
+            if (cart.Outcome != SaleOutcome.Done || cart.Sale!.HasPayments || cart.Sale.CashierId != ctx.User!.Value.Value) return (IResult?)null;
             var (lines, problem) = await Reprice(http, s, cart.Sale, c);
             if (problem is not null) return problem;
             var moved = lines!.Where(x => !SaleMath.SameAmounts(x.Shown, x.Now)).ToList();
@@ -2215,8 +2216,8 @@ v1.MapIdempotentPost<FinalizeInput>("/sales/{saleId:guid}/finalize", "sales.fina
 
         // ACC-006 / D-04: the sale and its cost, posted with it
         var (_, _, net, tax, _) = SaleMath.Totals(sale.Lines);
-        long cash = (sale.Tenders ?? []).Where(t => t.Method == "Cash").Sum(t => t.Amount);
-        long card = (sale.Tenders ?? []).Where(t => t.Method == "ExternalCardTerminal").Sum(t => t.Amount);
+        long cash = (sale.Tenders ?? []).Where(t => !t.Voided && t.Method == "Cash").Sum(t => t.Amount);
+        long card = (sale.Tenders ?? []).Where(t => !t.Voided && t.Method == "ExternalCardTerminal").Sum(t => t.Amount);
         IJournals journals = http.RequestServices.GetRequiredService<IJournals>();
         foreach (PostingDraft? draft in new[] { SaleRule.For(sale.Id, invoiceNo, cash, card, net, tax, now), SaleCostRule.For(sale.Id, invoiceNo, finalized.Sum(f => f.CostAtSale), now) })
         {
@@ -2238,6 +2239,43 @@ v1.MapIdempotentPost<FinalizeInput>("/sales/{saleId:guid}/finalize", "sales.fina
         return CommandResult.Ok(SaleJson(after, issued.Warnings, await http.RequestServices.GetRequiredService<IPayments>().ForSaleAsync(scope, sale.Id, ct)));
     })
     .RequirePermission(Permissions.PosSell);
+
+// Taking a payment back before Finalize (a wrong amount or slip, or a price that changed after payment): the tender is marked
+// voided with its reason, never removed; it stops counting toward the bill, the drawer and the entry, and once none is left
+// the lines can change again. The cashier gives the money back or reverses the card on the bank terminal (audited, AB-03).
+v1.MapIdempotentPost<TenderVoidInput>("/pos/sales/{saleId:guid}/tenders/{seq:int}/void", "pos.void-tender", async (body, scope, http, ct) =>
+    {
+        RequestContext ctx = http.RequestServices.GetRequiredService<RequestContext>();
+        Guid saleId = Guid.Parse((string)http.GetRouteValue("saleId")!, System.Globalization.CultureInfo.InvariantCulture);
+        int seq = int.Parse((string)http.GetRouteValue("seq")!, System.Globalization.CultureInfo.InvariantCulture);
+        var errors = new Dictionary<string, string[]>();
+        if (body.ExpectedVersion is null) errors["expectedVersion"] = ["required"];
+        string? reason = body.Reason?.Trim();
+        if (reason is not { Length: >= 3 and <= 200 }) errors["reason"] = ["3-200 characters"];
+        if (errors.Count > 0) return CommandResult.Fail(Problems.Validation(http, errors));
+
+        ISales sales = http.RequestServices.GetRequiredService<ISales>();
+        SaleResult locked = await sales.LockDraftAsync(scope, saleId, body.ExpectedVersion, ct);
+        if (locked.Outcome == SaleOutcome.NotFound) return CommandResult.Fail(Problems.NotFound(http));
+        if (await MayWorkOn(http, ctx, scope, locked.Sale!, ct) is { } denied) return CommandResult.Fail(denied);
+        if (locked.Outcome != SaleOutcome.Done) return CommandResult.Fail(SaleProblem(http, locked.Outcome));
+        SaleView sale = locked.Sale!;
+        if (!AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.PosSaleCancel, new ScopeRef(ScopeType.Register, sale.RegisterId, sale.BranchId)))
+        {
+            return CommandResult.Fail(Forbidden(http));
+        }
+
+        if (sale.Tenders?.FirstOrDefault(t => t.Seq == seq) is not { Voided: false } tender) return CommandResult.Fail(Problems.NotFound(http));
+        SaleView after = (await sales.VoidTenderAsync(scope, saleId, seq, ctx.User!.Value.Value, reason!, ct))!;
+        IPayments payments = http.RequestServices.GetRequiredService<IPayments>();
+        if (tender.PaymentId is { } paymentId) await payments.VoidAsync(scope, paymentId, ctx.User!.Value.Value, ct);
+        await Audit(http, scope, ActorOf(ctx, http), new AuditEntry("sales.tender.voided", "Sale", saleId.ToString(), reason, new
+        {
+            seq, tender.Method, amount = tender.Amount, tender.PaymentId, sale.RegisterId, sale.ShiftId, terminalId = ctx.Terminal?.TerminalId,
+        }), ct);
+        return CommandResult.Ok(SaleJson(after, payments: await payments.ForSaleAsync(scope, saleId, ct)));
+    })
+    .RequirePermission(Permissions.PosSaleCancel);
 
 // ---------------- US-053: automatic discount rules (CAT-010, D-18) and manual discount caps (BR-021)
 object RuleJson(DiscountRuleView r) => new
@@ -3053,6 +3091,7 @@ internal sealed record DiscountCapsInput(Dictionary<string, int>? Caps);
 internal sealed record NegativeStockPolicyInput(string? ScopeType, Guid? ScopeId, string? Policy);
 internal sealed record AdjustmentLineInput(Guid? VariantId, string? QtyDelta);
 internal sealed record AdjustmentInput(Guid? WarehouseId, string? Reason, AdjustmentLineInput?[]? Lines, string? Note);
+internal sealed record TenderVoidInput(int? ExpectedVersion, string? Reason);
 internal sealed record FinalizeInput(int? ExpectedVersion, string? ExpectedTotal);
 internal sealed record TenderInput(string? Method, string? Amount, string? Tendered, string? ReferenceNo, string? TerminalNo, string? CardLast4,
     Guid? ApprovalId);

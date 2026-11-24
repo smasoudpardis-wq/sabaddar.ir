@@ -437,6 +437,17 @@ try {
   await page.getByTestId('pos-card-reference').fill('E2E558812');
   await page.getByTestId('pos-card-submit').click();
   await page.locator(`[data-testid="pos-pay"][data-remaining="${due - 100000}"]`).waitFor();
+  // V08: the slip was wrong: the card payment is taken back with a reason and paid again with the right slip
+  await page.getByTestId('pos-void-1').click();
+  await page.getByTestId('pos-void-reason-1').fill('شماره پیگیری اشتباه');
+  await page.getByTestId('pos-void-submit-1').click();
+  await page.locator(`[data-testid="pos-pay"][data-remaining="${due}"]`).waitFor();
+  const voided = await page.locator('[data-testid="pos-tenders"] [data-status="Voided"]').count();
+  await page.getByTestId('pos-card-amount').fill('100000');
+  await page.getByTestId('pos-card-reference').fill('E2E558813');
+  await page.getByTestId('pos-card-submit').click();
+  await page.locator(`[data-testid="pos-pay"][data-remaining="${due - 100000}"]`).waitFor();
+  check('V08', 'a payment is voided with a reason, stops counting, and the bill is paid again', voided === 1);
   await page.getByTestId('pos-cash-tendered').fill('۲۰۰٬۰۰۰');
   const preview = (await page.getByTestId('pos-change-preview').textContent()) ?? '';
   await page.getByTestId('pos-cash-submit').click();
