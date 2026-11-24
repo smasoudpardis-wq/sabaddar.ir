@@ -406,6 +406,19 @@ SELECT t.expect_error('T213 payments are taken only on an open sale (RC027)', 'R
   $$INSERT INTO sales.sale_tender (tenant_id, sale_id, seq, method, amount, payment_id)
     VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000042', 1, 'Cash', 1, gen_random_uuid())$$);
 
+-- US-083 hold, resume, cancel (SAL-011, D02 §6.1)
+INSERT INTO sales.sale (tenant_id, id, branch_id, register_id, shift_id, cashier_id, terminal_id, client_draft_id, pricing_mode)
+  VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000044', 'a0000000-0000-0000-0000-000000000001', 'a0000000-0000-0000-0000-000000000002',
+          'a0000000-0000-0000-0000-000000000030', gen_random_uuid(), gen_random_uuid(), 'draft-0044', 'TaxExclusive');
+UPDATE sales.sale SET status = 'Held', hold_note = 'خانم احمدی' WHERE id = 'a0000000-0000-0000-0000-000000000044';
+SELECT t.expect_error('T226 a held cart is not finalized before it is resumed (RC031)', 'RC031',
+  $$UPDATE sales.sale SET status = 'Finalized', invoice_no = 'X', finalized_at = now(), fiscal_year = 1405 WHERE id = 'a0000000-0000-0000-0000-000000000044'$$);
+SELECT t.expect_error('T227 a cancelled sale says when and why', '23514',
+  $$UPDATE sales.sale SET status = 'Cancelled' WHERE id = 'a0000000-0000-0000-0000-000000000044'$$);
+SELECT t.expect_error('T228 a cart with payments in force is not cancelled (RC031)', 'RC031',
+  $$UPDATE sales.sale SET status = 'Cancelled', cancelled_at = now(), cancel_reason = 'اشتباه' WHERE id = 'a0000000-0000-0000-0000-000000000043'$$);
+UPDATE sales.sale SET status = 'Draft', last_activity_at = now() - interval '25 hours' WHERE id = 'a0000000-0000-0000-0000-000000000044';
+
 ------------------------------------------------------------------ accounting
 \echo '== accounting'
 SELECT t.expect_error('T30 unbalanced posted journal rejected at commit (DI-040)', 'RC010',

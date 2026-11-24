@@ -379,4 +379,77 @@ public sealed class SaleTests : IClassFixture<ApiFactory>, IAsyncLifetime
         JsonElement t = sale.GetProperty("totals");
         return (t.GetProperty("paid").GetString()!, t.GetProperty("remaining").GetString()!, t.GetProperty("change").GetString()!);
     }
+
+    [DbFact]
+    public async Task AT069_a_held_cart_is_resumed_on_another_register_of_the_branch_and_an_idle_one_is_cancelled()
+    {
+        await OpenShift("cashier", _r1);
+        await OpenShift("cashier2", _r2);
+        await Product("SL-BREAD", "30000", 0, new { code = "SL-BREAD", isInternal = true });
+        Guid sale = (await Cart("cashier", _r1)).GetProperty("id").GetGuid();
+        JsonElement s = await Body(await Scan(sale, "SL-BREAD", "2"));
+        Assert.Equal("version-conflict", await Code(await As("cashier").PostAsJsonAsync($"/api/v1/pos/sales/{sale}/hold", new { expectedVersion = 1 })));
+        JsonElement held = await Body(await As("cashier").PostAsJsonAsync($"/api/v1/pos/sales/{sale}/hold",
+            new { expectedVersion = s.GetProperty("version").GetInt32(), note = "خانم احمدی" }));
+        Assert.Equal(("Held", "خانم احمدی"), (held.GetProperty("status").GetString(), held.GetProperty("holdNote").GetString()));
+        Assert.Equal("sale-not-draft", await Code(await Scan(sale, "SL-BREAD")));
+
+        // the branch sees it; another cashier resumes it on their own register and carries on
+        JsonElement list = (await Body(await As("cashier2").GetAsync("/api/v1/pos/held-sales"))).GetProperty("items");
+        JsonElement mine = list.EnumerateArray().Single(x => x.GetProperty("id").GetGuid() == sale);
+        Assert.Equal(("خانم احمدی", "60000"), (mine.GetProperty("holdNote").GetString(), mine.GetProperty("total").GetString()));
+        Assert.Equal("shift-not-open", await Code(await As("cashier2").PostAsJsonAsync($"/api/v1/pos/sales/{sale}/resume",
+            new { expectedVersion = held.GetProperty("version").GetInt32() })));   // the cart's own register R1 is not their shift
+        JsonElement back = await Body(await As("cashier2").PostAsJsonAsync($"/api/v1/pos/sales/{sale}/resume",
+            new { expectedVersion = held.GetProperty("version").GetInt32(), registerId = _r2 }));
+        Assert.Equal(("Draft", _r2, _u["cashier2"].Id), (back.GetProperty("status").GetString(), back.GetProperty("registerId").GetGuid(), back.GetProperty("cashierId").GetGuid()));
+        Assert.Equal("3", (await Body(await Scan(sale, "SL-BREAD", user: "cashier2"))).GetProperty("lines")[0].GetProperty("qty").GetString());
+        Assert.Equal(HttpStatusCode.NotFound, (await Scan(sale, "SL-BREAD")).StatusCode);   // no longer the first cashier's
+        int now = (await Body(await As("cashier2").GetAsync($"/api/v1/pos/sales/{sale}"))).GetProperty("version").GetInt32();
+        Assert.Equal("sale-not-held", await Code(await As("cashier2").PostAsJsonAsync($"/api/v1/pos/sales/{sale}/resume", new { expectedVersion = now, registerId = _r2 })));
+
+        // SAL-011 [24h]: a cart left idle for a day is cancelled by the workers
+        Guid idle = (await Cart("cashier", _r1)).GetProperty("id").GetGuid();
+        await Scan(idle, "SL-BREAD");
+        await new PostgresUnitOfWork(NpgsqlDataSource.Create(Cs)).ExecuteAsync(new FixedTenantContext(new TenantId(_tenant)),
+            (x, ct) => Exec(x, ct, "UPDATE sales.sale SET last_activity_at = now() - interval '25 hours' WHERE id = $1", idle));
+        await using var worker = NpgsqlDataSource.Create(new NpgsqlConnectionStringBuilder(Cs) { Username = "rc_worker_test", Password = "rc_worker_test" }.ToString());
+        Assert.True(await new PostgresUnitOfWork(worker).ExecuteWithoutTenantAsync(null, async (x, ct) =>
+        {
+            await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)x).Command("SELECT sales.expire_idle_carts()");
+            return (int)(await cmd.ExecuteScalarAsync(ct))!;
+        }) >= 1);
+        JsonElement gone = await Body(await As("cashier").GetAsync($"/api/v1/pos/sales/{idle}"));
+        Assert.Equal(("Cancelled", "auto-expired after inactivity"), (gone.GetProperty("status").GetString(), gone.GetProperty("cancelReason").GetString()));
+        Assert.Equal("Draft", (await Body(await As("cashier2").GetAsync($"/api/v1/pos/sales/{sale}"))).GetProperty("status").GetString());   // active one untouched
+    }
+
+    [DbFact]
+    public async Task A_cart_without_payments_is_cancelled_with_a_reason_by_its_cashier_or_a_supervisor()
+    {
+        await OpenShift("cashier", _r1);
+        await Product("SL-JAM", "40000", 0, new { code = "SL-JAM", isInternal = true });
+        Guid one = (await Cart("cashier", _r1)).GetProperty("id").GetGuid(), two = (await Cart("cashier", _r1)).GetProperty("id").GetGuid();
+        JsonElement a = await Body(await Scan(one, "SL-JAM"));
+        JsonElement b = await Body(await Scan(two, "SL-JAM"));
+        Assert.Equal(HttpStatusCode.BadRequest, (await As("cashier").PostAsJsonAsync($"/api/v1/pos/sales/{one}/cancel", new { expectedVersion = a.GetProperty("version").GetInt32(), reason = "" })).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await As("cashier2").PostAsJsonAsync($"/api/v1/pos/sales/{one}/cancel", new { expectedVersion = a.GetProperty("version").GetInt32(), reason = "مشتری پشیمان شد" })).StatusCode);
+        JsonElement c = await Body(await As("cashier").PostAsJsonAsync($"/api/v1/pos/sales/{one}/cancel", new { expectedVersion = a.GetProperty("version").GetInt32(), reason = "مشتری پشیمان شد" }));
+        Assert.Equal(("Cancelled", "مشتری پشیمان شد"), (c.GetProperty("status").GetString(), c.GetProperty("cancelReason").GetString()));
+        Assert.Equal("sale-not-draft", await Code(await As("cashier").PostAsJsonAsync($"/api/v1/pos/sales/{one}/cancel", new { expectedVersion = c.GetProperty("version").GetInt32(), reason = "دوباره" })));
+
+        // with a payment in force it is not cancelled (void first); a supervisor (the owner) may cancel the cashier's cart
+        JsonElement paid = await Body(await Tender(two, new { method = "Cash", amount = "10000", tendered = "10000" }));
+        Assert.Equal("sale-has-payments", await Code(await As("owner", false).PostAsJsonAsync($"/api/v1/pos/sales/{two}/cancel", new { expectedVersion = paid.GetProperty("version").GetInt32(), reason = "اشتباه" })));
+        JsonElement voided = await Body(await Tender2Void(two, paid.GetProperty("version").GetInt32()));
+        Assert.Equal(HttpStatusCode.OK, (await As("owner", false).PostAsJsonAsync($"/api/v1/pos/sales/{two}/cancel", new { expectedVersion = voided.GetProperty("version").GetInt32(), reason = "اشتباه صندوق‌دار" })).StatusCode);
+        Assert.NotEqual(b.GetProperty("id").GetGuid(), Guid.Empty);
+    }
+
+    private async Task<HttpResponseMessage> Tender2Void(Guid sale, int version)
+    {
+        var req = new HttpRequestMessage(HttpMethod.Post, $"/api/v1/pos/sales/{sale}/tenders/1/void") { Content = JsonContent.Create(new { expectedVersion = version, reason = "پس دادن پول" }) };
+        req.Headers.Add("Idempotency-Key", Guid.NewGuid().ToString("N"));
+        return await As("cashier").SendAsync(req);
+    }
 }

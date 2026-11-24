@@ -24,7 +24,8 @@ public sealed record SaleTenderView(int Seq, string Method, long Amount, Guid? P
 
 public sealed record SaleView(Guid Id, string Status, string ReturnStatus, Guid BranchId, Guid RegisterId, Guid ShiftId, Guid CashierId, Guid TerminalId,
     string Channel, string ClientDraftId, PricingMode PricingMode, string? InvoiceNo, long Total, DateTimeOffset? FinalizedAt, int Version,
-    IReadOnlyList<SaleLineView> Lines, IReadOnlyList<SaleTenderView>? Tenders = null)
+    IReadOnlyList<SaleLineView> Lines, IReadOnlyList<SaleTenderView>? Tenders = null, string? HoldNote = null, string? CancelReason = null,
+    DateTimeOffset? LastActivityAt = null)
 {
     /// <summary>What the payments still in force bring (a voided one no longer counts).</summary>
     public long Paid => Tenders?.Where(t => !t.Voided).Sum(t => t.Amount) ?? 0;
@@ -89,6 +90,20 @@ public interface ISales
 
     /// <summary>Takes a payment back before Finalize (it stops counting; the lines unfreeze when none is left). False: no such tender or already voided.</summary>
     Task<SaleView?> VoidTenderAsync(IUnitOfWorkScope scope, Guid saleId, int seq, Guid by, string reason, CancellationToken cancellationToken);
+
+    /// <summary>Locks the sale (FOR UPDATE) whatever its status; VersionConflict when it moved on (BR-034).</summary>
+    Task<SaleResult> LockAsync(IUnitOfWorkScope scope, Guid saleId, int? expectedVersion, CancellationToken cancellationToken);
+
+    /// <summary>SAL-011: a Draft is put aside with a note to find it by (Held).</summary>
+    Task<SaleView> HoldAsync(IUnitOfWorkScope scope, Guid saleId, string? note, CancellationToken cancellationToken);
+
+    /// <summary>SAL-011: a Held cart comes back as a Draft on the resuming cashier's register and open shift (same branch).</summary>
+    Task<SaleView> ResumeAsync(IUnitOfWorkScope scope, Guid saleId, SaleOrigin origin, CancellationToken cancellationToken);
+
+    Task<SaleView> CancelAsync(IUnitOfWorkScope scope, Guid saleId, string reason, CancellationToken cancellationToken);
+
+    /// <summary>The branch's held carts, most recently active first, up to 100.</summary>
+    Task<IReadOnlyList<SaleView>> HeldAsync(IUnitOfWorkScope scope, Guid branchId, CancellationToken cancellationToken);
 
     /// <summary>SAL-006: applies a payment to the locked bill (the database refuses more than the total, RC027); bumps the version.</summary>
     Task<SaleView> AddTenderAsync(IUnitOfWorkScope scope, Guid saleId, string method, long amount, Guid? paymentId, CancellationToken cancellationToken);

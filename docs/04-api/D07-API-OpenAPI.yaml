@@ -4071,6 +4071,44 @@ paths:
       - TAX-004
       x-audited: true
       x-rate-limit-class: customer-lookup
+  /pos/held-sales:
+    get:
+      operationId: listHeldSales
+      tags:
+      - POS
+      summary: سبدهای نگه‌داشته‌شده شعبه این دستگاه
+      security: *id001
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - items
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/HeldSale'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: pos.sell
+      x-idempotent: false
+      x-requirements:
+      - SAL-011
   /pos/sales/{saleId}/hold:
     post:
       operationId: holdSale
@@ -4090,7 +4128,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/VersionOnly'
+              $ref: '#/components/schemas/HoldRequest'
       responses:
         '200':
           description: Success
@@ -4142,7 +4180,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/VersionOnly'
+              $ref: '#/components/schemas/ResumeRequest'
       responses:
         '200':
           description: Success
@@ -9285,6 +9323,7 @@ components:
           format: int32
         reason:
           type: string
+          description: 3-200 characters, audited
       required:
       - expectedVersion
       - reason
@@ -10350,6 +10389,55 @@ components:
       - marginBp
       - costBasis
       - itemsWithZeroCost
+    HeldSale:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        holdNote:
+          type:
+          - string
+          - 'null'
+        total:
+          $ref: '#/components/schemas/Money'
+        lines:
+          type: integer
+          format: int32
+        cashierId:
+          type: string
+          format: uuid
+        registerId:
+          type: string
+          format: uuid
+        heldAt:
+          type: string
+          format: date-time
+        version:
+          type: integer
+          format: int32
+      required:
+      - id
+      - holdNote
+      - total
+      - lines
+      - cashierId
+      - registerId
+      - heldAt
+      - version
+    HoldRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        expectedVersion:
+          type: integer
+          format: int32
+        note:
+          type: string
+          description: 'Up to 100 characters: a name or note to find the cart by (SAL-011)'
+      required:
+      - expectedVersion
     IdentifyRequest:
       type: object
       additionalProperties: false
@@ -11917,6 +12005,19 @@ components:
       required:
       - generatedAt
       - dataAsOf
+    ResumeRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        expectedVersion:
+          type: integer
+          format: int32
+        registerId:
+          type: string
+          format: uuid
+          description: 'A register of the cart''s branch with the caller''s open shift; default: the cart''s'
+      required:
+      - expectedVersion
     RetentionPolicy:
       type: object
       additionalProperties: false
@@ -12153,6 +12254,14 @@ components:
           enum:
           - TaxExclusive
           - TaxInclusive
+        holdNote:
+          type:
+          - string
+          - 'null'
+        cancelReason:
+          type:
+          - string
+          - 'null'
         invoiceNo:
           type:
           - string
@@ -14016,7 +14125,10 @@ x-error-catalog:
     meaning: Confirmed payments do not cover the bill; context.remaining (SAL-006)
   sale-empty:
     status: 409
-    meaning: A sale without items is not finalized
+    meaning: A sale without items is not finalized or held
+  sale-not-held:
+    status: 409
+    meaning: Only a held cart is resumed (SAL-011)
   no-sellable-warehouse:
     status: 422
     meaning: The branch has no sellable warehouse to issue the stock from (INV-001)

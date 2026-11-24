@@ -1213,6 +1213,17 @@
   "idempotent": false
  },
  {
+  "operationId": "listHeldSales",
+  "method": "GET",
+  "path": "/pos/held-sales",
+  "permission": "pos.sell",
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
+ },
+ {
   "operationId": "holdSale",
   "method": "POST",
   "path": "/pos/sales/{saleId}/hold",
@@ -1223,7 +1234,8 @@
    "saleId"
   ],
   "bodyProps": [
-   "expectedVersion"
+   "expectedVersion",
+   "note"
   ],
   "idempotent": false
  },
@@ -1238,7 +1250,8 @@
    "saleId"
   ],
   "bodyProps": [
-   "expectedVersion"
+   "expectedVersion",
+   "registerId"
   ],
   "idempotent": false
  },

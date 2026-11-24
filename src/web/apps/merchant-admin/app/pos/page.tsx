@@ -34,6 +34,7 @@ const ERRORS: Record<string, string> = {
   'payment-incomplete': 'پرداخت‌ها هنوز جمع فاکتور را پوشش نمی‌دهند.',
   'insufficient-stock': 'موجودی کافی نیست؛ اقلام را اصلاح کنید.',
   'in-progress': 'در حال ثبت؛ چند لحظه دیگر دوباره امتحان می‌شود.',
+  'sale-not-held': 'این سبد دیگر نگه‌داشته نیست.',
 };
 
 const store = {
@@ -60,6 +61,8 @@ export default function PosPage() {
   const [finalKey, setFinalKey] = useState<string | null>(null);   // kept until it succeeds: a retry is the same request (UC-02 6a)
   const [pendingFinal, setPendingFinal] = useState(false);
   const [voiding, setVoiding] = useState<{ seq: number; reason: string } | null>(null);
+  const [held, setHeld] = useState<{ id: string; holdNote: string | null; total: string; lines: number; version: number }[]>([]);
+  const [aside, setAside] = useState<{ kind: 'hold' | 'cancel'; text: string } | null>(null);
   const last = useRef<{ code: string; at: number } | null>(null);
   const buffer = useRef({ text: '', at: 0 });
   const busy = useRef<Promise<void>>(Promise.resolve());
@@ -297,6 +300,43 @@ export default function PosPage() {
     if (r.ok) { current.current = p; setSale(p); setVoiding(null); } else setError(p?.code ?? `http-${r.status}`);
   }
 
+  // US-083 / SAL-011: put the cart aside with a note, or cancel it with a reason; held carts of the branch can be resumed here
+  async function loadHeld() {
+    const r = await fetch('/bff/pos/held-sales', { cache: 'no-store' });
+    if (r.ok) setHeld((await r.json()).items);
+  }
+  useEffect(() => { if (register?.shift?.mine) void loadHeld(); }, [register?.shift?.mine]);
+
+  async function putAside(e: React.FormEvent) {
+    e.preventDefault();
+    if (!sale || !aside) return;
+    setError('');
+    const r = await fetch(`/bff/pos/sales/${sale.id}/${aside.kind}`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf() },
+      body: JSON.stringify(aside.kind === 'hold' ? { expectedVersion: sale.version, note: aside.text.trim() || undefined }
+        : { expectedVersion: sale.version, reason: aside.text }),
+    });
+    const p = await r.json().catch(() => null);
+    if (!r.ok) return setError(p?.code ?? `http-${r.status}`);
+    setAside(null);
+    nextSale();
+    void loadHeld();
+  }
+
+  async function resume(id: string, version: number) {
+    setError('');
+    const r = await fetch(`/bff/pos/sales/${id}/resume`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf() },
+      body: JSON.stringify({ expectedVersion: version, registerId }),
+    });
+    const p = await r.json().catch(() => null);
+    if (!r.ok) return setError(p?.code ?? `http-${r.status}`);
+    current.current = p;
+    setSale(p);
+    store.set(draftKey, p.clientDraftId);
+    void loadHeld();
+  }
+
   function nextSale() {
     current.current = null;
     setSale(null);
@@ -384,6 +424,36 @@ export default function PosPage() {
               جمع: {rial(sale.totals.gross)} · تخفیف: {rial(sale.totals.discount)} · مالیات: {rial(sale.totals.tax)} ·{' '}
               <strong>قابل پرداخت: {rial(sale.totals.total)} ریال</strong>
             </p>
+          )}
+          {sale && sale.status === 'Draft' && sale.lines.length > 0 && sale.tenders.every((t) => t.status === 'Voided') && (
+            aside ? (
+              <form onSubmit={(e) => void putAside(e)} data-testid="pos-aside-form">
+                <label>{aside.kind === 'hold' ? 'نام یا یادداشت (اختیاری)' : 'دلیل لغو'}{' '}
+                  <input value={aside.text} required={aside.kind === 'cancel'} minLength={aside.kind === 'cancel' ? 3 : undefined} maxLength={aside.kind === 'hold' ? 100 : 200}
+                    onChange={(e) => setAside({ ...aside, text: e.target.value })} data-testid="pos-aside-text" /></label>{' '}
+                <button type="submit" style={{ minHeight: 44 }} data-testid="pos-aside-submit">{aside.kind === 'hold' ? 'نگه‌داشتن' : 'لغو سبد'}</button>{' '}
+                <button type="button" style={{ minHeight: 44 }} onClick={() => setAside(null)}>انصراف</button>
+              </form>
+            ) : (
+              <p>
+                <button type="button" style={{ minHeight: 44 }} onClick={() => setAside({ kind: 'hold', text: '' })} data-testid="pos-hold">نگه‌داشتن سبد</button>{' '}
+                <button type="button" style={{ minHeight: 44 }} onClick={() => setAside({ kind: 'cancel', text: '' })} data-testid="pos-cancel">لغو سبد</button>
+              </p>
+            )
+          )}
+          {held.length > 0 && (
+            <div>
+              <h2>سبدهای نگه‌داشته‌شده</h2>
+              <ul data-testid="pos-held">
+                {held.map((h) => (
+                  <li key={h.id} data-note={h.holdNote ?? ''}>
+                    {h.holdNote ?? 'بدون نام'} · {h.lines.toLocaleString('fa-IR')} قلم · {rial(h.total)} ریال{' '}
+                    <button type="button" style={{ minHeight: 44 }} disabled={!!sale && sale.lines.length > 0 && sale.status === 'Draft'}
+                      onClick={() => void resume(h.id, h.version)} data-testid={`pos-resume-${h.id}`}>ادامه</button>
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
           {sale && sale.lines.length > 0 && (
             <div data-testid="pos-pay" data-remaining={sale.totals.remaining}>

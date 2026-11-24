@@ -115,12 +115,16 @@ CREATE TABLE sales.sale (
   total           bigint NOT NULL DEFAULT 0,
   finalized_at    timestamptz,
   last_activity_at timestamptz NOT NULL DEFAULT now(),
+  hold_note       text CHECK (char_length(hold_note) BETWEEN 1 AND 100),   -- SAL-011: a name or note to find a held cart by
+  cancelled_at    timestamptz,
+  cancel_reason   text CHECK (char_length(cancel_reason) BETWEEN 3 AND 200),
   version         int NOT NULL DEFAULT 1,
   PRIMARY KEY (tenant_id, id),
   UNIQUE (tenant_id, client_draft_id),                                  -- DI-010
   FOREIGN KEY (tenant_id, shift_id) REFERENCES sales.shift (tenant_id, id),
   CHECK (status <> 'Finalized' OR (invoice_no IS NOT NULL AND finalized_at IS NOT NULL AND fiscal_year IS NOT NULL)),
-  CHECK (return_status = 'None' OR status = 'Finalized')
+  CHECK (return_status = 'None' OR status = 'Finalized'),
+  CHECK ((status = 'Cancelled') = (cancelled_at IS NOT NULL) AND (cancelled_at IS NULL) = (cancel_reason IS NULL))
 );
 CREATE UNIQUE INDEX ux_sale_invoice_no ON sales.sale (tenant_id, branch_id, fiscal_year, invoice_no)
   WHERE invoice_no IS NOT NULL;                                         -- DI-009
@@ -182,6 +186,25 @@ BEGIN
 END $$;
 CREATE TRIGGER tr_sale_guard BEFORE UPDATE OR DELETE ON sales.sale
   FOR EACH ROW EXECUTE FUNCTION sales.guard_finalized_sale();
+
+-- D02 §6.1 / SAL-004: only the transitions of the sale's state table (RC031, global). A cart with payments still in force is
+-- neither held nor cancelled: they are voided (or refunded) first.
+CREATE OR REPLACE FUNCTION sales.sale_transition() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.status IS DISTINCT FROM OLD.status THEN
+    IF NOT ((OLD.status, NEW.status) IN (('Draft','Held'), ('Held','Draft'), ('Draft','PendingPayment'), ('PendingPayment','Draft'),
+                                         ('Draft','Finalized'), ('PendingPayment','Finalized'), ('Draft','Cancelled'), ('Held','Cancelled'),
+                                         ('PendingPayment','Cancelled'))) THEN
+      RAISE EXCEPTION 'a sale does not go from % to %', OLD.status, NEW.status USING ERRCODE = 'RC031';
+    END IF;
+    IF NEW.status IN ('Held','Cancelled') AND EXISTS (SELECT 1 FROM sales.sale_tender t
+         WHERE t.tenant_id = NEW.tenant_id AND t.sale_id = NEW.id AND t.voided_at IS NULL) THEN
+      RAISE EXCEPTION 'a sale with payments in force is not % (void them first)', NEW.status USING ERRCODE = 'RC031';
+    END IF;
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tr_sale_transition BEFORE UPDATE OF status ON sales.sale FOR EACH ROW EXECUTE FUNCTION sales.sale_transition();
 
 CREATE OR REPLACE FUNCTION sales.guard_finalized_line() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE v_status text;
@@ -280,7 +303,8 @@ $$;
 GRANT USAGE ON SCHEMA sales TO rc_app, rc_worker, rc_reporting;
 GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA sales TO rc_app;
 GRANT DELETE ON sales.sale_line TO rc_app;            -- draft line removal (guard blocks finalized)
-GRANT SELECT ON sales.sale, sales.sale_line, sales.sale_tender, sales.shift TO rc_worker, rc_reporting;   -- shift: data export (TEN-005)
+GRANT SELECT ON sales.sale, sales.sale_line, sales.sale_tender, sales.shift TO rc_worker, rc_reporting;
+GRANT UPDATE (status, cancelled_at, cancel_reason, version) ON sales.sale TO rc_worker;   -- SAL-011 auto-expiry   -- shift: data export (TEN-005)
 GRANT SELECT ON sales.cash_movement TO rc_worker, rc_reporting;
 REVOKE UPDATE ON sales.cash_movement FROM rc_app;          -- append-only (UC-06)
 GRANT EXECUTE ON FUNCTION sales.shift_expected_cash(uuid) TO rc_app, rc_worker;

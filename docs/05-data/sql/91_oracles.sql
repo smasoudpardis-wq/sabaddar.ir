@@ -43,6 +43,26 @@ END $$;
 REVOKE ALL ON FUNCTION inv.expire_reservations() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION inv.expire_reservations() TO rc_worker;
 
+-- SAL-011 [ASM 24h]: carts (Draft or Held) idle for a day are Cancelled in every store, unless payments are in force on
+-- them (those wait for a person: void or finalize). Run by the Workers with the reservation expiry. Returns how many.
+CREATE OR REPLACE FUNCTION sales.expire_idle_carts(p_idle interval DEFAULT interval '24 hours') RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE t uuid; n int := 0; c int;
+BEGIN
+  FOR t IN SELECT * FROM core.list_tenant_ids() LOOP
+    PERFORM set_config('app.tenant_id', t::text, true);
+    UPDATE sales.sale s SET status = 'Cancelled', cancelled_at = now(), cancel_reason = 'auto-expired after inactivity', version = s.version + 1
+     WHERE s.status IN ('Draft','Held') AND s.last_activity_at < now() - p_idle
+       AND NOT EXISTS (SELECT 1 FROM sales.sale_tender x WHERE x.tenant_id = s.tenant_id AND x.sale_id = s.id AND x.voided_at IS NULL);
+    GET DIAGNOSTICS c = ROW_COUNT;
+    n := n + c;
+  END LOOP;
+  PERFORM set_config('app.tenant_id', '', true);
+  RETURN n;
+END $$;
+REVOKE ALL ON FUNCTION sales.expire_idle_carts(interval) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION sales.expire_idle_carts(interval) TO rc_worker;
+
 CREATE OR REPLACE FUNCTION core.run_oracles()
 RETURNS TABLE (oracle text, tenant_id uuid, detail text)
 LANGUAGE plpgsql AS $$

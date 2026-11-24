@@ -472,6 +472,26 @@ try {
   await page.getByTestId('pos-ready').waitFor();
   check('V07', 'Finalize issues B1-<year>-000001 and the stock goes down by one (SAL-007, BR-056)', /^B1-14\d\d-000001$/.test(invoice ?? '') && card === '16'
     && (await page.getByTestId('pos-total').count()) === 0, `${invoice} ${card}`);
+  // V09–V10 US-083: a cart is put aside with a note and resumed; another is cancelled with a reason
+  await page.waitForTimeout(1600);
+  await page.locator('h1').click();
+  await page.keyboard.type('4006381333931');
+  await page.keyboard.press('Enter');
+  await page.locator('[data-sku="E2E-COLA"][data-qty="1"]').waitFor();
+  await page.getByTestId('pos-hold').click();
+  await page.getByTestId('pos-aside-text').fill('مشتری آزمایشی');
+  await page.getByTestId('pos-aside-submit').click();
+  await page.locator('[data-testid="pos-held"] [data-note="مشتری آزمایشی"]').waitFor();
+  const emptyAfterHold = (await page.getByTestId('pos-lines').locator('tbody tr').count()) === 0;
+  await page.locator('[data-testid="pos-held"] [data-note="مشتری آزمایشی"] button').click();
+  await page.locator('[data-sku="E2E-COLA"][data-qty="1"]').waitFor();
+  check('V09', 'a cart is held with a note, the register is free for the next customer, and the cart is resumed (SAL-011)',
+    emptyAfterHold && (await page.locator('[data-testid="pos-held"] li').count()) === 0);
+  await page.getByTestId('pos-cancel').click();
+  await page.getByTestId('pos-aside-text').fill('مشتری منصرف شد');
+  await page.getByTestId('pos-aside-submit').click();
+  await page.locator('[data-testid="pos-lines"] tbody tr').first().waitFor({ state: 'detached' });
+  check('V10', 'a cart without payments is cancelled with a reason (SAL-004)', true);
   await shot(page, 'pos');
   // F01 US-064: one damaged bottle moves from the shop floor to the returns warehouse at its average cost
   await page.goto(`${BFF}/transfers`);

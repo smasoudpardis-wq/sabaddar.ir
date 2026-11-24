@@ -15,7 +15,7 @@ public sealed class PostgresSales : ISales
 {
     private const string SaleColumns =
         "id, status, return_status, branch_id, register_id, shift_id, cashier_id, terminal_id, channel, client_draft_id, pricing_mode, invoice_no, total, " +
-        "finalized_at, version";
+        "finalized_at, version, hold_note, cancel_reason, last_activity_at";
 
     private const string LineColumns =
         "line_no, variant_id, name, sku, qty, unit, unit_factor, weighted_code, unit_price, gross, discount, discount_source, discount_bp, discount_rule_id, " +
@@ -137,6 +137,59 @@ public sealed class PostgresSales : ISales
         return await TouchAsync(s, saleId, cancellationToken);
     }
 
+    public async Task<SaleResult> LockAsync(IUnitOfWorkScope scope, Guid saleId, int? expectedVersion, CancellationToken cancellationToken)
+    {
+        await using (NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command("SELECT version FROM sales.sale WHERE id = $1 FOR UPDATE"))
+        {
+            cmd.Parameters.Add(new NpgsqlParameter { Value = saleId });
+            if (await cmd.ExecuteScalarAsync(cancellationToken) is not int version)
+            {
+                return new SaleResult(SaleOutcome.NotFound, null);
+            }
+
+            if (expectedVersion is { } v && v != version)
+            {
+                return new SaleResult(SaleOutcome.VersionConflict, await GetAsync(scope, saleId, cancellationToken));
+            }
+        }
+
+        return new SaleResult(SaleOutcome.Done, await GetAsync(scope, saleId, cancellationToken));
+    }
+
+    public Task<SaleView> HoldAsync(IUnitOfWorkScope scope, Guid saleId, string? note, CancellationToken cancellationToken) =>
+        SetAsync((PostgresUnitOfWorkScope)scope, saleId, "status = 'Held', hold_note = $2", [note], cancellationToken);
+
+    public Task<SaleView> ResumeAsync(IUnitOfWorkScope scope, Guid saleId, SaleOrigin origin, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(origin);
+        return SetAsync((PostgresUnitOfWorkScope)scope, saleId,
+            "status = 'Draft', hold_note = NULL, register_id = $2, shift_id = $3, cashier_id = $4, terminal_id = $5",
+            [origin.RegisterId, origin.ShiftId, origin.CashierId, origin.TerminalId], cancellationToken);
+    }
+
+    public Task<SaleView> CancelAsync(IUnitOfWorkScope scope, Guid saleId, string reason, CancellationToken cancellationToken) =>
+        SetAsync((PostgresUnitOfWorkScope)scope, saleId, "status = 'Cancelled', cancelled_at = now(), cancel_reason = $2", [reason], cancellationToken);
+
+    public async Task<IReadOnlyList<SaleView>> HeldAsync(IUnitOfWorkScope scope, Guid branchId, CancellationToken cancellationToken) =>
+        [.. (await ReadSalesAsync((PostgresUnitOfWorkScope)scope, "status = 'Held' AND branch_id = $1", branchId, cancellationToken))
+            .OrderByDescending(x => x.LastActivityAt).Take(100)];
+
+    private async Task<SaleView> SetAsync(PostgresUnitOfWorkScope s, Guid saleId, string set, object?[] args, CancellationToken ct)
+    {
+        await using (NpgsqlCommand cmd = s.Command($"UPDATE sales.sale SET {set}, version = version + 1, last_activity_at = now() WHERE id = $1"))
+        {
+            cmd.Parameters.Add(new NpgsqlParameter { Value = saleId });
+            foreach (object? a in args)
+            {
+                cmd.Parameters.Add(a is null ? new NpgsqlParameter { Value = DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text } : new NpgsqlParameter { Value = a });
+            }
+
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
+
+        return (await GetAsync(s, saleId, ct))!;
+    }
+
     public async Task<long> NextInvoiceSequenceAsync(IUnitOfWorkScope scope, Guid branchId, int fiscalYear, CancellationToken cancellationToken)
     {
         await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
@@ -248,7 +301,8 @@ public sealed class PostgresSales : ISales
             {
                 sales.Add(new SaleView(r.GetGuid(0), r.GetString(1), r.GetString(2), r.GetGuid(3), r.GetGuid(4), r.GetGuid(5), r.GetGuid(6), r.GetGuid(7),
                     r.GetString(8), r.GetString(9), Enum.Parse<PricingMode>(r.GetString(10)), r.IsDBNull(11) ? null : r.GetString(11), r.GetInt64(12),
-                    r.IsDBNull(13) ? null : r.GetFieldValue<DateTimeOffset>(13), r.GetInt32(14), []));
+                    r.IsDBNull(13) ? null : r.GetFieldValue<DateTimeOffset>(13), r.GetInt32(14), [], null, r.IsDBNull(15) ? null : r.GetString(15),
+                    r.IsDBNull(16) ? null : r.GetString(16), r.GetFieldValue<DateTimeOffset>(17)));
             }
         }
 

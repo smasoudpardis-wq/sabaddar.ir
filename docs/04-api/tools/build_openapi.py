@@ -329,7 +329,7 @@ schema("Tender", seq="int", method=("enum", ["Cash", "ExternalCardTerminal", "On
 schema("Sale", id="uuid", status=("enum", ["Draft", "Held", "PendingPayment", "Finalized", "Cancelled"]),
        returnStatus=("enum", ["None", "Partial", "Full"]), branchId="uuid", registerId="uuid", shiftId="uuid",
        **{"cashierId?": "uuid", "terminalId?": "uuid", "channel?": ("enum", ["POS", "Admin", "API"]), "clientDraftId?": "str",
-          "pricingMode?": ("enum", ["TaxExclusive", "TaxInclusive"])},
+          "pricingMode?": ("enum", ["TaxExclusive", "TaxInclusive"]), "holdNote?": "str?", "cancelReason?": "str?"},
        invoiceNo="str?", customer=("desc", "#SaleCustomer?", "Masked; never phone/global id (BR-061)"),
        lines=["#SaleLine"], saleDiscount="#LineDiscount?", tenders=["#Tender"],
        totals={"gross": "money", "discount": "money", "net": "money", "tax": "money", "total": "money",
@@ -349,7 +349,10 @@ schema("TenderInput", method=("enum", ["Cash", "ExternalCardTerminal", "Customer
           "approvalId?": ("desc", "uuid", "A manager's approval to record a repeated card reference (PAY-002.1)")})
 schema("VersionOnly", expectedVersion="int")
 schema("TenderVoid", expectedVersion="int", reason=("desc", "str", "3-200 characters, audited"))
-schema("CancelRequest", expectedVersion="int", reason="str")
+schema("CancelRequest", expectedVersion="int", reason=("desc", "str", "3-200 characters, audited"))
+schema("HoldRequest", expectedVersion="int", **{"note?": ("desc", "str", "Up to 100 characters: a name or note to find the cart by (SAL-011)")})
+schema("ResumeRequest", expectedVersion="int", **{"registerId?": ("desc", "uuid", "A register of the cart's branch with the caller's open shift; default: the cart's")})
+schema("HeldSale", id="uuid", holdNote="str?", total="money", lines="int", cashierId="uuid", registerId="uuid", heldAt="dt", version="int")
 schema("JournalReverse", reason=("desc", "str", "3-200 characters; becomes the reversal's description"))
 schema("FinalizeRequest", expectedVersion="int", expectedTotal="money",
        **{"paymentConfirmationId?": ("desc", "str", "Optional; payments are read server-side (D03 §6.3)"),
@@ -554,7 +557,8 @@ ERROR_CATALOG = {
     "period-closed": (409, "Fiscal period closed (DI-042)"),
     "no-open-period": (422, "No fiscal period covers this date (ACC-001.1)"),
     "payment-incomplete": (409, "Confirmed payments do not cover the bill; context.remaining (SAL-006)"),
-    "sale-empty": (409, "A sale without items is not finalized"),
+    "sale-empty": (409, "A sale without items is not finalized or held"),
+    "sale-not-held": (409, "Only a held cart is resumed (SAL-011)"),
     "no-sellable-warehouse": (422, "The branch has no sellable warehouse to issue the stock from (INV-001)"),
     "amount-exceeds-remaining": (409, "A payment larger than what is left on the bill; context.remaining (SAL-006)"),
     "sale-has-payments": (409, "Payments were taken; the bill's lines no longer change (RC026)"),
@@ -1007,10 +1011,12 @@ op("post", "/pos/sales/{saleId}/discounts", "applyDiscount", "POS", "تخفیف 
 op("post", "/pos/sales/{saleId}/customer", "attachCustomer", "POS", "اتصال مشتری (QR / کد عمومی عضو / عضو انتخاب‌شده)",
    perm="customers.lookup", scope="Branch", body="AttachCustomer", resp="Sale", reqs=["SAL-003", "CUS-006", "BR-061", "TAX-004"],
    conflict=True, audited=True, rate="customer-lookup")
-op("post", "/pos/sales/{saleId}/hold", "holdSale", "POS", "نگه‌داشتن سبد", perm="pos.sell", scope="OwnShift", body="VersionOnly",
+op("get", "/pos/held-sales", "listHeldSales", "POS", "سبدهای نگه‌داشته‌شده شعبه این دستگاه", perm="pos.sell", resp="HeldSale", list_of=True,
+   reqs=["SAL-011"])
+op("post", "/pos/sales/{saleId}/hold", "holdSale", "POS", "نگه‌داشتن سبد", perm="pos.sell", scope="OwnShift", body="HoldRequest",
    resp="Sale", reqs=["SAL-011"], conflict=True)
 op("post", "/pos/sales/{saleId}/resume", "resumeSale", "POS", "ادامه سبد نگه‌داشته‌شده (همان شعبه)", perm="pos.sell",
-   scope="Register", body="VersionOnly", resp="Sale", reqs=["SAL-011"], conflict=True)
+   scope="Register", body="ResumeRequest", resp="Sale", reqs=["SAL-011"], conflict=True)
 op("post", "/pos/sales/{saleId}/cancel", "cancelSale", "POS", "لغو سبد بدون پرداخت تأییدشده", perm="pos.sale.cancel",
    scope="OwnShift", body="CancelRequest", resp="Sale", reqs=["SAL-004", "AB-03"], audited=True, conflict=True)
 op("post", "/pos/sales/{saleId}/tenders", "recordTender", "POS", "ثبت پرداخت نقد، کارتخوان مستقل، نسیه یا مانده بستانکار",

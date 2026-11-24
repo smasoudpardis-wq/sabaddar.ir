@@ -1692,7 +1692,7 @@ object SaleJson(SaleView s, IReadOnlyList<string>? warnings = null, IReadOnlyLis
     return new
     {
         s.Id, s.Status, s.ReturnStatus, s.BranchId, s.RegisterId, s.ShiftId, cashierId = s.CashierId, terminalId = s.TerminalId, s.Channel,
-        s.ClientDraftId, pricingMode = s.PricingMode.ToString(), s.InvoiceNo, customer = (object?)null,
+        s.ClientDraftId, pricingMode = s.PricingMode.ToString(), s.InvoiceNo, s.HoldNote, s.CancelReason, customer = (object?)null,
         lines = s.Lines.Select(l => new
         {
             l.LineNo, l.VariantId, l.Name, l.Sku, qty = Qty(l.Qty), l.Unit, unitFactor = Qty(l.UnitFactor), weighted = l.WeightedCode is not null,
@@ -2429,6 +2429,123 @@ v1.MapGet("/inventory/transfers", async (RequestContext ctx, IUnitOfWork uow, IS
         }, ct));
     })
     .RequirePermission(Permissions.ReportsView);
+
+// ---------------- US-083: hold a cart and resume it later, on another register of the branch too (SAL-011); cancel a cart
+// without payments in force (D02 §6.1). The database allows only the state table's transitions (RC031).
+v1.MapPost("/pos/sales/{saleId:guid}/hold", async (Guid saleId, HoldInput body, RequestContext ctx, IUnitOfWork uow, ISales sales, HttpContext http,
+        CancellationToken ct) =>
+    {
+        string? note = string.IsNullOrWhiteSpace(body.Note) ? null : body.Note.Trim();
+        if (body.ExpectedVersion is null || note is { Length: > 100 })
+        {
+            return Problems.Validation(http, new Dictionary<string, string[]> { [body.ExpectedVersion is null ? "expectedVersion" : "note"] = ["expectedVersion required; note up to 100 characters"] });
+        }
+
+        return await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            SaleResult locked = await sales.LockDraftAsync(s, saleId, body.ExpectedVersion, c);
+            if (locked.Outcome == SaleOutcome.NotFound) return Problems.NotFound(http);
+            if (await MayWorkOn(http, ctx, s, locked.Sale!, c) is { } denied) return denied;
+            if (locked.Outcome != SaleOutcome.Done) return SaleProblem(http, locked.Outcome);
+            if (locked.Sale!.HasPayments) return PaidInto(http);
+            if (locked.Sale.Lines.Count == 0) return Problems.Create(http, StatusCodes.Status409Conflict, "sale-empty", "An empty cart is not held");
+            return Results.Ok(SaleJson(await sales.HoldAsync(s, saleId, note, c)));
+        }, ct);
+    })
+    .RequirePermission(Permissions.PosSell);
+
+v1.MapGet("/pos/held-sales", async (RequestContext ctx, IUnitOfWork uow, ISales sales, HttpContext http, CancellationToken ct) =>
+    {
+        if (ctx.Terminal is not { } terminal)
+        {
+            return Problems.Create(http, StatusCodes.Status403Forbidden, "terminal-not-registered", "Use a registered device of this branch (ABAC-04)");
+        }
+
+        var held = await uow.ExecuteAsync(ctx, (s, c) => sales.HeldAsync(s, terminal.BranchId, c), ct);
+        return Results.Ok(new
+        {
+            items = held.Select(x => new
+            {
+                x.Id, x.HoldNote, total = Money(x.Total), lines = x.Lines.Count, x.CashierId, x.RegisterId, heldAt = x.LastActivityAt, x.Version,
+            }),
+        });
+    })
+    .RequirePermission(Permissions.PosSell);
+
+// SAL-011: resumed by a cashier with an open shift on a register of the same branch; the cart moves to that register and shift
+v1.MapPost("/pos/sales/{saleId:guid}/resume", async (Guid saleId, ResumeInput body, RequestContext ctx, IUnitOfWork uow, ISales sales, IShifts shifts,
+        HttpContext http, CancellationToken ct) =>
+    {
+        if (body.ExpectedVersion is null) return Problems.Validation(http, new Dictionary<string, string[]> { ["expectedVersion"] = ["required"] });
+        return await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            SaleResult locked = await sales.LockAsync(s, saleId, body.ExpectedVersion, c);
+            if (locked.Outcome == SaleOutcome.NotFound) return Problems.NotFound(http);
+            SaleView sale = locked.Sale!;
+            if (ctx.Terminal is not { } terminal)
+            {
+                return Problems.Create(http, StatusCodes.Status403Forbidden, "terminal-not-registered", "Use a registered device of this branch (ABAC-04)");
+            }
+
+            if (terminal.BranchId != sale.BranchId) return Problems.NotFound(http);   // another branch's cart is not found from here
+
+            if (locked.Outcome != SaleOutcome.Done) return SaleProblem(http, locked.Outcome);
+            if (sale.Status != "Held") return Problems.Create(http, StatusCodes.Status409Conflict, "sale-not-held", "Only a held cart is resumed");
+            Guid registerId = body.RegisterId ?? sale.RegisterId;
+            if (await ResolveScope(s, http.RequestServices.GetServices<IScopeLookup>(), ScopeType.Register, registerId, c) is not { } register
+                || register.BranchId != sale.BranchId)
+            {
+                return Problems.Validation(http, new Dictionary<string, string[]> { ["registerId"] = ["a register of the cart's branch"] });
+            }
+
+            if (!AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.PosSell, register)) return Forbidden(http);
+            if (await shifts.CurrentAsync(s, registerId, c) is not { Status: "Open" } shift || shift.CashierId != ctx.User!.Value.Value)
+            {
+                return Problems.Create(http, StatusCodes.Status409Conflict, "shift-not-open", "Open your shift on this register first (BR-050)");
+            }
+
+            SaleView resumed = await sales.ResumeAsync(s, saleId, new SaleOrigin(sale.BranchId, registerId, shift.Id, ctx.User!.Value.Value, terminal.TerminalId,
+                sale.Channel, sale.PricingMode), c);
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry("sales.sale.resumed", "Sale", saleId.ToString(), null, new
+            {
+                fromRegister = sale.RegisterId, fromCashier = sale.CashierId, toRegister = registerId, shiftId = shift.Id,
+            }), c);
+            return Results.Ok(SaleJson(resumed));
+        }, ct);
+    })
+    .RequirePermission(Permissions.PosSell);
+
+// SAL-004 / AB-03: a cart without payments in force is cancelled with a reason (audited); its cashier, or a supervisor of the branch
+v1.MapPost("/pos/sales/{saleId:guid}/cancel", async (Guid saleId, CancelInput body, RequestContext ctx, IUnitOfWork uow, ISales sales,
+        HttpContext http, CancellationToken ct) =>
+    {
+        string? reason = body.Reason?.Trim();
+        if (body.ExpectedVersion is null || reason is not { Length: >= 3 and <= 200 })
+        {
+            return Problems.Validation(http, new Dictionary<string, string[]> { [body.ExpectedVersion is null ? "expectedVersion" : "reason"] = ["expectedVersion required; reason 3-200 characters"] });
+        }
+
+        return await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            SaleResult locked = await sales.LockAsync(s, saleId, body.ExpectedVersion, c);
+            if (locked.Outcome == SaleOutcome.NotFound) return Problems.NotFound(http);
+            SaleView sale = locked.Sale!;
+            var register = new ScopeRef(ScopeType.Register, sale.RegisterId, sale.BranchId);
+            bool own = sale.CashierId == ctx.User!.Value.Value && AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.PosSaleCancel, register);
+            bool supervisor = AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.ShiftSupervise, new ScopeRef(ScopeType.Branch, sale.BranchId, sale.BranchId));
+            if (!own && !supervisor) return Problems.NotFound(http);
+            if (locked.Outcome != SaleOutcome.Done) return SaleProblem(http, locked.Outcome);
+            if (sale.Status is not ("Draft" or "Held")) return Problems.Create(http, StatusCodes.Status409Conflict, "sale-not-draft", "Only a draft or held cart is cancelled here");
+            if (sale.HasPayments) return PaidInto(http);
+            SaleView cancelled = await sales.CancelAsync(s, saleId, reason!, c);
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry("sales.sale.cancelled", "Sale", saleId.ToString(), reason, new
+            {
+                total = sale.Total, lines = sale.Lines.Count, sale.RegisterId, sale.ShiftId, sale.CashierId,
+            }), c);
+            return Results.Ok(SaleJson(cancelled));
+        }, ct);
+    })
+    .RequirePermission(Permissions.PosSaleCancel);
 
 // ---------------- US-053: automatic discount rules (CAT-010, D-18) and manual discount caps (BR-021)
 object RuleJson(DiscountRuleView r) => new
@@ -3247,6 +3364,9 @@ internal sealed record AdjustmentInput(Guid? WarehouseId, string? Reason, Adjust
 internal sealed record ReorderPointInput(Guid? WarehouseId, Guid? VariantId, string? ReorderPoint);
 internal sealed record TransferLineInput(Guid? VariantId, string? Qty);
 internal sealed record TransferInput(Guid? FromWarehouseId, Guid? ToWarehouseId, TransferLineInput?[]? Lines, string? Note);
+internal sealed record HoldInput(int? ExpectedVersion, string? Note);
+internal sealed record ResumeInput(int? ExpectedVersion, Guid? RegisterId);
+internal sealed record CancelInput(int? ExpectedVersion, string? Reason);
 internal sealed record TenderVoidInput(int? ExpectedVersion, string? Reason);
 internal sealed record FinalizeInput(int? ExpectedVersion, string? ExpectedTotal);
 internal sealed record TenderInput(string? Method, string? Amount, string? Tendered, string? ReferenceNo, string? TerminalNo, string? CardLast4,
