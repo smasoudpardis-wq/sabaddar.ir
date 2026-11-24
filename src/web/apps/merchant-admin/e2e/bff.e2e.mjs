@@ -331,8 +331,11 @@ try {
   await page.locator('[data-rule="جشنواره آزمایشی"]').waitFor();
   check('K01', 'the owner adds a 10% automatic rule for a product (CAT-010)', true);
   await page.getByTestId('cap-Cashier').fill('5');
-  await page.getByTestId('caps-submit').click();
-  await page.getByTestId('discount-saved').waitFor();
+  // the rule above already shows «saved»: wait for the caps' own answer, not for that message
+  await Promise.all([
+    page.waitForResponse((r) => r.url().endsWith('/bff/discount-caps') && r.request().method() === 'PUT'),
+    page.getByTestId('caps-submit').click(),
+  ]);
   const capsNow = await page.evaluate(async () => (await fetch('/bff/discount-caps', { cache: 'no-store' })).json());
   check('K02', "the cashier's manual cap is set to 5% (BR-021)", capsNow?.caps?.Cashier === 500, JSON.stringify(capsNow));
   // J01–J03 US-063: a manual adjustment with a reason; «Other» needs a note; the list shows it with its value

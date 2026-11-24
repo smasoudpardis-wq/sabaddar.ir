@@ -36,6 +36,7 @@ if (builder.Configuration.GetValue<bool>("Notifications:DevChannel"))
 builder.Services.AddSingleton<OracleRunner>();
 builder.Services.AddSingleton<RetailCloud.Inventory.Infrastructure.StockMaintenance>();
 builder.Services.AddHostedService<NightlyService>();
+builder.Services.AddHostedService<ReservationExpiryService>();
 builder.Services.AddHostedService<NotificationService>();
 builder.Services.AddHostedService<OutboxRelayService>();
 

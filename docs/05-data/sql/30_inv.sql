@@ -239,6 +239,41 @@ CREATE TABLE inv.reorder_point (
 );
 CALL core.enable_tenant_rls('inv.reorder_point');
 
+-- INV-004.1 / D-19 (US-062): stock held for an online payment for 15 minutes. While Active it counts in
+-- stock_balance.reserved, so no other sale can take it; Finalize consumes it, a failed payment releases it and the Workers
+-- expire it. Facts only: a reservation is closed once and otherwise never changes (RC029).
+CREATE TABLE inv.stock_reservation (
+  tenant_id    uuid NOT NULL,
+  id           uuid NOT NULL,
+  warehouse_id uuid NOT NULL,
+  variant_id   uuid NOT NULL,
+  qty_base     numeric(18,6) NOT NULL CHECK (qty_base > 0),
+  source_type  text NOT NULL,                         -- e.g. Sale
+  source_id    uuid NOT NULL,
+  status       text NOT NULL DEFAULT 'Active' CHECK (status IN ('Active','Consumed','Released','Expired')),
+  expires_at   timestamptz NOT NULL,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  closed_at    timestamptz,
+  PRIMARY KEY (tenant_id, id),
+  FOREIGN KEY (tenant_id, warehouse_id) REFERENCES inv.warehouse (tenant_id, id),
+  CHECK ((status = 'Active') = (closed_at IS NULL)),
+  CHECK (expires_at > created_at)
+);
+CREATE UNIQUE INDEX ux_reservation_active ON inv.stock_reservation (tenant_id, source_type, source_id, warehouse_id, variant_id)
+  WHERE status = 'Active';                                                     -- one hold per source and item
+CREATE INDEX ix_reservation_expiry ON inv.stock_reservation (tenant_id, expires_at) WHERE status = 'Active';
+CALL core.enable_tenant_rls('inv.stock_reservation');
+
+CREATE OR REPLACE FUNCTION inv.reservation_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'DELETE' OR OLD.status <> 'Active' OR NEW.status = 'Active'
+     OR (to_jsonb(NEW) - ARRAY['status','closed_at']) IS DISTINCT FROM (to_jsonb(OLD) - ARRAY['status','closed_at']) THEN
+    RAISE EXCEPTION 'a reservation is only closed, once (Consumed, Released or Expired)' USING ERRCODE = 'RC029';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tr_reservation_guard BEFORE UPDATE OR DELETE ON inv.stock_reservation FOR EACH ROW EXECUTE FUNCTION inv.reservation_guard();
+
 CREATE TRIGGER tr_movement_append_only BEFORE UPDATE OR DELETE ON inv.stock_movement
   FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
 
@@ -249,6 +284,9 @@ GRANT SELECT, INSERT, UPDATE ON inv.negative_stock_policy TO rc_app;
 GRANT SELECT ON inv.negative_stock_policy TO rc_worker, rc_reporting;
 GRANT SELECT, INSERT ON inv.stock_adjustment, inv.stock_transfer TO rc_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON inv.reorder_point TO rc_app;
+GRANT SELECT, INSERT ON inv.stock_reservation TO rc_app;
+GRANT UPDATE (status, closed_at) ON inv.stock_reservation TO rc_app, rc_worker;
+GRANT SELECT ON inv.stock_reservation TO rc_worker, rc_reporting;
 GRANT SELECT ON inv.reorder_point TO rc_worker, rc_reporting;
 GRANT SELECT ON inv.stock_transfer TO rc_worker, rc_reporting;
 GRANT SELECT, INSERT ON inv.supplier, inv.goods_receipt, inv.goods_receipt_line TO rc_app;

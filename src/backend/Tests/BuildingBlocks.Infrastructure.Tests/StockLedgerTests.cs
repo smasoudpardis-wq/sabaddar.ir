@@ -192,4 +192,76 @@ public sealed class StockLedgerTests
         Assert.DoesNotContain(await new OracleRunner(uow).RunAsync(default), f => f.TenantId == st.Tenant);
         Assert.Equal(0, await new StockMaintenance(uow).RebuildAsync(st.Tenant, default));   // nothing left to correct
     }
+
+    private static Task<StockResult> Reserve(Store st, Guid source, Guid variant, decimal qty, TimeSpan? ttl = null) =>
+        In(st, (s, ct) => Ledger.ReserveAsync(s, "Sale", source, [new ReservationLine(st.Warehouse, variant, qty)],
+            DateTimeOffset.UtcNow + (ttl ?? TimeSpan.FromMinutes(15)), ct));
+
+    [DbFact]
+    public async Task AT044_a_reservation_holds_stock_back_from_every_other_sale_until_it_is_consumed_or_released()
+    {
+        Store st = await StoreAsync();
+        Guid milk = Guid.CreateVersion7(), sale = Guid.CreateVersion7(), other = Guid.CreateVersion7();
+        await Post(st, "GoodsReceipt", In(st, milk, 5, 50_000));
+        Assert.Equal(StockOutcome.Done, (await Reserve(st, sale, milk, 3)).Outcome);
+        StockBalanceView b = await Balance(st, milk);
+        Assert.Equal((5m, 3m), (b.OnHand, b.Reserved));
+
+        // what is held is not for anyone else: a sale of 3 and another hold of 3 both find only 2
+        StockResult taken = await Post(st, "Sale", new StockLine(1, st.Warehouse, milk, MovementType.SaleIssue, -3));
+        Assert.Equal((StockOutcome.InsufficientStock, 2m), (taken.Outcome, taken.Shortages.Single().Available));
+        Assert.Equal(StockOutcome.InsufficientStock, (await Reserve(st, other, milk, 3)).Outcome);
+        Assert.Equal(StockOutcome.AlreadyPosted, (await Reserve(st, sale, milk, 1)).Outcome);   // one hold per source
+
+        // Finalize uses the hold: it is given back and the sale issues the stock
+        Assert.Equal(1, await In(st, (s, ct) => Ledger.EndReservationsAsync(s, "Sale", sale, ReservationEnd.Consumed, ct)));
+        Assert.Equal(StockOutcome.Done, (await Post(st, "Sale", new StockLine(1, st.Warehouse, milk, MovementType.SaleIssue, -3))).Outcome);
+        b = await Balance(st, milk);
+        Assert.Equal((2m, 0m), (b.OnHand, b.Reserved));
+        Assert.Equal(0, await In(st, (s, ct) => Ledger.EndReservationsAsync(s, "Sale", sale, ReservationEnd.Released, ct)));   // nothing left to end
+
+        // a failed payment releases it
+        Assert.Equal(StockOutcome.Done, (await Reserve(st, other, milk, 2)).Outcome);
+        Assert.Equal(1, await In(st, (s, ct) => Ledger.EndReservationsAsync(s, "Sale", other, ReservationEnd.Released, ct)));
+        Assert.Equal(0m, (await Balance(st, milk)).Reserved);
+        Assert.Equal("Consumed,Released", string.Join(',', await In(st, async (s, ct) =>
+        {
+            await using NpgsqlCommand c = ((PostgresUnitOfWorkScope)s).Command("SELECT string_agg(status, ',' ORDER BY created_at) FROM inv.stock_reservation");
+            return (string)(await c.ExecuteScalarAsync(ct))!;
+        })));
+    }
+
+    [DbFact]
+    public async Task AT043_twenty_holds_at_once_on_ten_units_ten_succeed_and_none_oversells()
+    {
+        Store st = await StoreAsync();
+        Guid gum = Guid.CreateVersion7();
+        await Post(st, "GoodsReceipt", In(st, gum, 10, 10_000));
+        StockResult[] all = await Task.WhenAll(Enumerable.Range(0, 20).Select(_ => Reserve(st, Guid.CreateVersion7(), gum, 1)));
+        Assert.Equal(10, all.Count(r => r.Outcome == StockOutcome.Done));
+        Assert.Equal(10, all.Count(r => r.Outcome == StockOutcome.InsufficientStock));
+        Assert.Equal(10m, (await Balance(st, gum)).Reserved);
+    }
+
+    [DbFact]
+    public async Task D19_the_workers_expire_a_hold_whose_time_has_passed_and_the_oracle_sees_reserved_drift()
+    {
+        Store st = await StoreAsync();
+        Guid tea = Guid.CreateVersion7();
+        await Post(st, "GoodsReceipt", In(st, tea, 4, 40_000));
+        Assert.Equal(StockOutcome.Done, (await Reserve(st, Guid.CreateVersion7(), tea, 4, TimeSpan.FromMilliseconds(500))).Outcome);
+        await Task.Delay(1200);
+
+        string worker = new NpgsqlConnectionStringBuilder(App) { Username = "rc_worker_test", Password = "rc_worker_test" }.ToString();
+        await using var wds = NpgsqlDataSource.Create(worker);
+        var uow = new PostgresUnitOfWork(wds);
+        Assert.True(await new StockMaintenance(uow).ExpireReservationsAsync(default) >= 1);
+        Assert.Equal(0m, (await Balance(st, tea)).Reserved);
+        Assert.Equal(1, await Scalar(st, "SELECT count(*) FROM inv.stock_reservation WHERE status = 'Expired'"));
+        Assert.DoesNotContain(await new OracleRunner(uow).RunAsync(default), f => f.TenantId == st.Tenant);
+
+        // O-6: a balance that holds back more than its reservations is reported
+        await In(st, (s, ct) => Exec(s, ct, "UPDATE inv.stock_balance SET reserved = 1"));
+        Assert.Contains(await new OracleRunner(uow).RunAsync(default), f => f.Oracle == "O-6" && f.TenantId == st.Tenant);
+    }
 }

@@ -2232,6 +2232,8 @@ v1.MapIdempotentPost<FinalizeInput>("/sales/{saleId:guid}/finalize", "sales.fina
         }
 
         DateTimeOffset now = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
+        // INV-004.1: what was held for this sale (online payment) is used now: given back first, then issued under the locks
+        await http.RequestServices.GetRequiredService<IStockLedger>().EndReservationsAsync(scope, "Sale", sale.Id, ReservationEnd.Consumed, ct);
         StockResult issued = await http.RequestServices.GetRequiredService<IStockLedger>().PostAsync(scope, new StockDocument("Sale", sale.Id, now,
             [.. sale.Lines.Select(l => new StockLine(l.LineNo, warehouseId, l.VariantId, MovementType.SaleIssue, -l.Qty, null,
                 l.UnitFactor == 1 ? null : new EnteredUnit(l.Unit, l.UnitFactor)))]), ct);

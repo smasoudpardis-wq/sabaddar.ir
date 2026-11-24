@@ -10,6 +10,7 @@ using RetailCloud.BuildingBlocks.Api;
 using RetailCloud.BuildingBlocks.Application;
 using RetailCloud.BuildingBlocks.Domain;
 using RetailCloud.BuildingBlocks.Infrastructure;
+using RetailCloud.Inventory.Application;
 
 namespace RetailCloud.Api.Tests;
 
@@ -326,5 +327,26 @@ public sealed class FinalizeTests : IClassFixture<ApiFactory>, IAsyncLifetime
         Assert.Equal((132_000L, false), (sold["1101"].Debit, sold.ContainsKey("1104")));
         Assert.Equal(2L, await Scalar<long>("SELECT count(*) FROM pay.payment WHERE sale_id = $1 AND status = 'Voided'", saleId));
         Assert.Equal(2L, await Scalar<long>("SELECT count(*) FROM audit.audit_record WHERE action = 'sales.tender.voided' AND resource_id = $1", saleId.ToString()));
+    }
+
+    [DbFact]
+    public async Task INV004_1_finalize_uses_the_stock_held_for_its_sale_and_frees_nothing_else()
+    {
+        Guid juice = await Product("FN-JUICE", "100000", "3", "50000");
+        await OpenShift("cashier", _r1);
+        JsonElement sale = await PaidCart("cashier", _r1, "FN-JUICE", "3");
+        Guid saleId = sale.GetProperty("id").GetGuid();
+        // an online payment would hold the 3 for 15 minutes: nobody else can sell them meanwhile
+        await using var ds = NpgsqlDataSource.Create(Cs);
+        var ledger = new RetailCloud.Inventory.Infrastructure.PostgresStockLedger();
+        StockResult held = await new PostgresUnitOfWork(ds).ExecuteAsync(new FixedTenantContext(new TenantId(_tenant)), (s, ct) =>
+            ledger.ReserveAsync(s, "Sale", saleId, [new ReservationLine(_w1, juice, 3)], DateTimeOffset.UtcNow.AddMinutes(15), ct));
+        Assert.Equal(StockOutcome.Done, held.Outcome);
+        Assert.Equal("insufficient-stock", await Code(await Finalize("cashier", await PaidCart("cashier", _r1, "FN-JUICE", "1"))));
+
+        Assert.Equal(HttpStatusCode.OK, (await Finalize("cashier", sale)).StatusCode);
+        Assert.Equal("Consumed", await Scalar<string>("SELECT status FROM inv.stock_reservation WHERE source_id = $1", saleId));
+        Assert.Equal(0m, await Scalar<decimal>("SELECT reserved FROM inv.stock_balance WHERE variant_id = $1", juice));
+        Assert.Equal(0m, await Scalar<decimal>("SELECT on_hand FROM inv.stock_balance WHERE variant_id = $1", juice));
     }
 }

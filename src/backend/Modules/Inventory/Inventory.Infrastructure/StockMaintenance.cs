@@ -20,6 +20,17 @@ public sealed class StockMaintenance(IUnitOfWork unitOfWork)
             return (int)(await cmd.ExecuteScalarAsync(ct))!;
         }, cancellationToken);
 
+    /// <summary>
+    /// INV-004.1 / D-19: in every store, the reservations whose 15 minutes have passed give their stock back (Expired).
+    /// A payment confirmed after that finds the stock as it is then (Finalize checks it under the locks).
+    /// </summary>
+    public Task<int> ExpireReservationsAsync(CancellationToken cancellationToken) =>
+        unitOfWork.ExecuteWithoutTenantAsync(null, async (s, ct) =>
+        {
+            await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)s).Command("SELECT inv.expire_reservations()");
+            return (int)(await cmd.ExecuteScalarAsync(ct))!;
+        }, cancellationToken);
+
     /// <summary>Replays every (warehouse, variant) ledger of the tenant and corrects the balances that differ; returns how many.</summary>
     public Task<int> RebuildAsync(Guid tenantId, CancellationToken cancellationToken) =>
         unitOfWork.ExecuteAsync(new FixedTenantContext(new RetailCloud.BuildingBlocks.Domain.TenantId(tenantId)), async (scope, ct) =>

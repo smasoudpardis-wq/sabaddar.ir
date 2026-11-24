@@ -45,6 +45,17 @@ public sealed record PostedMovement(int Line, Guid WarehouseId, Guid VariantId, 
 
 public sealed record Shortage(Guid WarehouseId, Guid VariantId, decimal Available, decimal Requested);
 
+/// <summary>INV-004.1: what to hold back for a source (a sale paid online), in the base unit.</summary>
+public sealed record ReservationLine(Guid WarehouseId, Guid VariantId, decimal QtyBase);
+
+/// <summary>How a reservation ends: Finalize used it, the payment failed, or its 15 minutes passed (D-19).</summary>
+public enum ReservationEnd
+{
+    Consumed,
+    Released,
+    Expired,
+}
+
 public enum StockOutcome
 {
     Done,
@@ -86,6 +97,17 @@ public interface IStockLedger
     /// <summary>Newest first, up to <paramref name="limit"/>.</summary>
     Task<IReadOnlyList<StockMovementView>> MovementsAsync(IUnitOfWorkScope scope, Guid variantId, Guid? warehouseId, int limit,
         CancellationToken cancellationToken, DateTimeOffset? effectiveFrom = null, DateTimeOffset? effectiveBefore = null);
+
+    /// <summary>
+    /// INV-004.1 / D-19: holds stock for a source until <paramref name="expiresAt"/>: the balances are locked in variant order
+    /// (INV-004) and the hold must fit in what is available, whatever the negative-stock policy (a reservation never oversells).
+    /// InsufficientStock lists every shortage; AlreadyPosted when the source already holds stock.
+    /// </summary>
+    Task<StockResult> ReserveAsync(IUnitOfWorkScope scope, string sourceType, Guid sourceId, IReadOnlyList<ReservationLine> lines, DateTimeOffset expiresAt,
+        CancellationToken cancellationToken);
+
+    /// <summary>Ends the source's active reservations (none: 0) and gives the quantity back to what is available.</summary>
+    Task<int> EndReservationsAsync(IUnitOfWorkScope scope, string sourceType, Guid sourceId, ReservationEnd how, CancellationToken cancellationToken);
 
     Task SetPolicyAsync(IUnitOfWorkScope scope, string scopeType, Guid scopeId, NegativeStockPolicy policy, Guid changedBy,
         CancellationToken cancellationToken);

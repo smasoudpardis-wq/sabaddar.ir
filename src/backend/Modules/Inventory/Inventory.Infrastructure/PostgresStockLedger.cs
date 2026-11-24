@@ -225,6 +225,108 @@ public sealed class PostgresStockLedger(IOutbox? outbox = null) : IStockLedger
     private static NegativeStockPolicy? Policy(Dictionary<(string, Guid), NegativeStockPolicy> all, string type, Guid id) =>
         all.TryGetValue((type, id), out NegativeStockPolicy p) ? p : null;
 
+    public async Task<StockResult> ReserveAsync(IUnitOfWorkScope scope, string sourceType, Guid sourceId, IReadOnlyList<ReservationLine> lines,
+        DateTimeOffset expiresAt, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(lines);
+        if (lines.Count == 0 || lines.Any(l => l.QtyBase <= 0))
+        {
+            throw new ArgumentException("A reservation holds something.", nameof(lines));
+        }
+
+        var s = (PostgresUnitOfWorkScope)scope;
+        await using (NpgsqlCommand held = s.Command("SELECT EXISTS (SELECT 1 FROM inv.stock_reservation WHERE source_type = $1 AND source_id = $2 AND status = 'Active')"))
+        {
+            held.Parameters.Add(new NpgsqlParameter { Value = sourceType });
+            held.Parameters.Add(new NpgsqlParameter { Value = sourceId });
+            if ((bool)(await held.ExecuteScalarAsync(cancellationToken))!)
+            {
+                return StockResult.Of(StockOutcome.AlreadyPosted);
+            }
+        }
+
+        // INV-004: the same lock order as a posting, so a reservation and a sale never deadlock
+        var wanted = lines.GroupBy(l => (l.VariantId, l.WarehouseId)).ToDictionary(g => g.Key, g => g.Sum(l => l.QtyBase));
+        (Guid Variant, Guid Warehouse)[] keys = [.. wanted.Keys.OrderBy(k => k.VariantId).ThenBy(k => k.WarehouseId)];
+        var available = new Dictionary<(Guid, Guid), decimal>();
+        await using (NpgsqlCommand lockRows = s.Command(
+            "SELECT b.variant_id, b.warehouse_id, b.on_hand - b.reserved FROM inv.stock_balance b " +
+            "JOIN unnest($1::uuid[], $2::uuid[]) AS k(v, w) ON b.variant_id = k.v AND b.warehouse_id = k.w ORDER BY b.variant_id, b.warehouse_id FOR UPDATE OF b"))
+        {
+            lockRows.Parameters.Add(new NpgsqlParameter { Value = keys.Select(k => k.Variant).ToArray(), NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Uuid });
+            lockRows.Parameters.Add(new NpgsqlParameter { Value = keys.Select(k => k.Warehouse).ToArray(), NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Uuid });
+            await using NpgsqlDataReader r = await lockRows.ExecuteReaderAsync(cancellationToken);
+            while (await r.ReadAsync(cancellationToken))
+            {
+                available[(r.GetGuid(0), r.GetGuid(1))] = r.GetDecimal(2);
+            }
+        }
+
+        Shortage[] shortages = [.. keys.Where(k => available.GetValueOrDefault(k) < wanted[k])
+            .Select(k => new Shortage(k.Warehouse, k.Variant, available.GetValueOrDefault(k), wanted[k]))];
+        if (shortages.Length > 0)
+        {
+            return new StockResult(StockOutcome.InsufficientStock, [], shortages, []);
+        }
+
+        foreach ((Guid variant, Guid warehouse) in keys)
+        {
+            await using NpgsqlCommand ins = s.Command(
+                "INSERT INTO inv.stock_reservation (tenant_id, id, warehouse_id, variant_id, qty_base, source_type, source_id, expires_at) " +
+                "VALUES (core.current_tenant(), $1, $2, $3, $4, $5, $6, $7)");
+            foreach (object v in new object[] { Guid.CreateVersion7(), warehouse, variant, wanted[(variant, warehouse)], sourceType, sourceId })
+            {
+                ins.Parameters.Add(new NpgsqlParameter { Value = v });
+            }
+
+            ins.Parameters.Add(new NpgsqlParameter { Value = expiresAt.UtcDateTime, NpgsqlDbType = NpgsqlDbType.TimestampTz });
+            await ins.ExecuteNonQueryAsync(cancellationToken);
+            await using NpgsqlCommand upd = s.Command(
+                "UPDATE inv.stock_balance SET reserved = reserved + $3, version = version + 1 WHERE warehouse_id = $1 AND variant_id = $2");
+            upd.Parameters.Add(new NpgsqlParameter { Value = warehouse });
+            upd.Parameters.Add(new NpgsqlParameter { Value = variant });
+            upd.Parameters.Add(new NpgsqlParameter { Value = wanted[(variant, warehouse)] });
+            await upd.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        return StockResult.Of(StockOutcome.Done);
+    }
+
+    public Task<int> EndReservationsAsync(IUnitOfWorkScope scope, string sourceType, Guid sourceId, ReservationEnd how, CancellationToken cancellationToken) =>
+        EndAsync((PostgresUnitOfWorkScope)scope, "source_type = $1 AND source_id = $2", [sourceType, sourceId], how, cancellationToken);
+
+    /// <summary>Closes the matching active reservations, locking their balances in variant order, and gives their quantity back.</summary>
+    private static async Task<int> EndAsync(PostgresUnitOfWorkScope s, string where, object[] args, ReservationEnd end, CancellationToken ct)
+    {
+        var closed = new List<(Guid Variant, Guid Warehouse, decimal Qty)>();
+        await using (NpgsqlCommand cmd = s.Command(
+            $"UPDATE inv.stock_reservation SET status = '{end}', closed_at = now() WHERE status = 'Active' AND {where} RETURNING variant_id, warehouse_id, qty_base"))
+        {
+            foreach (object a in args)
+            {
+                cmd.Parameters.Add(new NpgsqlParameter { Value = a });
+            }
+
+            await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+            {
+                closed.Add((r.GetGuid(0), r.GetGuid(1), r.GetDecimal(2)));
+            }
+        }
+
+        foreach (var g in closed.GroupBy(c => (c.Variant, c.Warehouse)).OrderBy(g => g.Key.Variant).ThenBy(g => g.Key.Warehouse))
+        {
+            await using NpgsqlCommand upd = s.Command(
+                "UPDATE inv.stock_balance SET reserved = reserved - $3, version = version + 1 WHERE warehouse_id = $1 AND variant_id = $2");
+            upd.Parameters.Add(new NpgsqlParameter { Value = g.Key.Warehouse });
+            upd.Parameters.Add(new NpgsqlParameter { Value = g.Key.Variant });
+            upd.Parameters.Add(new NpgsqlParameter { Value = g.Sum(c => c.Qty) });
+            await upd.ExecuteNonQueryAsync(ct);
+        }
+
+        return closed.Count;
+    }
+
     public async Task<IReadOnlyList<StockBalanceView>> BalancesAsync(IUnitOfWorkScope scope, Guid? warehouseId, Guid? variantId, CancellationToken cancellationToken,
         bool lowOnly = false)
     {

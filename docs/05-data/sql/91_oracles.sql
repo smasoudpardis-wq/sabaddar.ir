@@ -16,6 +16,33 @@ REVOKE ALL ON FUNCTION core.list_tenant_ids() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION core.list_tenant_ids() TO rc_worker;
 
 SET ROLE rc_migrator;
+-- INV-004.1 / D-19 (US-062): run by the Workers every minute: in every store the active reservations whose time has
+-- passed become Expired and give their quantity back. The balances are locked in (variant, warehouse) order first, as
+-- every posting does (INV-004), so expiry never deadlocks with a sale. Returns how many reservations expired.
+CREATE OR REPLACE FUNCTION inv.expire_reservations() RETURNS int
+LANGUAGE plpgsql AS $$
+DECLARE t uuid; n int := 0; c int;
+BEGIN
+  FOR t IN SELECT * FROM core.list_tenant_ids() LOOP
+    PERFORM set_config('app.tenant_id', t::text, true);   -- RLS scopes every statement below to tenant t
+    PERFORM 1 FROM inv.stock_balance b
+      JOIN (SELECT DISTINCT warehouse_id, variant_id FROM inv.stock_reservation WHERE status = 'Active' AND expires_at <= now()) e
+        ON e.warehouse_id = b.warehouse_id AND e.variant_id = b.variant_id
+      ORDER BY b.variant_id, b.warehouse_id FOR UPDATE OF b;
+    WITH x AS (UPDATE inv.stock_reservation SET status = 'Expired', closed_at = now()
+               WHERE status = 'Active' AND expires_at <= now() RETURNING warehouse_id, variant_id, qty_base),
+         g AS (SELECT warehouse_id, variant_id, sum(qty_base) AS q, count(*) AS k FROM x GROUP BY 1, 2),
+         u AS (UPDATE inv.stock_balance b SET reserved = b.reserved - g.q, version = b.version + 1
+               FROM g WHERE b.warehouse_id = g.warehouse_id AND b.variant_id = g.variant_id RETURNING g.k)
+    SELECT coalesce(sum(k), 0) INTO c FROM u;
+    n := n + c;
+  END LOOP;
+  PERFORM set_config('app.tenant_id', '', true);
+  RETURN n;
+END $$;
+REVOKE ALL ON FUNCTION inv.expire_reservations() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION inv.expire_reservations() TO rc_worker;
+
 CREATE OR REPLACE FUNCTION core.run_oracles()
 RETURNS TABLE (oracle text, tenant_id uuid, detail text)
 LANGUAGE plpgsql AS $$
@@ -35,6 +62,15 @@ BEGIN
             FULL JOIN (SELECT warehouse_id, variant_id, sum(qty_base) q, sum(total_cost) v FROM inv.stock_movement GROUP BY 1, 2) m
               ON m.warehouse_id = b.warehouse_id AND m.variant_id = b.variant_id) x
       WHERE x.on_hand <> x.ledger OR x.value_on_hand <> x.ledger_value;
+
+    -- O-6 what a balance holds back = its active reservations (INV-004.1)
+    RETURN QUERY SELECT 'O-6', t, format('warehouse=%s variant=%s reserved=%s reservations=%s', x.warehouse_id, x.variant_id, x.reserved, x.held)
+      FROM (SELECT COALESCE(b.warehouse_id, r.warehouse_id) AS warehouse_id, COALESCE(b.variant_id, r.variant_id) AS variant_id,
+                   COALESCE(b.reserved, 0) AS reserved, COALESCE(r.q, 0) AS held
+            FROM inv.stock_balance b
+            FULL JOIN (SELECT warehouse_id, variant_id, sum(qty_base) q FROM inv.stock_reservation WHERE status = 'Active' GROUP BY 1, 2) r
+              ON r.warehouse_id = b.warehouse_id AND r.variant_id = b.variant_id) x
+      WHERE x.reserved <> x.held;
 
     -- O-3 negative available where not allowed (DB CHECK should make this impossible)
     RETURN QUERY SELECT 'O-3', t, format('variant=%s available=%s', variant_id, on_hand - reserved)

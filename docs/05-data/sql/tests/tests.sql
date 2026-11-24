@@ -257,6 +257,19 @@ SELECT t.expect_error('T221 a reorder point is not negative', '23514',
 SELECT t.expect_error('T222 a reorder point belongs to a warehouse of the store', '23503',
   $$INSERT INTO inv.reorder_point (tenant_id, warehouse_id, variant_id, reorder_point, changed_by)
     VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000011', 5, gen_random_uuid())$$);
+-- US-062 reservations (INV-004.1)
+INSERT INTO inv.stock_reservation (tenant_id, id, warehouse_id, variant_id, qty_base, source_type, source_id, expires_at)
+  VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000098', 'a0000000-0000-0000-0000-000000000003', 'a0000000-0000-0000-0000-000000000011',
+          1, 'Sale', 'a0000000-0000-0000-0000-000000000099', now() + interval '15 minutes');
+SELECT t.expect_error('T223 one active hold per source and item', '23505',
+  $$INSERT INTO inv.stock_reservation (tenant_id, id, warehouse_id, variant_id, qty_base, source_type, source_id, expires_at)
+    VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000003', 'a0000000-0000-0000-0000-000000000011',
+            1, 'Sale', 'a0000000-0000-0000-0000-000000000099', now() + interval '15 minutes')$$);
+SELECT t.expect_error('T224 a reservation''s quantity never changes (RC029)', 'RC029',
+  $$UPDATE inv.stock_reservation SET status = 'Active' WHERE id = 'a0000000-0000-0000-0000-000000000098'$$);
+UPDATE inv.stock_reservation SET status = 'Released', closed_at = now() WHERE id = 'a0000000-0000-0000-0000-000000000098';
+SELECT t.expect_error('T225 a closed reservation stays closed (RC029)', 'RC029',
+  $$UPDATE inv.stock_reservation SET status = 'Consumed' WHERE id = 'a0000000-0000-0000-0000-000000000098'$$);
 SELECT t.expect_error('T14 stock movement is append-only for the app role', '42501',
   $$UPDATE inv.stock_movement SET qty_base = -2$$);
 SELECT t.expect_error('T15 movement for another tenant via parent rejected', '42501',
