@@ -493,6 +493,12 @@ SELECT t.expect_error('T36 posting into a closed period (DI-042)', 'RC013',
 SELECT t.expect_error('T37 effective date outside the period span', 'RC014',
   $$INSERT INTO acc.journal_entry (tenant_id, id, status, posted_at, effective_at, period_id)
     VALUES (core.current_tenant(), gen_random_uuid(), 'Posted', now(), '2027-01-15 12:00+03:30', 'a0000000-0000-0000-0000-000000000201')$$);
+SELECT t.expect_error('T237 a closed period is never reopened (D-45, AB-19)', 'RC033',
+  $$UPDATE acc.fiscal_period SET status = 'Open', closed_at = NULL WHERE id = 'a0000000-0000-0000-0000-000000000202'$$);
+SELECT t.expect_error('T238 a period''s span never changes', 'RC033',
+  $$UPDATE acc.fiscal_period SET span = tstzrange('2026-10-01 00:00+03:30', '2026-11-22 00:00+03:30') WHERE id = 'a0000000-0000-0000-0000-000000000202'$$);
+SELECT t.ok('T239 a period closed without a time is stamped now',
+  (SELECT closed_at IS NOT NULL FROM acc.fiscal_period WHERE id = 'a0000000-0000-0000-0000-000000000202'));
 SELECT t.expect_error('T38 receivable line without customer detail (DI-043)', 'RC011',
   $$INSERT INTO acc.journal_entry (tenant_id, id, effective_at, period_id)
     VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000303', '2026-11-22 12:00+03:30', 'a0000000-0000-0000-0000-000000000201')$$,

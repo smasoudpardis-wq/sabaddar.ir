@@ -61,7 +61,7 @@ open_questions: [BQ-01..BQ-04]
 | `proc` | Procurement | `supplier`، `goods_receipt`، `goods_receipt_line`، `purchase_return`، `supplier_payment` (فعلاً در `inv` پیاده شده‌اند؛ RQ-12) | بله |
 | `sales` | Sales | `shift` ✓، `cash_movement`، `invoice_sequence` ✓، `sale` ✓، `sale_line` ✓، `sale_tender` ✓، `sale_discount`، `sale_return`، `sale_return_line` (Outbox: `core.outbox` ✓، Idempotency: `core.idempotency_record` ✓، مشترک همه ماژول‌ها — US-006) | بله |
 | `pay` | Payments | `payment` ✓، `payment_intent`، `payment_callback` (Inbox)، `refund`، `gateway_config`، `settlement_import`، `settlement_line` | بله |
-| `acc` | Accounting | `account` ✓، `account_mapping`، `detail_account`، `fiscal_year`، `fiscal_period` ✓، `journal_entry` ✓، `journal_line` ✓، `posting_rule_set` | بله |
+| `acc` | Accounting | `account` ✓، `account_mapping`، `detail_account`، `fiscal_year`، `fiscal_period` ✓ (بستن یک‌طرفه، RC033)، `journal_entry` ✓، `journal_line` ✓، `posting_rule_set` | بله |
 | `ar` | Receivables | `credit_account` ✓، `receivable_entry` ✓، `collection`، `collection_allocation` | بله |
 | `cid` | CustomerIdentity | `global_customer` ✓، `public_code_registry` ✓، `verified_contact` ✓، `otp_challenge`، `bale_account_link` (Global)؛ `tenant_customer_membership` ✓، `consent_record` ✓، `store_invite`، `receipt_access_grant`، `tenant_customer_profile` (Tenant) | ترکیبی |
 | `tax` | TaxCompliance | `tax_profile`، `issuing_unit`، `signing_key`، `tax_invoice` ✓، `submission_attempt` | بله |

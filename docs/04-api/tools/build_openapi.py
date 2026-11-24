@@ -415,7 +415,8 @@ schema("Journal", id="uuid", status=("enum", ["Draft", "Posted", "Reversed"]), e
        source="#SourceRef?", lines=["#JournalLine"], reversalOf="uuid?", reversedBy="uuid?")
 schema("SourceRef", type="str", id="uuid")
 schema("JournalLine", lineNo="int", accountId="uuid", accountCode="str", detailType="str?", detailId="uuid?", debit="money", credit="money")
-schema("Period", id="uuid", fiscalYear="int", periodNo="int", start="dt", end="dt", status=("enum", ["Open", "Closed", "Locked"]))
+schema("Period", id="uuid", fiscalYear="int", periodNo="int", start="dt", end="dt", status=("enum", ["Open", "Closed", "Locked"]),
+       closedAt="dt?", closedBy="uuid?", version="int")
 schema("TrialBalanceRow", accountId="uuid", accountCode="str", accountName="str", openingDebit="money", openingCredit="money",
        periodDebit="money", periodCredit="money", closingDebit="money", closingCredit="money")
 schema("LedgerRow", journalId="uuid", effectiveAt="dt", description="str?", debit="money", credit="money", runningBalance="money")
@@ -573,6 +574,9 @@ ERROR_CATALOG = {
     "payment-not-confirmed": (409, "A tender is not confirmed yet"),
     "payment-failed": (409, "Gateway verify failed"),
     "period-closed": (409, "Fiscal period closed (DI-042)"),
+    "period-has-drafts": (409, "Draft entries are dated in the period; post or delete them (ACC-009)"),
+    "earlier-period-open": (409, "Periods are closed in order (ACC-009)"),
+    "period-not-ended": (409, "A period is closed once it has ended (ACC-009)"),
     "no-open-period": (422, "No fiscal period covers this date (ACC-001.1)"),
     "payment-incomplete": (409, "Confirmed payments do not cover the bill; context.remaining (SAL-006)"),
     "sale-empty": (409, "A sale without items is not finalized or held"),
@@ -1158,8 +1162,11 @@ op("post", "/accounting/journals/{journalId}/reverse", "reverseJournal", "Accoun
 op("get", "/accounting/periods", "listPeriods", "Accounting", "دوره‌های مالی", perm="accounting.read", scope="Tenant",
    resp="Period", list_of=True, reqs=["ACC-001.1"])
 op("post", "/accounting/periods/{periodId}/close", "closePeriod", "Accounting", "بستن دوره (بازگشایی در MVP ممکن نیست)",
-   perm="accounting.period.close", scope="Tenant", idem=True, body="VersionOnly", resp="Period",
-   reqs=["ACC-009", "D-45"], audited=True)
+   perm="accounting.period.close", scope="Tenant", idem=True, body="VersionOnly", resp="Period", conflict=True,
+   reqs=["ACC-009", "D-45", "AB-19"], audited=True,
+   desc="Only a period that has ended, after every earlier one, with no draft dated in it (409 period-not-ended, "
+        "earlier-period-open, period-has-drafts with context.drafts; period-closed if already closed). Never reopened in the MVP. "
+        "Emits accounting.period-closed v1.")
 op("get", "/accounting/reports/trial-balance", "getTrialBalance", "Accounting", "تراز آزمایشی", perm="accounting.read",
    scope="Branch", params=[{"$ref": "#/components/parameters/From"}, {"$ref": "#/components/parameters/To"}],
    resp="TrialBalanceRow", list_of=True, reqs=["ACC-007"])

@@ -154,9 +154,8 @@ public sealed class JournalTests : IClassFixture<ApiFactory>, IAsyncLifetime
         Assert.Contains("requires a detail", (await Body(await Idem(owner, "/api/v1/accounting/journals", noDetail))).GetProperty("errors").GetProperty("lines")[0].GetString(),
             StringComparison.Ordinal);
 
-        // a draft dated in the closed month cannot be posted (DI-042); a date outside every period has no period at all
-        Guid old = (await Body(await Idem(owner, "/api/v1/accounting/journals", Sale(200, DateTimeOffset.UtcNow.AddDays(-20))))).GetProperty("id").GetGuid();
-        Assert.Equal("period-closed", await Code(await Idem(owner, $"/api/v1/accounting/journals/{old}/post", null)));
+        // nothing, not even a draft, is dated in the closed month (DI-042, ACC-009); a date outside every period has no period at all
+        Assert.Equal("period-closed", await Code(await Idem(owner, "/api/v1/accounting/journals", Sale(200, DateTimeOffset.UtcNow.AddDays(-20)))));
         Assert.Equal("no-open-period", await Code(await Idem(owner, "/api/v1/accounting/journals", Sale(200, DateTimeOffset.UtcNow.AddYears(-3)))));
     }
 

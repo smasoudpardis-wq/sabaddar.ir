@@ -4,6 +4,7 @@
 --   RC030  entitlement-exceeded:<resource>:<cap>  (platform.enforce_entitlement; PostgresUnitOfWork -> 403, TEN-003)
 --   RC031  a sale state transition outside D02 §6.1, or holding/cancelling a sale with payments in force (sales.sale_transition)
 --   RC032  a stock count moves Open → Closed → Confirmed; its snapshot and entries are written while Open only (inv.count_guard)
+--   RC033  a fiscal period moves Open → Closed → Locked only; never reopened, its span never changes (acc.period_guard, D-45)
 -- Run as rc_migrator.  Shared helpers used by every module schema.
 SET ROLE rc_migrator;
 

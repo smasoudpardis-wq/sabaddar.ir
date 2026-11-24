@@ -12,7 +12,8 @@ public sealed record JournalView(Guid Id, string Status, DateTimeOffset Effectiv
 
 public sealed record AccountView(Guid Id, string Code, string Name, string AccountType, Guid? ParentId, bool IsSystem, bool RequiresDetail, bool IsPostable);
 
-public sealed record PeriodView(Guid Id, int FiscalYear, int PeriodNo, DateTimeOffset Start, DateTimeOffset End, string Status);
+public sealed record PeriodView(Guid Id, int FiscalYear, int PeriodNo, DateTimeOffset Start, DateTimeOffset End, string Status,
+    DateTimeOffset? ClosedAt = null, Guid? ClosedBy = null, int Version = 1);
 
 public enum AccountingOutcome
 {
@@ -25,6 +26,10 @@ public enum AccountingOutcome
     UnknownAccount,
     DuplicateCode,
     UnknownRole,
+    PeriodNotEnded,
+    EarlierPeriodOpen,
+    PeriodHasDrafts,
+    VersionConflict,
 }
 
 public sealed record AccountingResult<T>(AccountingOutcome Outcome, T? Value, string? Detail = null);
@@ -78,6 +83,13 @@ public interface IJournals
         CancellationToken cancellationToken);
 
     Task<IReadOnlyList<PeriodView>> PeriodsAsync(IUnitOfWorkScope scope, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// ACC-009 / D-45: closes a period that has ended, after every earlier one, with no draft dated in it (post or delete
+    /// them first). Nothing can be posted into it afterwards and it is never reopened; <c>Detail</c> carries the draft count.
+    /// </summary>
+    Task<AccountingResult<PeriodView>> ClosePeriodAsync(IUnitOfWorkScope scope, Guid periodId, int expectedVersion, Guid closedBy, DateTimeOffset now,
+        CancellationToken cancellationToken);
 
     Task<AccountingResult<JournalView>> CreateDraftAsync(IUnitOfWorkScope scope, DateTimeOffset effectiveAt, string? description,
         IReadOnlyList<JournalLineSpec> lines, CancellationToken cancellationToken);

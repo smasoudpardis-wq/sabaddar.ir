@@ -85,15 +85,71 @@ public sealed class PostgresJournals : IJournals
     public async Task<IReadOnlyList<PeriodView>> PeriodsAsync(IUnitOfWorkScope scope, CancellationToken cancellationToken)
     {
         await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
-            "SELECT id, fiscal_year, period_no, lower(span), upper(span), status FROM acc.fiscal_period ORDER BY lower(span)");
-        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(cancellationToken);
+            $"SELECT {PeriodColumns} FROM acc.fiscal_period ORDER BY lower(span)");
+        return await ReadPeriodsAsync(cmd, cancellationToken);
+    }
+
+    private const string PeriodColumns = "id, fiscal_year, period_no, lower(span), upper(span), status, closed_at, closed_by, version";
+
+    private static async Task<IReadOnlyList<PeriodView>> ReadPeriodsAsync(NpgsqlCommand cmd, CancellationToken ct)
+    {
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct);
         var list = new List<PeriodView>();
-        while (await r.ReadAsync(cancellationToken))
+        while (await r.ReadAsync(ct))
         {
-            list.Add(new PeriodView(r.GetGuid(0), r.GetInt32(1), r.GetInt32(2), r.GetFieldValue<DateTimeOffset>(3), r.GetFieldValue<DateTimeOffset>(4), r.GetString(5)));
+            list.Add(new PeriodView(r.GetGuid(0), r.GetInt32(1), r.GetInt32(2), r.GetFieldValue<DateTimeOffset>(3), r.GetFieldValue<DateTimeOffset>(4), r.GetString(5),
+                r.IsDBNull(6) ? null : r.GetFieldValue<DateTimeOffset>(6), r.IsDBNull(7) ? null : r.GetGuid(7), r.GetInt32(8)));
         }
 
         return list;
+    }
+
+    public async Task<AccountingResult<PeriodView>> ClosePeriodAsync(IUnitOfWorkScope scope, Guid periodId, int expectedVersion, Guid closedBy,
+        DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        var s = (PostgresUnitOfWorkScope)scope;
+        PeriodView? period;
+        await using (NpgsqlCommand cmd = s.Command($"SELECT {PeriodColumns} FROM acc.fiscal_period WHERE id = $1 FOR UPDATE"))   // postings hold FOR SHARE
+        {
+            cmd.Parameters.Add(new NpgsqlParameter { Value = periodId });
+            period = (await ReadPeriodsAsync(cmd, cancellationToken)).SingleOrDefault();
+        }
+
+        if (period is null)
+        {
+            return new(AccountingOutcome.NotFound, null);
+        }
+
+        if (period.Status != "Open")
+        {
+            return new(AccountingOutcome.PeriodClosed, period);
+        }
+
+        if (period.Version != expectedVersion)
+        {
+            return new(AccountingOutcome.VersionConflict, period);
+        }
+
+        if (period.End > now)
+        {
+            return new(AccountingOutcome.PeriodNotEnded, period);   // today's sales would have nowhere to go (D02 UC-02 8d)
+        }
+
+        if (await ScalarAsync<bool>(s, "SELECT EXISTS (SELECT 1 FROM acc.fiscal_period WHERE status = 'Open' AND upper(span) <= $1)", cancellationToken,
+                period.Start.UtcDateTime))
+        {
+            return new(AccountingOutcome.EarlierPeriodOpen, period);
+        }
+
+        long drafts = await ScalarAsync<long>(s, "SELECT count(*) FROM acc.journal_entry WHERE period_id = $1 AND status = 'Draft'", cancellationToken, periodId);
+        if (drafts > 0)
+        {
+            return new(AccountingOutcome.PeriodHasDrafts, period, drafts.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        await ExecAsync(s, "UPDATE acc.fiscal_period SET status = 'Closed', closed_at = $2, closed_by = $3, version = version + 1 WHERE id = $1", cancellationToken,
+            periodId, now.UtcDateTime, closedBy);
+        return new(AccountingOutcome.Done, period with { Status = "Closed", ClosedAt = now, ClosedBy = closedBy, Version = period.Version + 1 });
     }
 
     public async Task<AccountingResult<JournalView>> CreateDraftAsync(IUnitOfWorkScope scope, DateTimeOffset effectiveAt, string? description,
@@ -109,6 +165,11 @@ public sealed class PostgresJournals : IJournals
         if (await PeriodOfAsync(s, effectiveAt, cancellationToken) is not { } period)
         {
             return new(AccountingOutcome.NoOpenPeriod, null);
+        }
+
+        if (period.Status != "Open")
+        {
+            return new(AccountingOutcome.PeriodClosed, null);   // ACC-009: nothing more is written into a closed period, drafts included
         }
 
         Guid id = await InsertAsync(s, period.Id, effectiveAt, description, null, null, lines, cancellationToken);
@@ -213,9 +274,11 @@ public sealed class PostgresJournals : IJournals
 
         // ACC-009: an event whose period is already closed is posted today, in the open period, referring to its source
         DateTimeOffset effective = draft.EffectiveAt;
+        string? description = draft.Description;
         if (await PeriodOfAsync(s, effective, cancellationToken) is not { Status: "Open" })
         {
             effective = DateTimeOffset.UtcNow;
+            description = $"{draft.Description} (دیررس؛ رویداد {draft.EffectiveAt.UtcDateTime:yyyy-MM-dd HH:mm} UTC در دوره بسته)";
         }
 
         if (await PeriodOfAsync(s, effective, cancellationToken) is not { Status: "Open" } period)
@@ -223,7 +286,7 @@ public sealed class PostgresJournals : IJournals
             return new(AccountingOutcome.NoOpenPeriod, null);
         }
 
-        Guid id = await InsertAsync(s, period.Id, effective, draft.Description, (draft.SourceType, draft.SourceId, draft.Purpose, draft.RuleVersion),
+        Guid id = await InsertAsync(s, period.Id, effective, description, (draft.SourceType, draft.SourceId, draft.Purpose, draft.RuleVersion),
             null, lines, cancellationToken);
         await ExecAsync(s, "UPDATE acc.journal_entry SET status = 'Posted', posted_at = now() WHERE id = $1", cancellationToken, id);
         return new(AccountingOutcome.Done, await GetAsync(scope, id, cancellationToken));

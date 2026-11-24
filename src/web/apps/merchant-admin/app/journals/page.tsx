@@ -10,6 +10,7 @@ type Journal = {
   reversalOf: string | null; reversedBy: string | null; lines: JLine[];
 };
 type Line = { accountId: string; detailId: string; debit: string; credit: string };
+type Period = { id: string; fiscalYear: number; periodNo: number; start: string; end: string; status: string; closedAt: string | null; version: number };
 
 const EMPTY: Line = { accountId: '', detailId: '', debit: '', credit: '' };
 const digits = (v: string) => v.replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d))).replace(/[,٬\s]/g, '');
@@ -21,16 +22,21 @@ const ERRORS: Record<string, string> = {
   'period-closed': 'دوره مالی این تاریخ بسته است.',
   'no-open-period': 'برای این تاریخ دوره مالی باز وجود ندارد.',
   unbalanced: 'جمع بدهکار و بستانکار برابر نیست.',
+  'period-not-ended': 'این دوره هنوز تمام نشده است؛ دوره پس از پایانش بسته می‌شود.',
+  'earlier-period-open': 'اول دوره‌های قبلی را ببندید.',
+  'period-has-drafts': 'پیش‌نویس‌های این دوره را اول ثبت قطعی یا حذف کنید.',
 };
 
 /**
  * US-112 / ACC-003 / ACC-006: the accountant's manual entries. A draft is checked for balance as it is written, posted
  * once, or deleted while still a draft; a posted entry is never changed, only reversed by its mirror image, dated today.
+ * US-113 / ACC-009: a period that has ended is closed, in order; nothing is dated in it afterwards and it is never reopened.
  */
 export default function JournalsPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [journals, setJournals] = useState<Journal[] | null>(null);
+  const [periods, setPeriods] = useState<Period[]>([]);
   const [description, setDescription] = useState('');
   const [lines, setLines] = useState<Line[]>([{ ...EMPTY }, { ...EMPTY }]);
   const [reason, setReason] = useState<Record<string, string>>({});
@@ -43,6 +49,8 @@ export default function JournalsPage() {
     if (s.ok) setSuppliers((await s.json()).items);
     const j = await fetch('/bff/accounting/journals?limit=50', { cache: 'no-store' });
     setJournals(j.ok ? (await j.json()).items : null);
+    const p = await fetch('/bff/accounting/periods', { cache: 'no-store' });
+    if (p.ok) setPeriods(await p.json());
   }
   useEffect(() => { void load(); }, []);
 
@@ -148,6 +156,22 @@ export default function JournalsPage() {
           {journals.length === 0 && <li>هنوز سندی ثبت نشده است.</li>}
         </ul>
       )}
+
+      <h2>دوره‌های مالی</h2>
+      <ul data-testid="period-list">
+        {periods.map((p) => (
+          <li key={p.id} data-period={p.periodNo} data-status={p.status}>
+            {p.fiscalYear.toLocaleString('fa-IR', { useGrouping: false })}/{p.periodNo.toLocaleString('fa-IR')} ·{' '}
+            {new Date(p.start).toLocaleDateString('fa-IR')} تا {new Date(new Date(p.end).getTime() - 1).toLocaleDateString('fa-IR')} ·{' '}
+            {p.status === 'Open' ? 'باز' : `بسته${p.closedAt ? ` (${new Date(p.closedAt).toLocaleDateString('fa-IR')})` : ''}`}
+            {p.status === 'Open' && (
+              <>{' '}<button type="button" style={{ minHeight: 44 }} data-testid={`period-close-${p.periodNo}`}
+                onClick={() => void call(`/bff/accounting/periods/${p.id}/close`, 'POST', { expectedVersion: p.version })}>بستن دوره</button></>
+            )}
+          </li>
+        ))}
+      </ul>
+      <p>دوره بسته دوباره باز نمی‌شود؛ رویدادهای دیررسِ دوره‌ی بسته (مثلاً برگشت) با تاریخ امروز در دوره‌ی باز ثبت می‌شوند.</p>
       <p><a href="/">بازگشت</a></p>
     </section>
   );

@@ -520,10 +520,50 @@ v1.MapPut("/accounting/account-mappings", async (AccountMappingInput body, Reque
     })
     .RequirePermission(Permissions.AccountingJournalPost);
 
+object PeriodJson(PeriodView p) => new { p.Id, p.FiscalYear, p.PeriodNo, start = p.Start, end = p.End, p.Status, p.ClosedAt, p.ClosedBy, p.Version };
+
 v1.MapGet("/accounting/periods", async (RequestContext ctx, IUnitOfWork uow, IJournals journals, CancellationToken ct) =>
-        Results.Ok((await uow.ExecuteAsync(ctx, (s, c) => journals.PeriodsAsync(s, c), ct))
-            .Select(p => new { p.Id, p.FiscalYear, p.PeriodNo, start = p.Start, end = p.End, p.Status })))
+        Results.Ok((await uow.ExecuteAsync(ctx, (s, c) => journals.PeriodsAsync(s, c), ct)).Select(PeriodJson)))
     .RequirePermission(Permissions.AccountingRead);
+
+// ACC-009 / D-45 (US-113): closing a period that has ended, in order, with no drafts left in it. Nothing is posted into it
+// afterwards (DI-042, in the DB too); a late event is posted today in the open period, referring to its source.
+v1.MapIdempotentPost<VersionInput>("/accounting/periods/{periodId:guid}/close", "accounting.close-period", async (body, scope, http, ct) =>
+    {
+        RequestContext ctx = http.RequestServices.GetRequiredService<RequestContext>();
+        Guid periodId = Guid.Parse((string)http.GetRouteValue("periodId")!, System.Globalization.CultureInfo.InvariantCulture);
+        if (body.ExpectedVersion is not int expected)
+        {
+            return CommandResult.Fail(Problems.Validation(http, new Dictionary<string, string[]> { ["expectedVersion"] = ["required"] }));
+        }
+
+        DateTimeOffset now = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
+        var r = await http.RequestServices.GetRequiredService<IJournals>().ClosePeriodAsync(scope, periodId, expected, ctx.User!.Value.Value, now, ct);
+        IResult? refused = r.Outcome switch
+        {
+            AccountingOutcome.Done => null,
+            AccountingOutcome.NotFound => Problems.NotFound(http),
+            AccountingOutcome.PeriodClosed => Problems.Create(http, StatusCodes.Status409Conflict, "period-closed", "The fiscal period is already closed"),
+            AccountingOutcome.VersionConflict => Problems.Create(http, StatusCodes.Status409Conflict, "version-conflict", "The period changed; reload it"),
+            AccountingOutcome.PeriodNotEnded => Problems.Create(http, StatusCodes.Status409Conflict, "period-not-ended",
+                "A period is closed once it has ended; today's documents need an open period"),
+            AccountingOutcome.EarlierPeriodOpen => Problems.Create(http, StatusCodes.Status409Conflict, "earlier-period-open", "Close the earlier periods first"),
+            AccountingOutcome.PeriodHasDrafts => Problems.WithContext(http, StatusCodes.Status409Conflict, "period-has-drafts",
+                "Post or delete the draft entries dated in this period first", new { drafts = int.Parse(r.Detail!, System.Globalization.CultureInfo.InvariantCulture) }),
+            _ => AccountingProblem(http, r.Outcome, r.Detail),
+        };
+        if (refused is not null) return CommandResult.Fail(refused);
+
+        PeriodView period = r.Value!;
+        await http.RequestServices.GetRequiredService<IOutbox>().AddAsync(scope, "Accounting", "accounting.period-closed", 1, period.Id, new
+        {
+            periodId = period.Id, period.FiscalYear, period.PeriodNo, start = period.Start, end = period.End, closedAt = period.ClosedAt,
+        }, causationId: null, ct);
+        await Audit(http, scope, ActorOf(ctx, http), new AuditEntry("accounting.period.closed", "FiscalPeriod", period.Id.ToString(), null,
+            new { period.FiscalYear, period.PeriodNo }), ct);
+        return CommandResult.Ok(PeriodJson(period));
+    })
+    .RequirePermission(Permissions.AccountingPeriodClose);
 
 v1.MapGet("/accounting/journals", async (RequestContext ctx, IUnitOfWork uow, IJournals journals, HttpContext http, DateTimeOffset? from, DateTimeOffset? to,
         string? sourceType, string? cursor, int? limit, CancellationToken ct) =>

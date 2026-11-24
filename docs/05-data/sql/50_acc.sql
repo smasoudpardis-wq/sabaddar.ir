@@ -52,11 +52,36 @@ CREATE TABLE acc.fiscal_period (
   period_no   int  NOT NULL CHECK (period_no BETWEEN 1 AND 12),
   span        tstzrange NOT NULL CHECK (NOT isempty(span) AND lower_inc(span) AND NOT upper_inc(span)),
   status      text NOT NULL DEFAULT 'Open' CHECK (status IN ('Open','Closed','Locked')),
+  closed_at   timestamptz,                                       -- ACC-009 (US-113): set once, when the period closes
+  closed_by   uuid,
+  version     int  NOT NULL DEFAULT 1,
   PRIMARY KEY (tenant_id, id),
   UNIQUE (tenant_id, fiscal_year, period_no),
-  EXCLUDE USING gist (tenant_id WITH =, span WITH &&)           -- periods never overlap
+  EXCLUDE USING gist (tenant_id WITH =, span WITH &&),          -- periods never overlap
+  CHECK ((status = 'Open') = (closed_at IS NULL))
 );
 CALL core.enable_tenant_rls('acc.fiscal_period');
+
+-- ACC-009 / D-45 / AB-19: a period only moves forward, Open → Closed → Locked; it is never reopened in the MVP and its
+-- span, year and number never change. A period closed without a time (an operator, a test) is stamped now. The roles
+-- have no DELETE on periods.
+CREATE OR REPLACE FUNCTION acc.period_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.status <> 'Open' AND NEW.closed_at IS NULL THEN NEW.closed_at := now(); END IF;
+    RETURN NEW;
+  END IF;
+  IF (NEW.span, NEW.fiscal_year, NEW.period_no) IS DISTINCT FROM (OLD.span, OLD.fiscal_year, OLD.period_no)
+     OR NOT ((OLD.status = NEW.status AND NEW.closed_at IS NOT DISTINCT FROM OLD.closed_at)
+             OR (OLD.status = 'Open' AND NEW.status = 'Closed') OR (OLD.status = 'Closed' AND NEW.status = 'Locked'))
+     OR (OLD.status <> 'Open' AND NEW.closed_at IS DISTINCT FROM OLD.closed_at) THEN
+    RAISE EXCEPTION 'fiscal period % moves only Open -> Closed -> Locked (D-45)', OLD.id USING ERRCODE = 'RC033';
+  END IF;
+  IF OLD.status = 'Open' AND NEW.status = 'Closed' AND NEW.closed_at IS NULL THEN NEW.closed_at := now(); END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tr_period_guard BEFORE INSERT OR UPDATE ON acc.fiscal_period
+  FOR EACH ROW EXECUTE FUNCTION acc.period_guard();
 
 CREATE TABLE acc.journal_entry (
   tenant_id    uuid NOT NULL,

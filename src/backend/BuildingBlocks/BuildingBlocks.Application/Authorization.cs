@@ -56,6 +56,7 @@ public static class Permissions
     public const string ShiftSupervise = "shift.supervise";
     public const string AccountingRead = "accounting.read";
     public const string AccountingJournalPost = "accounting.journal.post";
+    public const string AccountingPeriodClose = "accounting.period.close";
 
     public static readonly IReadOnlyList<string> All =
     [

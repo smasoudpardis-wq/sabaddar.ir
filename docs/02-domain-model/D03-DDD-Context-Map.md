@@ -685,7 +685,7 @@ Handle(FinalizeSale cmd):                                   // خارج از ت�
 | DE-INV-002 | `inventory.stock-below-reorder` v1 | Inventory | Notifications (داخلی) | variantId، warehouseId، onHand، reorderPoint |
 | DE-INV-004 | `inventory.projection-drift-detected` v1 | Inventory | Ops Alert | variantId، warehouseId، ledger، projection |
 | DE-ACC-001 | `accounting.journal-posted` v1 | Accounting | Reporting | journalId، sourceRef، lines[{accountId, detailRef?, debit, credit}] |
-| DE-ACC-003 | `accounting.period-closed` v1 | Accounting | Reporting، TaxCompliance (هشدار) | periodId |
+| DE-ACC-003 | `accounting.period-closed` v1 | Accounting | Reporting، TaxCompliance (هشدار) | periodId، fiscalYear، periodNo، start، end، closedAt (منتشر از US-113) |
 | DE-AR-001 | `receivables.credit-charged` v1 | Receivables | Reporting | accountId، tenantCustomerId، saleId، amount، dueDate |
 | DE-AR-002 | `receivables.collection-recorded` v1 | Receivables | Notifications، Reporting | collectionId، amount، allocations[] |
 | DE-AR-004 | `receivables.due-reminder-requested` v1 | Receivables (PM-07) | Notifications | tenantCustomerId، openCharges[] |

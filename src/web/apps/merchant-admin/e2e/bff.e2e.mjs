@@ -467,6 +467,19 @@ try {
   await dropped.getByTestId('journal-delete').click();
   await dropped.waitFor({ state: 'detached' });
   check('Z04', 'a draft that will not be posted is deleted (D02 §6.3)', true);
+  // Z05–Z06 US-113: the first month of the year has ended and is closed; the current month cannot be closed yet (ACC-009)
+  const current = await page.evaluate(async () => {
+    const now = Date.now();
+    const list = await (await fetch('/bff/accounting/periods', { cache: 'no-store' })).json();
+    return list.find((p) => Date.parse(p.start) <= now && now < Date.parse(p.end))?.periodNo;
+  });
+  await page.getByTestId('period-close-1').click();
+  await page.locator('[data-testid="period-list"] [data-period="1"][data-status="Closed"]').waitFor();
+  check('Z05', 'a month that has ended is closed and shows as closed (ACC-009)', true);
+  await page.getByTestId(`period-close-${current}`).click();
+  await page.getByTestId('journal-error').filter({ hasText: 'تمام نشده' }).waitFor();
+  check('Z06', 'the current month cannot be closed: today\'s documents need an open period (D02 UC-02 8d)',
+    (await page.locator(`[data-testid="period-list"] [data-period="${current}"][data-status="Open"]`).count()) === 1, `current=${current}`);
   await shot(page, 'journals');
   // V01–V04 US-082: on a paired device the owner opens a shift; a barcode reader is read without focus (keyboard wedge),
   // a double read within 1.5 s is ignored, a later scan adds to the line, and a line can be removed

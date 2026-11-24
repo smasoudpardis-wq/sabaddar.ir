@@ -5738,6 +5738,9 @@ paths:
       tags:
       - Accounting
       summary: بستن دوره (بازگشایی در MVP ممکن نیست)
+      description: Only a period that has ended, after every earlier one, with no draft dated in it (409 period-not-ended,
+        earlier-period-open, period-has-drafts with context.drafts; period-closed if already closed). Never reopened in the
+        MVP. Emits accounting.period-closed v1.
       security: *id001
       parameters:
       - name: periodId
@@ -5786,6 +5789,7 @@ paths:
       x-requirements:
       - ACC-009
       - D-45
+      - AB-19
       x-audited: true
   /accounting/reports/trial-balance:
     get:
@@ -11493,6 +11497,19 @@ components:
           - Open
           - Closed
           - Locked
+        closedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        closedBy:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        version:
+          type: integer
+          format: int32
       required:
       - id
       - fiscalYear
@@ -11500,6 +11517,9 @@ components:
       - start
       - end
       - status
+      - closedAt
+      - closedBy
+      - version
     PinInput:
       type: object
       additionalProperties: false
@@ -14564,6 +14584,15 @@ x-error-catalog:
   period-closed:
     status: 409
     meaning: Fiscal period closed (DI-042)
+  period-has-drafts:
+    status: 409
+    meaning: Draft entries are dated in the period; post or delete them (ACC-009)
+  earlier-period-open:
+    status: 409
+    meaning: Periods are closed in order (ACC-009)
+  period-not-ended:
+    status: 409
+    meaning: A period is closed once it has ended (ACC-009)
   no-open-period:
     status: 422
     meaning: No fiscal period covers this date (ACC-001.1)
