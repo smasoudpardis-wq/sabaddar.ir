@@ -179,6 +179,69 @@ platformApi.MapPut("/industry-profiles/{code}", async (string code, IndustryProf
         return Results.Ok(IndustryJson(template));
     });
 
+// IAM-008 / US-027 (platform side): PlatformSupport asks a store for time-limited access with a reason; only its TenantOwner
+// approves (SoD-05, store side). While the grant is in force the operator sees a read-only, masked view (no customer data,
+// no payment references or card digits), and every look is in the store's audit with actor kind Support.
+RouteGroupBuilder supportApi = app.MapGroup("/api/v1/platform").RequireAuthorization(ServiceCollectionExtensions.PlatformSupportPolicy);
+string OperatorOf(HttpContext http) => $"{http.User.FindFirst("iss")?.Value}|{http.User.FindFirst("sub")?.Value}";
+AuditActor SupportActor(HttpContext http) => new(null, "Support", ["PlatformSupport"], null, null, ClientIp(http));
+
+supportApi.MapPost("/tenants/{tenantId:guid}/support-access-requests", async (Guid tenantId, SupportAccessRequestInput body, IUnitOfWork uow,
+        ISupportAccess support, ITenantProfileQuery profiles, HttpContext http, CancellationToken ct) =>
+    {
+        if (SupportAccessRules.Problem(body.Reason, body.DurationMinutes) is { } problem)
+        {
+            return Problems.Validation(http, new Dictionary<string, string[]> { [problem.Split(':')[0]] = [problem] });
+        }
+
+        string op = OperatorOf(http);
+        if (await profiles.GetAsync(new TenantId(tenantId), ct) is null) return Problems.NotFound(http);
+        SupportAccessView created = await uow.ExecuteAsync(new FixedTenantContext(new TenantId(tenantId)), async (s, c) =>
+        {
+            SupportAccessView v = await support.RequestAsync(s, op, body.Reason!.Trim(), body.DurationMinutes!.Value, c);
+            await Audit(http, s, SupportActor(http), new AuditEntry("support.access.requested", "SupportAccessRequest", v.Id.ToString(), v.Reason,
+                new { @operator = op, v.DurationMinutes }), c);
+            return v;
+        }, ct);
+        return Results.Created($"/api/v1/support-access-requests/{created.Id}", created);
+    });
+
+supportApi.MapGet("/support/tenants/{tenantId:guid}/sales", async (Guid tenantId, IUnitOfWork uow, ISupportAccess support, ISales sales,
+        HttpContext http, CancellationToken ct) =>
+    {
+        string op = OperatorOf(http);
+        return await uow.ExecuteAsync(new FixedTenantContext(new TenantId(tenantId)), async (s, c) =>
+        {
+            // no grant in force for this operator in this store: indistinguishable from a store that does not exist
+            if (await support.ActiveGrantAsync(s, op, c) is not { } grant)
+            {
+                return Problems.Create(http, StatusCodes.Status403Forbidden, "support-access-required",
+                    "The store's owner has not granted you access, or the grant has ended");
+            }
+
+            IReadOnlyList<SaleView> recent = await sales.RecentAsync(s, 50, c);
+            await Audit(http, s, SupportActor(http), new AuditEntry("support.sales.viewed", "Sale", null, null,
+                new { @operator = op, grant = grant.Id, count = recent.Count }), c);
+            return Results.Ok(new
+            {
+                grantedUntil = grant.GrantedUntil,
+                items = recent.Select(x =>
+                {
+                    var t = SaleMath.Totals(x.Lines);
+                    return new
+                    {
+                        x.Id, x.Status, x.InvoiceNo, x.BranchId, x.RegisterId, x.Channel, x.LastActivityAt, x.FinalizedAt,
+                        lines = x.Lines.Select(l => new { l.Name, qty = Qty(l.Qty), l.Unit, lineTotal = Money(l.LineTotal) }),
+                        totals = new { gross = Money(t.Gross), discount = Money(t.Discount), tax = Money(t.Tax), total = Money(t.Total), paid = Money(x.Paid) },
+                        // IAM-008 masking: how it was paid, never the references, card digits or who the customer is
+                        tenders = (x.Tenders ?? []).Select(td => new { td.Method, amount = Money(td.Amount), status = td.Voided ? "Voided" : "Confirmed" }),
+                        customer = (object?)null,
+                    };
+                }),
+            });
+        }, ct);
+    });
+
 // getMe (D07). Effective permissions of the active tenant (US-025); MFA state from the token (US-022).
 v1.MapGet("/me", (RequestContext ctx) => Results.Ok(new
 {
@@ -3929,6 +3992,7 @@ internal sealed record CountCreateInput(Guid? WarehouseId, string? Scope, Guid[]
 internal sealed record CountEntryInput(Guid? VariantId, string? Qty);
 internal sealed record CountEntriesInput(CountEntryInput?[]? Entries, string? ClientBatchId);
 internal sealed record VersionInput(int? ExpectedVersion);
+internal sealed record SupportAccessRequestInput(string? Reason, int? DurationMinutes);
 internal sealed record ReceiptOverridesInput(string? LogoObjectKey, string? FooterText, string? Signature);
 internal sealed record ReceiptTemplateUpdateInput(int? ExpectedVersion, ReceiptOverridesInput? Overrides);
 internal sealed record IndustryProfileUpdateInput(int? ExpectedVersion, string? LegalText, string[]? LockedFields, string? Reason);

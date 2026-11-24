@@ -57,7 +57,7 @@ public sealed class SupportAccessTests : IClassFixture<ApiFactory>, IAsyncLifeti
         return await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    /// <summary>What the platform side (US-171) will do: Support files a request for this store.</summary>
+    /// <summary>A request as the platform side files it, here with a chosen age (the API path is tested in AT017_...).</summary>
     private async Task<Guid> Request(int minutes = 60, TimeSpan? age = null)
     {
         Guid id = Guid.CreateVersion7();
@@ -133,5 +133,68 @@ public sealed class SupportAccessTests : IClassFixture<ApiFactory>, IAsyncLifeti
         JsonElement trail = await Body(await owner.GetAsync("/api/v1/audit?action=iam.support-access."));
         string[] actions = [.. trail.GetProperty("items").EnumerateArray().Select(e => e.GetProperty("action").GetString()!)];
         Assert.Equal(["iam.support-access.revoked", "iam.support-access.approved"], actions);
+    }
+
+    private HttpClient Platform(string sub, string role = "PlatformSupport")
+    {
+        HttpClient c = _factory.CreateClient();
+        var claims = new Dictionary<string, object> { ["realm_access"] = new Dictionary<string, object> { ["roles"] = new[] { role } } };
+        c.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", ApiFactory.Token(sub, ApiFactory.PlatformIssuer, ApiFactory.PlatformAudience,
+            acr: "mfa", authTime: DateTimeOffset.UtcNow, extraClaims: claims));
+        return c;
+    }
+
+    [DbFact]
+    public async Task AT017_support_asks_the_owner_approves_and_support_sees_a_masked_audited_view_only_while_the_grant_lasts()
+    {
+        HttpClient support = Platform("support-9");
+        string sales = $"/api/v1/platform/support/tenants/{_tenant}/sales";
+        HttpResponseMessage before = await support.GetAsync(sales);
+        Assert.Equal(HttpStatusCode.Forbidden, before.StatusCode);
+        Assert.Equal("support-access-required", (await Body(before)).GetProperty("code").GetString());
+
+        string ask = $"/api/v1/platform/tenants/{_tenant}/support-access-requests";
+        Assert.Equal(HttpStatusCode.BadRequest, (await support.PostAsJsonAsync(ask, new { reason = "کوتاه", durationMinutes = 30 })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await support.PostAsJsonAsync(ask, new { reason = "بررسی خطای گزارش فروش شعبه", durationMinutes = 300 })).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await support.PostAsJsonAsync($"/api/v1/platform/tenants/{Guid.CreateVersion7()}/support-access-requests",
+            new { reason = "بررسی خطای گزارش فروش شعبه", durationMinutes = 30 })).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Platform("admin-1", "PlatformSuperAdmin").PostAsJsonAsync(ask,
+            new { reason = "بررسی خطای گزارش فروش شعبه", durationMinutes = 30 })).StatusCode);   // JIT is PlatformSupport's (D06 §6.2)
+        Assert.Equal(HttpStatusCode.Unauthorized, (await As(_ownerSub).PostAsJsonAsync(ask,
+            new { reason = "بررسی خطای گزارش فروش شعبه", durationMinutes = 30 })).StatusCode);   // a merchant token is not a platform token
+
+        HttpResponseMessage asked = await support.PostAsJsonAsync(ask, new { reason = "بررسی خطای گزارش فروش شعبه", durationMinutes = 30 });
+        Assert.Equal(HttpStatusCode.Created, asked.StatusCode);
+        JsonElement request = await Body(asked);
+        Assert.Equal(("Pending", "https://id.test/realms/platform|support-9"), (request.GetProperty("status").GetString(), request.GetProperty("requestedBy").GetString()));
+        Guid id = request.GetProperty("id").GetGuid();
+        Assert.Equal(HttpStatusCode.Forbidden, (await support.GetAsync(sales)).StatusCode);   // pending is not granted
+
+        Assert.Equal(HttpStatusCode.OK, (await As(_ownerSub).PostAsJsonAsync($"/api/v1/support-access-requests/{id}/decision", new { decision = "Approve" })).StatusCode);
+        HttpResponseMessage view = await support.GetAsync(sales);
+        Assert.Equal(HttpStatusCode.OK, view.StatusCode);
+        JsonElement body = await Body(view);
+        Assert.Equal(JsonValueKind.String, body.GetProperty("grantedUntil").ValueKind);
+        Assert.Equal(JsonValueKind.Array, body.GetProperty("items").ValueKind);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Platform("support-10").GetAsync(sales)).StatusCode);   // the grant is this operator's alone
+
+        await using var ds = NpgsqlDataSource.Create(Cs);
+        var kinds = await new PostgresUnitOfWork(ds).ExecuteAsync(new FixedTenantContext(new TenantId(_tenant)), async (s, ct) =>
+        {
+            await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)s).Command(
+                "SELECT action FROM audit.audit_record WHERE actor_kind = 'Support' ORDER BY seq");
+            await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct);
+            var list = new List<string>();
+            while (await r.ReadAsync(ct))
+            {
+                list.Add(r.GetString(0));
+            }
+
+            return list;
+        });
+        Assert.Equal(["support.access.requested", "support.sales.viewed"], kinds);
+
+        Assert.Equal(HttpStatusCode.OK, (await As(_ownerSub).DeleteAsync($"/api/v1/support-access-requests/{id}")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await support.GetAsync(sales)).StatusCode);   // ended early by the owner (AB-17)
     }
 }

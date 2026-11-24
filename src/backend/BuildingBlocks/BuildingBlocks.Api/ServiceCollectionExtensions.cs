@@ -37,6 +37,9 @@ public static class ServiceCollectionExtensions
     /// <summary>PlatformSuperAdmin with a second factor (D06 §6.2, AUTH-02): global templates and policies.</summary>
     public const string PlatformAdminPolicy = "platform-admin";
 
+    /// <summary>PlatformSupport with a second factor (D06 §6.2, IAM-008): asks for JIT access and uses it, nothing else.</summary>
+    public const string PlatformSupportPolicy = "platform-support";
+
     /// <summary>Roles of the platform realm, as Keycloak puts them in <c>realm_access.roles</c>.</summary>
     public static bool HasRealmRole(System.Security.Claims.ClaimsPrincipal user, string role)
     {
@@ -95,7 +98,9 @@ public static class ServiceCollectionExtensions
         services.AddAuthorizationBuilder()
             .AddPolicy(MerchantPolicy, p => p.RequireAuthenticatedUser())
             .AddPolicy(PlatformAdminPolicy, p => p.AddAuthenticationSchemes(PlatformScheme).RequireAuthenticatedUser()
-                .RequireClaim("acr", MfaPolicy.MfaAcr).RequireAssertion(c => HasRealmRole(c.User, "PlatformSuperAdmin")));
+                .RequireClaim("acr", MfaPolicy.MfaAcr).RequireAssertion(c => HasRealmRole(c.User, "PlatformSuperAdmin")))
+            .AddPolicy(PlatformSupportPolicy, p => p.AddAuthenticationSchemes(PlatformScheme).RequireAuthenticatedUser()
+                .RequireClaim("acr", MfaPolicy.MfaAcr).RequireAssertion(c => HasRealmRole(c.User, "PlatformSupport")));
         services.AddMemoryCache();
         services.AddScoped<RequestContext>();
         // Brute-force bounds for guessable secrets (D07 x-rate-limit): pairing codes, invitation links. Per identity.

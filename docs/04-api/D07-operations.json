@@ -2463,6 +2463,19 @@
   "idempotent": false
  },
  {
+  "operationId": "platformSupportListSales",
+  "method": "GET",
+  "path": "/platform/support/tenants/{tenantId}/sales",
+  "permission": null,
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [
+   "tenantId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
+ },
+ {
   "operationId": "platformListTaxPolicies",
   "method": "GET",
   "path": "/platform/tax-submission-policies",

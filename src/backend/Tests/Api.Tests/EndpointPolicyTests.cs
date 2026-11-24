@@ -59,9 +59,10 @@ public sealed class EndpointPolicyTests : IClassFixture<ApiFactory>
                 {
                     // the platform audience: no tenant permission, the platform realm's admin policy instead (D06 §6.2, TM-071)
                     if (!e.Metadata.GetOrderedMetadata<Microsoft.AspNetCore.Authorization.IAuthorizeData>()
-                            .Any(a => a.Policy == RetailCloud.BuildingBlocks.Api.ServiceCollectionExtensions.PlatformAdminPolicy))
+                            .Any(a => a.Policy is RetailCloud.BuildingBlocks.Api.ServiceCollectionExtensions.PlatformAdminPolicy
+                                     or RetailCloud.BuildingBlocks.Api.ServiceCollectionExtensions.PlatformSupportPolicy))
                     {
-                        problems.Add($"{method} {path} ({op.OperationId}): a platform operation without the platform-admin policy");
+                        problems.Add($"{method} {path} ({op.OperationId}): a platform operation without a platform-realm policy");
                     }
 
                     continue;

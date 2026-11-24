@@ -35,6 +35,33 @@ public sealed class PostgresSupportAccess : ISupportAccess
             : "UPDATE iam.support_access_request SET status = 'Rejected', decided_by = $2, decided_at = now() " +
               "WHERE id = $1 AND status = 'Pending' AND expires_at > now()", cancellationToken);
 
+    public async Task<SupportAccessView> RequestAsync(IUnitOfWorkScope scope, string requestedBy, string reason, int durationMinutes,
+        CancellationToken cancellationToken)
+    {
+        var s = (PostgresUnitOfWorkScope)scope;
+        Guid id = Guid.CreateVersion7();
+        await using (NpgsqlCommand cmd = s.Command(
+            "INSERT INTO iam.support_access_request (tenant_id, id, requested_by, reason, duration_minutes) VALUES (core.current_tenant(), $1, $2, $3, $4)"))
+        {
+            cmd.Parameters.Add(new NpgsqlParameter { Value = id });
+            cmd.Parameters.Add(new NpgsqlParameter { Value = requestedBy });
+            cmd.Parameters.Add(new NpgsqlParameter { Value = reason });
+            cmd.Parameters.Add(new NpgsqlParameter { Value = durationMinutes });
+            await cmd.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        return (await GetAsync(s, id, cancellationToken))!;
+    }
+
+    public async Task<SupportAccessView?> ActiveGrantAsync(IUnitOfWorkScope scope, string requestedBy, CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
+            Select + " WHERE requested_by = $1 AND status = 'Approved' AND granted_until > now() ORDER BY granted_until DESC LIMIT 1");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = requestedBy });
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(cancellationToken);
+        return await r.ReadAsync(cancellationToken) ? Read(r) : null;
+    }
+
     public Task<(SupportAccessOutcome, SupportAccessView?)> RevokeAsync(IUnitOfWorkScope scope, Guid id, Guid owner, CancellationToken cancellationToken) =>
         ChangeAsync(scope, id, owner,
             "UPDATE iam.support_access_request SET status = 'Revoked', revoked_by = $2, revoked_at = now() " +

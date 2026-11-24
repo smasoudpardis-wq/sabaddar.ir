@@ -8468,6 +8468,57 @@ paths:
       - IAM-008
       - SoD-05
       x-audited: true
+  /platform/support/tenants/{tenantId}/sales:
+    get:
+      operationId: platformSupportListSales
+      tags:
+      - Platform
+      summary: نمای فقط‌خواندنی و Masked فروش‌های اخیر در مدت دسترسی JIT
+      description: PlatformSupport with MFA, only while the store owner's grant to this operator is in force (403 support-access-required
+        otherwise). No customer data, payment references or card digits; every call is audited in the store with actor kind
+        Support.
+      security: *id005
+      parameters:
+      - name: tenantId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - items
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SupportSale'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-idempotent: false
+      x-requirements:
+      - IAM-008
+      - AT-017
+      x-audited: true
   /platform/tax-submission-policies:
     get:
       operationId: platformListTaxPolicies
@@ -13659,12 +13710,116 @@ components:
       properties:
         reason:
           type: string
+          description: 10-500 characters, shown to the store owner
         durationMinutes:
           type: integer
           format: int32
+          description: '15-240 (IAM-008: at most 4 h)'
       required:
       - reason
       - durationMinutes
+    SupportSale:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+        invoiceNo:
+          type:
+          - string
+          - 'null'
+        branchId:
+          type: string
+          format: uuid
+        registerId:
+          type: string
+          format: uuid
+        channel:
+          type: string
+        lastActivityAt:
+          type: string
+          format: date-time
+        finalizedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        lines:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              name:
+                type: string
+              qty:
+                $ref: '#/components/schemas/Quantity'
+              unit:
+                type: string
+              lineTotal:
+                $ref: '#/components/schemas/Money'
+            required:
+            - name
+            - qty
+            - unit
+            - lineTotal
+        totals:
+          type: object
+          additionalProperties: false
+          properties:
+            gross:
+              $ref: '#/components/schemas/Money'
+            discount:
+              $ref: '#/components/schemas/Money'
+            tax:
+              $ref: '#/components/schemas/Money'
+            total:
+              $ref: '#/components/schemas/Money'
+            paid:
+              $ref: '#/components/schemas/Money'
+          required:
+          - gross
+          - discount
+          - tax
+          - total
+          - paid
+        tenders:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              method:
+                type: string
+              amount:
+                $ref: '#/components/schemas/Money'
+              status:
+                type: string
+            required:
+            - method
+            - amount
+            - status
+        customer:
+          type:
+          - object
+          - 'null'
+          description: 'Always null: masked for support (IAM-008)'
+      required:
+      - id
+      - status
+      - invoiceNo
+      - branchId
+      - registerId
+      - channel
+      - lastActivityAt
+      - finalizedAt
+      - lines
+      - totals
+      - tenders
+      - customer
     TaxDashboard:
       type: object
       additionalProperties: false

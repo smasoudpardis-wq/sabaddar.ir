@@ -105,6 +105,9 @@ public interface ISales
     /// <summary>The branch's held carts, most recently active first, up to 100.</summary>
     Task<IReadOnlyList<SaleView>> HeldAsync(IUnitOfWorkScope scope, Guid branchId, CancellationToken cancellationToken);
 
+    /// <summary>The store's most recently active sales, newest first (IAM-008: what a support session may look at).</summary>
+    Task<IReadOnlyList<SaleView>> RecentAsync(IUnitOfWorkScope scope, int limit, CancellationToken cancellationToken);
+
     /// <summary>SAL-006: applies a payment to the locked bill (the database refuses more than the total, RC027); bumps the version.</summary>
     Task<SaleView> AddTenderAsync(IUnitOfWorkScope scope, Guid saleId, string method, long amount, Guid? paymentId, CancellationToken cancellationToken);
 }

@@ -174,6 +174,12 @@ public sealed class PostgresSales : ISales
         [.. (await ReadSalesAsync((PostgresUnitOfWorkScope)scope, "status = 'Held' AND branch_id = $1", branchId, cancellationToken))
             .OrderByDescending(x => x.LastActivityAt).Take(100)];
 
+    public async Task<IReadOnlyList<SaleView>> RecentAsync(IUnitOfWorkScope scope, int limit, CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
+        return await ReadSalesAsync((PostgresUnitOfWorkScope)scope, "true ORDER BY last_activity_at DESC, id DESC LIMIT $1", limit, cancellationToken);
+    }
+
     private async Task<SaleView> SetAsync(PostgresUnitOfWorkScope s, Guid saleId, string set, object?[] args, CancellationToken ct)
     {
         await using (NpgsqlCommand cmd = s.Command($"UPDATE sales.sale SET {set}, version = version + 1, last_activity_at = now() WHERE id = $1"))

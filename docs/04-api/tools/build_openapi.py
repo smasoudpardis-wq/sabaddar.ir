@@ -183,7 +183,13 @@ schema("ApprovalDecision", decision=("enum", ["Approve", "Reject"]),
        **{"comment?": "str", "pin?": ("desc", "str", "On-device approval: the approver's PIN (with approverId), registered terminal only"),
           "approverId?": "uuid"})
 schema("PinInput", pin=("desc", "str", "4-6 digits"))
-schema("SupportAccessRequestCreate", reason="str", durationMinutes="int")
+schema("SupportAccessRequestCreate", reason=("desc", "str", "10-500 characters, shown to the store owner"),
+       durationMinutes=("desc", "int", "15-240 (IAM-008: at most 4 h)"))
+schema("SupportSale", id="uuid", status="str", invoiceNo="str?", branchId="uuid", registerId="uuid", channel="str", lastActivityAt="dt",
+       finalizedAt="dt?", lines=[{"name": "str", "qty": "qty", "unit": "str", "lineTotal": "money"}],
+       totals={"gross": "money", "discount": "money", "tax": "money", "total": "money", "paid": "money"},
+       tenders=[{"method": "str", "amount": "money", "status": "str"}],
+       customer=("desc", "obj?", "Always null: masked for support (IAM-008)"))
 schema("SupportAccessRequest", id="uuid", requestedBy="str", reason="str", durationMinutes="int",
        status=("desc", ("enum", ["Pending", "Approved", "Rejected", "Expired", "Revoked"]),
                "Expired: a pending request after 24 h, or an approved one after grantedUntil"),
@@ -1348,6 +1354,11 @@ op("post", "/platform/tenants/{tenantId}/status", "platformChangeTenantStatus", 
 op("post", "/platform/tenants/{tenantId}/support-access-requests", "platformRequestSupportAccess", "Platform",
    "درخواست JIT (تأیید با Owner)", aud="platform", body="SupportAccessRequestCreate", resp="SupportAccessRequest",
    resp_code="201", reqs=["IAM-008", "SoD-05"], audited=True)
+op("get", "/platform/support/tenants/{tenantId}/sales", "platformSupportListSales", "Platform",
+   "نمای فقط‌خواندنی و Masked فروش‌های اخیر در مدت دسترسی JIT", aud="platform", resp="SupportSale", list_of=True,
+   reqs=["IAM-008", "AT-017"], audited=True,
+   desc="PlatformSupport with MFA, only while the store owner's grant to this operator is in force (403 support-access-required "
+        "otherwise). No customer data, payment references or card digits; every call is audited in the store with actor kind Support.")
 op("get", "/platform/tax-submission-policies", "platformListTaxPolicies", "Platform", "Policyهای مهلت مؤدیان", aud="platform",
    resp="TaxSubmissionPolicy", list_of=True, reqs=["BR-075", "TAX-009"])
 op("post", "/platform/tax-submission-policies", "platformCreateTaxPolicy", "Platform", "نسخه جدید Policy مهلت", aud="platform",
