@@ -514,11 +514,12 @@ try {
   await page.getByTestId('pos-aside-text').fill('مشتری آزمایشی');
   await page.getByTestId('pos-aside-submit').click();
   await page.locator('[data-testid="pos-held"] [data-note="مشتری آزمایشی"]').waitFor();
-  const emptyAfterHold = (await page.getByTestId('pos-lines').locator('tbody tr').count()) === 0;
+  // the page refreshes the cart and the held list separately: wait for each state instead of reading it at once
+  const emptyAfterHold = await page.getByTestId('pos-lines').locator('tbody tr').first().waitFor({ state: 'detached', timeout: 5000 }).then(() => true, () => false);
   await page.locator('[data-testid="pos-held"] [data-note="مشتری آزمایشی"] button').click();
   await page.locator('[data-sku="E2E-COLA"][data-qty="1"]').waitFor();
   check('V09', 'a cart is held with a note, the register is free for the next customer, and the cart is resumed (SAL-011)',
-    emptyAfterHold && (await page.locator('[data-testid="pos-held"] li').count()) === 0);
+    emptyAfterHold && await page.locator('[data-testid="pos-held"] li').first().waitFor({ state: 'detached', timeout: 5000 }).then(() => true, () => false));
   await page.getByTestId('pos-cancel').click();
   await page.getByTestId('pos-aside-text').fill('مشتری منصرف شد');
   await page.getByTestId('pos-aside-submit').click();
