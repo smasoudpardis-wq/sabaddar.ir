@@ -282,7 +282,10 @@ schema("CountResult", lines=[{"variantId": "uuid", "systemAtSnapshot": "qty", "m
                              "counted": "qty", "difference": ("desc", "str", "signed decimal"), "value": "money"}],
        totalValueDifference="money", approvalRequired="bool")
 schema("StockBalance", warehouseId="uuid", variantId="uuid", onHand="qty", reserved="qty", available="qty",
-       **{"wac?": "money", "value?": "money"}, belowReorderPoint="bool")
+       **{"wac?": "money", "value?": "money"}, reorderPoint=("desc", "qty?", "INV-010: the point at or below which the item is low; null if none"),
+       belowReorderPoint=("desc", "bool", "available (onHand − reserved) ≤ reorderPoint"),
+       **{"name?": ("desc", "str?", "With belowReorderPoint=true only"), "sku?": "str?"})
+schema("ReorderPointSet", warehouseId="uuid", variantId="uuid", reorderPoint=("desc", "qty?", "Base unit; null removes it"))
 schema("StockMovement", id="uuid", recordedAt="dt", effectiveAt="dt", type="str", qtyBase=("desc", "str", "signed decimal, base unit"),
        unitCost=("desc", "money", "Per base unit: the WAC of the moment, or the line's own cost for a receipt (INV-006)"),
        totalCost=("desc", "str", "Signed rials; Σ totalCost = the balance's value"), sourceType="str", sourceId="uuid", sourceLine="int",
@@ -951,6 +954,9 @@ op("get", "/inventory/movements", "listStockMovements", "Inventory", "کاردک
            {"$ref": "#/components/parameters/From"}, {"$ref": "#/components/parameters/To"}],
    resp="StockMovement", list_of=True, page=True, reqs=["INV-001", "RPT-001.1"],
    desc="Newest first, up to 200; from/to on effectiveAt. Without warehouseId the permission is needed store-wide.")
+op("put", "/inventory/reorder-points", "setReorderPoint", "Inventory", "نقطه سفارش یک کالا در یک انبار (null: حذف)",
+   perm="inventory.receipt.create", scope="Warehouse", body="ReorderPointSet", no_content=True, reqs=["INV-010"], audited=True,
+   desc="A posting that brings an item from above its reorder point to at or below it emits inventory.stock-below-reorder v1 (DE-INV-002).")
 op("put", "/inventory/negative-stock-policies", "setNegativeStockPolicy", "Inventory", "Policy موجودی منفی (فروشگاه، شعبه یا کالا)",
    perm="tenant.settings.manage", scope="Tenant", body="NegativeStockPolicySet", resp_code="204", no_content=True,
    reqs=["BR-040", "INV-003"], audited=True,

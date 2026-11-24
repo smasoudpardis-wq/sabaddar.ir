@@ -12,7 +12,7 @@ namespace RetailCloud.Inventory.Infrastructure;
 /// (shortage, unknown warehouse, already posted) leaves nothing behind: everything runs under a savepoint.
 /// The database backs every rule: DI-031 CHECK on available stock, the source registry key, append-only movements.
 /// </summary>
-public sealed class PostgresStockLedger : IStockLedger
+public sealed class PostgresStockLedger(IOutbox? outbox = null) : IStockLedger
 {
     private const string Savepoint = "stock_post";
 
@@ -27,7 +27,7 @@ public sealed class PostgresStockLedger : IStockLedger
 
         var s = (PostgresUnitOfWorkScope)scope;
         await s.Transaction.SaveAsync(Savepoint, cancellationToken);
-        StockResult result = await PostUnderSavepointAsync(s, document, cancellationToken);
+        StockResult result = await PostUnderSavepointAsync(s, document, outbox, cancellationToken);
         if (result.Outcome == StockOutcome.Done)
         {
             await s.Transaction.ReleaseAsync(Savepoint, cancellationToken);
@@ -40,7 +40,7 @@ public sealed class PostgresStockLedger : IStockLedger
         return result;
     }
 
-    private static async Task<StockResult> PostUnderSavepointAsync(PostgresUnitOfWorkScope s, StockDocument d, CancellationToken ct)
+    private static async Task<StockResult> PostUnderSavepointAsync(PostgresUnitOfWorkScope s, StockDocument d, IOutbox? outbox, CancellationToken ct)
     {
         await using (NpgsqlCommand claim = s.Command(
             "INSERT INTO inv.posted_source (tenant_id, source_type, source_id, purpose) VALUES (core.current_tenant(), $1, $2, $3) ON CONFLICT DO NOTHING"))
@@ -108,6 +108,7 @@ public sealed class PostgresStockLedger : IStockLedger
             }
         }
 
+        var availableBefore = state.ToDictionary(x => x.Key, x => x.Value.State.OnHand - x.Value.Reserved);
         var movements = new List<PostedMovement>();
         var net = new Dictionary<(Guid, Guid), decimal>();
         foreach (StockLine line in d.Lines)
@@ -186,27 +187,85 @@ public sealed class PostgresStockLedger : IStockLedger
             await ins.ExecuteNonQueryAsync(ct);
         }
 
+        // INV-010 / DE-INV-002: an item that this posting brought down to its reorder point is announced once
+        if (outbox is not null)
+        {
+            await using NpgsqlCommand rp = s.Command(
+                "SELECT p.variant_id, p.warehouse_id, p.reorder_point FROM inv.reorder_point p " +
+                "JOIN unnest($1::uuid[], $2::uuid[]) AS k(v, w) ON p.variant_id = k.v AND p.warehouse_id = k.w");
+            rp.Parameters.Add(new NpgsqlParameter { Value = kv, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Uuid });
+            rp.Parameters.Add(new NpgsqlParameter { Value = kw, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Uuid });
+            var crossed = new List<(Guid Variant, Guid Warehouse, decimal Point)>();
+            await using (NpgsqlDataReader r = await rp.ExecuteReaderAsync(ct))
+            {
+                while (await r.ReadAsync(ct))
+                {
+                    var key = (r.GetGuid(0), r.GetGuid(1));
+                    (StockState after, decimal reserved) = state[key];
+                    if (StockMath.CrossesReorderPoint(availableBefore.GetValueOrDefault(key), after.OnHand - reserved, r.GetDecimal(2)))
+                    {
+                        crossed.Add((key.Item1, key.Item2, r.GetDecimal(2)));
+                    }
+                }
+            }
+
+            foreach ((Guid variant, Guid warehouse, decimal point) in crossed)
+            {
+                await outbox.AddAsync(s, "Inventory", "inventory.stock-below-reorder", 1, variant, new
+                {
+                    variantId = variant, warehouseId = warehouse, onHand = state[(variant, warehouse)].State.OnHand, reorderPoint = point,
+                    sourceType = d.SourceType, sourceId = d.SourceId,
+                }, causationId: null, ct);
+            }
+        }
+
         return new StockResult(StockOutcome.Done, movements, [], [.. warnings.Distinct()]);
     }
 
     private static NegativeStockPolicy? Policy(Dictionary<(string, Guid), NegativeStockPolicy> all, string type, Guid id) =>
         all.TryGetValue((type, id), out NegativeStockPolicy p) ? p : null;
 
-    public async Task<IReadOnlyList<StockBalanceView>> BalancesAsync(IUnitOfWorkScope scope, Guid? warehouseId, Guid? variantId, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<StockBalanceView>> BalancesAsync(IUnitOfWorkScope scope, Guid? warehouseId, Guid? variantId, CancellationToken cancellationToken,
+        bool lowOnly = false)
     {
+        // a reorder point set for an item never received still counts: nothing on hand is at or below any point
         await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
-            "SELECT warehouse_id, variant_id, on_hand, reserved, wac, value_on_hand FROM inv.stock_balance " +
-            "WHERE ($1::uuid IS NULL OR warehouse_id = $1) AND ($2::uuid IS NULL OR variant_id = $2) ORDER BY warehouse_id, variant_id LIMIT 500");
+            "SELECT coalesce(b.warehouse_id, p.warehouse_id), coalesce(b.variant_id, p.variant_id), coalesce(b.on_hand, 0), coalesce(b.reserved, 0), " +
+            "coalesce(b.wac, 0), coalesce(b.value_on_hand, 0), p.reorder_point FROM inv.stock_balance b " +
+            "FULL JOIN inv.reorder_point p ON p.tenant_id = b.tenant_id AND p.warehouse_id = b.warehouse_id AND p.variant_id = b.variant_id " +
+            "WHERE ($1::uuid IS NULL OR coalesce(b.warehouse_id, p.warehouse_id) = $1) AND ($2::uuid IS NULL OR coalesce(b.variant_id, p.variant_id) = $2) " +
+            "AND (NOT $3 OR (p.reorder_point IS NOT NULL AND coalesce(b.on_hand, 0) - coalesce(b.reserved, 0) <= p.reorder_point)) " +
+            "ORDER BY 1, 2 LIMIT 500");
         cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)warehouseId ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Uuid });
         cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)variantId ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Uuid });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = lowOnly });
         var list = new List<StockBalanceView>();
         await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(cancellationToken);
         while (await r.ReadAsync(cancellationToken))
         {
-            list.Add(new StockBalanceView(r.GetGuid(0), r.GetGuid(1), r.GetDecimal(2), r.GetDecimal(3), r.GetInt64(4), r.GetInt64(5)));
+            list.Add(new StockBalanceView(r.GetGuid(0), r.GetGuid(1), r.GetDecimal(2), r.GetDecimal(3), r.GetInt64(4), r.GetInt64(5),
+                r.IsDBNull(6) ? null : r.GetDecimal(6)));
         }
 
         return list;
+    }
+
+    public async Task SetReorderPointAsync(IUnitOfWorkScope scope, Guid warehouseId, Guid variantId, decimal? reorderPoint, Guid changedBy,
+        CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(reorderPoint is null
+            ? "DELETE FROM inv.reorder_point WHERE warehouse_id = $1 AND variant_id = $2"
+            : "INSERT INTO inv.reorder_point (tenant_id, warehouse_id, variant_id, reorder_point, changed_by) VALUES (core.current_tenant(), $1, $2, $3, $4) " +
+              "ON CONFLICT (tenant_id, warehouse_id, variant_id) DO UPDATE SET reorder_point = EXCLUDED.reorder_point, changed_by = EXCLUDED.changed_by, changed_at = now()");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = warehouseId });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = variantId });
+        if (reorderPoint is decimal rp)
+        {
+            cmd.Parameters.Add(new NpgsqlParameter { Value = rp });
+            cmd.Parameters.Add(new NpgsqlParameter { Value = changedBy });
+        }
+
+        await cmd.ExecuteNonQueryAsync(cancellationToken);
     }
 
     public async Task<IReadOnlyList<StockMovementView>> MovementsAsync(IUnitOfWorkScope scope, Guid variantId, Guid? warehouseId, int limit,

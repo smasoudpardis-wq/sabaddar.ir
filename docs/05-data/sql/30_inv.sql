@@ -226,6 +226,19 @@ CREATE INDEX ix_transfer_posted ON inv.stock_transfer (tenant_id, posted_at DESC
 CREATE TRIGGER tr_transfer_append_only BEFORE UPDATE OR DELETE ON inv.stock_transfer
   FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
 
+-- INV-010 (US-066): an optional reorder point per variant and warehouse; at or below it the item is low on stock.
+CREATE TABLE inv.reorder_point (
+  tenant_id     uuid NOT NULL,
+  warehouse_id  uuid NOT NULL,
+  variant_id    uuid NOT NULL,                                   -- merch.tenant_variant (cross-module: no FK)
+  reorder_point numeric(18,6) NOT NULL CHECK (reorder_point >= 0), -- base unit
+  changed_by    uuid NOT NULL,
+  changed_at    timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, warehouse_id, variant_id),
+  FOREIGN KEY (tenant_id, warehouse_id) REFERENCES inv.warehouse (tenant_id, id)
+);
+CALL core.enable_tenant_rls('inv.reorder_point');
+
 CREATE TRIGGER tr_movement_append_only BEFORE UPDATE OR DELETE ON inv.stock_movement
   FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
 
@@ -235,6 +248,8 @@ GRANT SELECT, INSERT ON inv.posted_source TO rc_app;
 GRANT SELECT, INSERT, UPDATE ON inv.negative_stock_policy TO rc_app;
 GRANT SELECT ON inv.negative_stock_policy TO rc_worker, rc_reporting;
 GRANT SELECT, INSERT ON inv.stock_adjustment, inv.stock_transfer TO rc_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON inv.reorder_point TO rc_app;
+GRANT SELECT ON inv.reorder_point TO rc_worker, rc_reporting;
 GRANT SELECT ON inv.stock_transfer TO rc_worker, rc_reporting;
 GRANT SELECT, INSERT ON inv.supplier, inv.goods_receipt, inv.goods_receipt_line TO rc_app;
 GRANT SELECT ON inv.supplier, inv.goods_receipt, inv.goods_receipt_line TO rc_worker, rc_reporting;

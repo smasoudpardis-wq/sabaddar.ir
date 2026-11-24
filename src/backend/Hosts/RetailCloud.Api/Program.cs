@@ -1247,8 +1247,24 @@ string Qty(decimal q) => q.ToString("0.######", System.Globalization.CultureInfo
 v1.MapGet("/inventory/balances", async (RequestContext ctx, IUnitOfWork uow, IStockLedger ledger, HttpContext http, Guid? warehouseId, Guid? variantId,
         bool? belowReorderPoint, CancellationToken ct) =>
     {
-        if (belowReorderPoint is not null) return Problems.Validation(http, new Dictionary<string, string[]> { ["belowReorderPoint"] = ["not-yet-supported"] });   // US-066
-        var rows = await uow.ExecuteAsync(ctx, (s, c) => ledger.BalancesAsync(s, warehouseId, variantId, c), ct);
+        var rows = await uow.ExecuteAsync(ctx, (s, c) => ledger.BalancesAsync(s, warehouseId, variantId, c, belowReorderPoint == true), ct);
+        // the low-stock list names its items, so it can be acted on (INV-010)
+        var names = new Dictionary<Guid, SellableVariant>();
+        if (belowReorderPoint == true)
+        {
+            IProductCatalog catalog = http.RequestServices.GetRequiredService<IProductCatalog>();
+            names = await uow.ExecuteAsync(ctx, async (s, c) =>
+            {
+                var found = new Dictionary<Guid, SellableVariant>();
+                foreach (Guid v in rows.Select(b => b.VariantId).Distinct())
+                {
+                    if (await catalog.SellableAsync(s, v, c) is { } sv) found[v] = sv;
+                }
+
+                return found;
+            }, ct);
+        }
+
         // TM-014: cost and value only for whoever may see reports for that warehouse's branch
         var lookups = http.RequestServices.GetServices<IScopeLookup>();
         var canSee = new Dictionary<Guid, bool>();
@@ -1265,7 +1281,8 @@ v1.MapGet("/inventory/balances", async (RequestContext ctx, IUnitOfWork uow, ISt
                 b.WarehouseId, b.VariantId, onHand = Qty(b.OnHand), reserved = Qty(b.Reserved), available = Qty(b.OnHand - b.Reserved),
                 wac = canSee[b.WarehouseId] ? b.Wac.ToString(System.Globalization.CultureInfo.InvariantCulture) : null,
                 value = canSee[b.WarehouseId] ? b.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) : null,
-                belowReorderPoint = false,
+                reorderPoint = b.ReorderPoint is decimal rp ? Qty(rp) : null, belowReorderPoint = b.BelowReorderPoint,
+                name = names.TryGetValue(b.VariantId, out SellableVariant? n) ? n.Name : null, sku = n?.Sku,
             }),
             page = new { nextCursor = (string?)null, hasMore = rows.Count == 500 },
         });
@@ -1302,6 +1319,39 @@ v1.MapGet("/inventory/movements", async (RequestContext ctx, IUnitOfWork uow, IS
         });
     })
     .RequirePermission(Permissions.ReportsView);
+
+// INV-010 (US-066): the point at which an item of a warehouse is low; null removes it. Set by who receives goods there.
+v1.MapPut("/inventory/reorder-points", async (ReorderPointInput body, RequestContext ctx, IUnitOfWork uow, IStockLedger ledger, IProductCatalog catalog,
+        HttpContext http, CancellationToken ct) =>
+    {
+        var errors = new Dictionary<string, string[]>();
+        if (body.WarehouseId is null) errors["warehouseId"] = ["required"];
+        if (body.VariantId is null) errors["variantId"] = ["required"];
+        decimal? point = null;
+        if (body.ReorderPoint is not null)
+        {
+            if (body.ReorderPoint == "0") point = 0;
+            else if (!ProductRules.TryFactor(body.ReorderPoint, out decimal p)) errors["reorderPoint"] = ["0 or a positive decimal in the base unit, up to 6 places; null removes it"];
+            else point = p;
+        }
+
+        if (errors.Count > 0) return Problems.Validation(http, errors);
+        return await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            if (await ResolveScope(s, http.RequestServices.GetServices<IScopeLookup>(), ScopeType.Warehouse, body.WarehouseId, c) is not { } warehouse)
+            {
+                return Problems.NotFound(http);
+            }
+
+            if (!AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.InventoryReceiptCreate, warehouse)) return Forbidden(http);
+            if (!(await catalog.ExistingVariantsAsync(s, [body.VariantId!.Value], c)).Contains(body.VariantId.Value)) return Problems.NotFound(http);
+            await ledger.SetReorderPointAsync(s, body.WarehouseId!.Value, body.VariantId.Value, point, ctx.User!.Value.Value, c);
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry("inventory.reorder-point.set", "ReorderPoint", $"{body.WarehouseId}/{body.VariantId}",
+                Details: new { body.WarehouseId, body.VariantId, reorderPoint = point is decimal v ? Qty(v) : null }), c);
+            return Results.NoContent();
+        }, ct);
+    })
+    .RequirePermission(Permissions.InventoryReceiptCreate);
 
 v1.MapPut("/inventory/negative-stock-policies", async (NegativeStockPolicyInput body, RequestContext ctx, IUnitOfWork uow, IStockLedger ledger,
         HttpContext http, CancellationToken ct) =>
@@ -3192,6 +3242,7 @@ internal sealed record DiscountCapsInput(Dictionary<string, int>? Caps);
 internal sealed record NegativeStockPolicyInput(string? ScopeType, Guid? ScopeId, string? Policy);
 internal sealed record AdjustmentLineInput(Guid? VariantId, string? QtyDelta);
 internal sealed record AdjustmentInput(Guid? WarehouseId, string? Reason, AdjustmentLineInput?[]? Lines, string? Note);
+internal sealed record ReorderPointInput(Guid? WarehouseId, Guid? VariantId, string? ReorderPoint);
 internal sealed record TransferLineInput(Guid? VariantId, string? Qty);
 internal sealed record TransferInput(Guid? FromWarehouseId, Guid? ToWarehouseId, TransferLineInput?[]? Lines, string? Note);
 internal sealed record TenderVoidInput(int? ExpectedVersion, string? Reason);

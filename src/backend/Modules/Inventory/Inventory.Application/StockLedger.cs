@@ -59,7 +59,11 @@ public sealed record StockResult(StockOutcome Outcome, IReadOnlyList<PostedMovem
     public static StockResult Of(StockOutcome outcome) => new(outcome, [], [], []);
 }
 
-public sealed record StockBalanceView(Guid WarehouseId, Guid VariantId, decimal OnHand, decimal Reserved, long Wac, long Value);
+/// <summary><paramref name="ReorderPoint"/>: INV-010, when set for this variant in this warehouse.</summary>
+public sealed record StockBalanceView(Guid WarehouseId, Guid VariantId, decimal OnHand, decimal Reserved, long Wac, long Value, decimal? ReorderPoint = null)
+{
+    public bool BelowReorderPoint => ReorderPoint is decimal rp && StockMath.IsLow(OnHand - Reserved, rp);
+}
 
 public sealed record StockMovementView(Guid Id, DateTimeOffset RecordedAt, DateTimeOffset EffectiveAt, string Type, decimal QtyBase, long UnitCost,
     long TotalCost, string SourceType, Guid SourceId, int SourceLine, decimal? EnteredQty, string? EnteredUnit, decimal? UnitFactor);
@@ -72,7 +76,12 @@ public interface IStockLedger
 {
     Task<StockResult> PostAsync(IUnitOfWorkScope scope, StockDocument document, CancellationToken cancellationToken);
 
-    Task<IReadOnlyList<StockBalanceView>> BalancesAsync(IUnitOfWorkScope scope, Guid? warehouseId, Guid? variantId, CancellationToken cancellationToken);
+    /// <summary><paramref name="lowOnly"/>: only balances at or below their reorder point (INV-010).</summary>
+    Task<IReadOnlyList<StockBalanceView>> BalancesAsync(IUnitOfWorkScope scope, Guid? warehouseId, Guid? variantId, CancellationToken cancellationToken,
+        bool lowOnly = false);
+
+    /// <summary>INV-010: sets (or, with null, removes) the reorder point of a variant in a warehouse, in the base unit.</summary>
+    Task SetReorderPointAsync(IUnitOfWorkScope scope, Guid warehouseId, Guid variantId, decimal? reorderPoint, Guid changedBy, CancellationToken cancellationToken);
 
     /// <summary>Newest first, up to <paramref name="limit"/>.</summary>
     Task<IReadOnlyList<StockMovementView>> MovementsAsync(IUnitOfWorkScope scope, Guid variantId, Guid? warehouseId, int limit,
@@ -134,4 +143,11 @@ public static class StockMath
         variant ?? branch ?? tenant ?? NegativeStockPolicy.Forbid;
 
     public static long Round(decimal value) => (long)Math.Round(value, MidpointRounding.AwayFromZero);
+
+    /// <summary>INV-010: low means what is available has come down to the reorder point (at it, or below).</summary>
+    public static bool IsLow(decimal available, decimal reorderPoint) => available <= reorderPoint;
+
+    /// <summary>DE-INV-002 fires once, when a posting takes an item from above its reorder point to at or below it.</summary>
+    public static bool CrossesReorderPoint(decimal availableBefore, decimal availableAfter, decimal reorderPoint) =>
+        !IsLow(availableBefore, reorderPoint) && IsLow(availableAfter, reorderPoint);
 }

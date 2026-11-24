@@ -250,6 +250,13 @@ SELECT t.expect_error('T219 a transfer goes from one warehouse to another', '235
     VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000003', 'a0000000-0000-0000-0000-000000000003', 1, 0, gen_random_uuid())$$);
 SELECT t.expect_error('T220 a transfer is never changed by the app', '42501',
   $$UPDATE inv.stock_transfer SET value = 0$$);
+-- US-066 reorder points (INV-010)
+SELECT t.expect_error('T221 a reorder point is not negative', '23514',
+  $$INSERT INTO inv.reorder_point (tenant_id, warehouse_id, variant_id, reorder_point, changed_by)
+    VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000003', 'a0000000-0000-0000-0000-000000000011', -1, gen_random_uuid())$$);
+SELECT t.expect_error('T222 a reorder point belongs to a warehouse of the store', '23503',
+  $$INSERT INTO inv.reorder_point (tenant_id, warehouse_id, variant_id, reorder_point, changed_by)
+    VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000011', 5, gen_random_uuid())$$);
 SELECT t.expect_error('T14 stock movement is append-only for the app role', '42501',
   $$UPDATE inv.stock_movement SET qty_base = -2$$);
 SELECT t.expect_error('T15 movement for another tenant via parent rejected', '42501',

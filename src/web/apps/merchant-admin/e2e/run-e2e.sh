@@ -59,6 +59,7 @@ DELETE FROM acc.account WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM acc.fiscal_period WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM inv.stock_adjustment WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM inv.stock_transfer WHERE tenant_id IN ('$T1','$T2','$TF');
+DELETE FROM inv.reorder_point WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM inv.stock_movement WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM inv.posted_source WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM inv.stock_balance WHERE tenant_id IN ('$T1','$T2','$TF');

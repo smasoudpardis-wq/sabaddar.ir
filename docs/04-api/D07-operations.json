@@ -915,6 +915,21 @@
   "idempotent": false
  },
  {
+  "operationId": "setReorderPoint",
+  "method": "PUT",
+  "path": "/inventory/reorder-points",
+  "permission": "inventory.receipt.create",
+  "allowedWhenReadOnly": false,
+  "scope": "Warehouse",
+  "pathParams": [],
+  "bodyProps": [
+   "reorderPoint",
+   "variantId",
+   "warehouseId"
+  ],
+  "idempotent": false
+ },
+ {
   "operationId": "setNegativeStockPolicy",
   "method": "PUT",
   "path": "/inventory/negative-stock-policies",

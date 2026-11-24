@@ -163,4 +163,60 @@ public sealed class InventoryTests : IClassFixture<ApiFactory>, IAsyncLifetime
         JsonElement items = (await Body(await As("cashier").GetAsync("/api/v1/warehouses"))).GetProperty("items");
         Assert.Equal(_w1, items.EnumerateArray().Single().GetProperty("id").GetGuid());
     }
+
+    private async Task<long> BelowReorderEvents(Guid variant)
+    {
+        await using var worker = NpgsqlDataSource.Create(new NpgsqlConnectionStringBuilder(Cs) { Username = "rc_worker_test", Password = "rc_worker_test" }.ToString());
+        return await new PostgresUnitOfWork(worker).ExecuteAsync(new FixedTenantContext(new TenantId(_tenant)), async (s, ct) =>
+        {
+            await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)s).Command(
+                "SELECT count(*) FROM core.outbox WHERE event_type = 'inventory.stock-below-reorder' AND aggregate_id = $1");
+            cmd.Parameters.Add(new NpgsqlParameter { Value = variant });
+            return (long)(await cmd.ExecuteScalarAsync(ct))!;
+        });
+    }
+
+    private async Task Adjust(Guid variant, string delta)
+    {
+        var req = new HttpRequestMessage(HttpMethod.Post, "/api/v1/inventory/adjustments")
+        {
+            Content = JsonContent.Create(new { warehouseId = _w1, reason = "CountError", lines = new[] { new { variantId = variant, qtyDelta = delta } } }),
+        };
+        req.Headers.Add("Idempotency-Key", Guid.NewGuid().ToString("N"));
+        Assert.Equal(HttpStatusCode.Created, (await As("owner").SendAsync(req)).StatusCode);
+    }
+
+    private async Task<string[]> Low() =>
+        [.. (await Body(await As("owner").GetAsync($"/api/v1/inventory/balances?warehouseId={_w1}&belowReorderPoint=true"))).GetProperty("items").EnumerateArray()
+            .Select(b => b.GetProperty("variantId").GetString()!)];
+
+    [DbFact]
+    public async Task AT048_an_item_at_or_below_its_reorder_point_is_listed_as_low_and_announced_once_per_crossing()
+    {
+        Guid tea = (await Body(await Create(Rice("LOW", new { warehouseId = _w1, qty = "8", unitCost = "10000" })))).GetProperty("variants")[0].GetProperty("id").GetGuid();
+        Guid never = (await Body(await Create(Rice("NEVER", null)))).GetProperty("variants")[0].GetProperty("id").GetGuid();
+        HttpClient owner = As("owner");
+        Assert.Equal(HttpStatusCode.NoContent, (await owner.PutAsJsonAsync("/api/v1/inventory/reorder-points", new { warehouseId = _w1, variantId = tea, reorderPoint = "5" })).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await owner.PutAsJsonAsync("/api/v1/inventory/reorder-points", new { warehouseId = _w1, variantId = never, reorderPoint = "2" })).StatusCode);
+        Assert.Equal([never.ToString()], await Low());   // never received: nothing on hand is low
+        JsonElement b = (await Body(await owner.GetAsync($"/api/v1/inventory/balances?variantId={tea}"))).GetProperty("items")[0];
+        Assert.Equal(("5", false), (b.GetProperty("reorderPoint").GetString(), b.GetProperty("belowReorderPoint").GetBoolean()));
+
+        await Adjust(tea, "-3");   // 8 → 5: at the point is low; announced
+        Assert.Contains(tea.ToString(), await Low());
+        Assert.Equal(1, await BelowReorderEvents(tea));
+        await Adjust(tea, "-1");   // still low: not announced again
+        Assert.Equal(1, await BelowReorderEvents(tea));
+        await Adjust(tea, "10");   // 14: back above
+        Assert.DoesNotContain(tea.ToString(), await Low());
+        await Adjust(tea, "-9");   // 5 again: a new crossing
+        Assert.Equal(2, await BelowReorderEvents(tea));
+
+        // only who receives goods there sets it; null removes it
+        Assert.Equal(HttpStatusCode.Forbidden, (await As("cashier").PutAsJsonAsync("/api/v1/inventory/reorder-points", new { warehouseId = _w1, variantId = tea, reorderPoint = "1" })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await owner.PutAsJsonAsync("/api/v1/inventory/reorder-points", new { warehouseId = _w1, variantId = tea, reorderPoint = "-1" })).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await owner.PutAsJsonAsync("/api/v1/inventory/reorder-points", new { warehouseId = _w1, variantId = Guid.NewGuid(), reorderPoint = "1" })).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await owner.PutAsJsonAsync("/api/v1/inventory/reorder-points", new { warehouseId = _w1, variantId = tea, reorderPoint = (string?)null })).StatusCode);
+        Assert.DoesNotContain(tea.ToString(), await Low());
+    }
 }

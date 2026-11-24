@@ -479,6 +479,15 @@ try {
   await page.getByTestId('transfer-done').waitFor();
   await page.locator('[data-testid="transfer-list"] [data-from="B1-MAIN"][data-to="B1-RET"]').waitFor();
   check('F01', 'a transfer between two warehouses of the branch is posted and listed (INV-008)', true);
+  // H01 US-066: a reorder point above what is on hand puts the item on the low-stock list
+  await page.goto(`${BFF}/low-stock`);
+  await page.getByTestId('low-count').waitFor();
+  await page.getByTestId('reorder-sku').fill('E2E-COLA');
+  await page.getByTestId('reorder-point').fill('۵۰');
+  await page.getByTestId('reorder-submit').click();
+  await page.getByTestId('reorder-saved').waitFor();
+  await page.locator('[data-testid="low-list"] [data-sku="E2E-COLA"]').waitFor();
+  check('H01', 'an item at or below its reorder point is listed as low stock (INV-010, AT-048)', true);
   await page.goto(`${BFF}/terminals`);
   await page.getByTestId('revoke-صندوق-فروش').click();
   await page.getByTestId('this-device').filter({ hasText: 'نیست' }).waitFor();

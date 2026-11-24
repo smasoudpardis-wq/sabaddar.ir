@@ -3133,6 +3133,46 @@ paths:
       x-requirements:
       - INV-001
       - RPT-001.1
+  /inventory/reorder-points:
+    put:
+      operationId: setReorderPoint
+      tags:
+      - Inventory
+      summary: 'نقطه سفارش یک کالا در یک انبار (null: حذف)'
+      description: A posting that brings an item from above its reorder point to at or below it emits inventory.stock-below-reorder
+        v1 (DE-INV-002).
+      security: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReorderPointSet'
+      responses:
+        '204':
+          description: No content
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: inventory.receipt.create
+      x-scope: Warehouse
+      x-idempotent: false
+      x-requirements:
+      - INV-010
+      x-audited: true
   /inventory/negative-stock-policies:
     put:
       operationId: setNegativeStockPolicy
@@ -11844,6 +11884,25 @@ components:
           type: string
       required:
       - code
+    ReorderPointSet:
+      type: object
+      additionalProperties: false
+      properties:
+        warehouseId:
+          type: string
+          format: uuid
+        variantId:
+          type: string
+          format: uuid
+        reorderPoint:
+          anyOf:
+          - $ref: '#/components/schemas/Quantity'
+          - type: 'null'
+          description: Base unit; null removes it
+      required:
+      - warehouseId
+      - variantId
+      - reorderPoint
     ReportMeta:
       type: object
       additionalProperties: false
@@ -12696,14 +12755,30 @@ components:
           $ref: '#/components/schemas/Money'
         value:
           $ref: '#/components/schemas/Money'
+        reorderPoint:
+          anyOf:
+          - $ref: '#/components/schemas/Quantity'
+          - type: 'null'
+          description: 'INV-010: the point at or below which the item is low; null if none'
         belowReorderPoint:
           type: boolean
+          description: available (onHand − reserved) ≤ reorderPoint
+        name:
+          type:
+          - string
+          - 'null'
+          description: With belowReorderPoint=true only
+        sku:
+          type:
+          - string
+          - 'null'
       required:
       - warehouseId
       - variantId
       - onHand
       - reserved
       - available
+      - reorderPoint
       - belowReorderPoint
     StockMovement:
       type: object
