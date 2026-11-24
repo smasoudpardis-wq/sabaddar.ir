@@ -67,6 +67,12 @@ const password = (user) => async (page) => { await page.fill('#username', user);
       await p.click('#mode-manual');
       secret = (await p.locator('#kc-totp-secret-key').textContent()).trim();
       await p.fill('#totp', totp(secret)); await p.fill('#userLabel', 'mfa-checks'); await p.click('#saveTOTPBtn');
+      // a code read at a window boundary can be refused (CI saw it once): still on the form → one fresh code next window
+      await p.waitForLoadState();
+      if ((await p.locator('#totp').count()) === 1) {
+        await nextWindow();
+        await p.fill('#totp', totp(secret)); await p.click('#saveTOTPBtn');
+      }
       return { execution };
     });
     check('M2 acr_values=mfa for a user without a second factor starts TOTP enrolment', enrol.execution === 'CONFIGURE_TOTP', enrol.execution);
