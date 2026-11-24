@@ -250,12 +250,19 @@ schema("WeightedBarcodeProfileSetUpdate", expectedVersion="int", profiles=["#Wei
 # Inventory / Procurement
 schema("WarehouseCreate", branchId="uuid", code="str", **{"kind?": ("enum", ["Sellable", "ReturnsDamaged"])})
 schema("Warehouse", id="uuid", branchId="uuid", code="str", kind="str")
-schema("ReceiptLineInput", variantId="uuid", qty="qty", unit="str", unitCost="money", **{"discount?": "money", "inputVat?": "money"})
+schema("ReceiptLineInput", variantId="uuid", qty=("desc", "qty", "In unit, as on the supplier's invoice"),
+       unit=("desc", "str", "The base unit or a packaging unit of the variant (BR-044); otherwise 422 unknown-unit"),
+       unitCost=("desc", "money", "Rials per unit"),
+       **{"discount?": ("desc", "money", "Rials off the line"), "inputVat?": ("desc", "money", "Rials of purchase VAT on the line")})
 schema("GoodsReceiptCreate", supplierId="uuid", warehouseId="uuid", lines=["#ReceiptLineInput"],
-       **{"supplierInvoiceNo?": "str", "effectiveDate?": "date"})
-schema("GoodsReceipt", id="uuid", supplierId="uuid", warehouseId="uuid", total="money",
-       lines=[{"variantId": "uuid", "qtyBase": "qty", "unitCost": "money", "newWac": "money"}],
-       journalEntryId="uuid", warnings=["str"], postedAt="dt")
+       **{"supplierInvoiceNo?": "str", "effectiveDate?": ("desc", "date", "Not yet supported (a back-dated receipt waits for OQ-05)"),
+          "confirmedWarnings?": ("desc", ["str"], "UC-05 warnings the user confirmed: zero-cost, duplicate-supplier-invoice")})
+schema("GoodsReceipt", id="uuid", supplierId="uuid", warehouseId="uuid", supplierInvoiceNo="str?", effectiveAt="dt",
+       netTotal=("desc", "money", "Σ line cost: the Inventory debit"), inputVat="money", total=("desc", "money", "The supplier's payable credit"),
+       lines=[{"lineNo": "int", "variantId": "uuid", "qty": "qty", "unit": "str", "unitFactor": "qty", "qtyBase": "qty", "unitCost": "money",
+               "discount": "money", "inputVat": "money", "lineCost": "money",
+               "newWac": ("desc", "money?", "The WAC after this line; only in the response to postGoodsReceipt")}],
+       journalEntryId=("desc", "uuid?", "Null only for a receipt worth nothing"), createdBy="uuid", warnings=["str"], postedAt="dt")
 schema("AdjustmentCreate", warehouseId="uuid", reason=("enum", ["Damage", "Expiry", "Theft", "CountError", "Other"]),
        lines=[{"variantId": "uuid", "qtyDelta": ("desc", "str", "Signed decimal")}], **{"note?": "str"})
 schema("Adjustment", id="uuid", warehouseId="uuid", reason="str", note="str?", lineCount="int",
@@ -280,7 +287,8 @@ schema("StockMovement", id="uuid", recordedAt="dt", effectiveAt="dt", type="str"
 schema("NegativeStockPolicySet", scopeType=("enum", ["Tenant", "Branch", "Variant"]),
        **{"scopeId?": ("desc", "uuid", "Branch or variant id; omitted for Tenant")}, policy=("enum", ["Forbid", "AllowWithWarning"]))
 schema("SupplierCreate", name="str", **{"nationalId?": "str", "economicCode?": "str", "phone?": "str"})
-schema("Supplier", id="uuid", name="str", balance="money")
+schema("Supplier", id="uuid", name="str", nationalId="str?", economicCode="str?", phone="str?",
+       balance=("desc", "money", "What the store owes: TradePayables credit − debit with this supplier as detail"))
 schema("SupplierPaymentCreate", amount="money", method=("enum", ["Cash", "Bank"]), **{"reference?": "str", "registerShiftId?": "uuid"})
 schema("PurchaseReturnCreate", supplierId="uuid", warehouseId="uuid", lines=[{"variantId": "uuid", "qty": "qty"}],
        agreedAmount="money", **{"note?": "str"})
@@ -540,7 +548,9 @@ ERROR_CATALOG = {
     "credit-overdue": (409, "Overdue charges block new credit (BR-082)"),
     "credit-account-suspended": (409, "CRD-008"),
     "exceeds-returnable-quantity": (422, "BR-053"),
-    "confirmation-required": (422, "Low-confidence catalog data must be confirmed (CAT-004.1)"),
+    "confirmation-required": (422, "Low-confidence catalog data (CAT-004.1) or UC-05 receipt warnings (context.warnings[]) must be confirmed"),
+    "unknown-unit": (422, "The unit has no conversion to the product's base unit (BR-044); context.units[]"),
+    "duplicate-national-id": (409, "A supplier with this national id already exists (PRC-001)"),
     "invalid-barcode": (422, "Check digit/format (CAT-003)"),
     "approval-required": (403, "approvalRequestId returned; retry with approvalId (IAM-007)"),
     "mfa-required": (403, "IAM-003"),
@@ -886,6 +896,8 @@ op("post", "/inventory/adjustments", "postAdjustment", "Inventory", "تعدیل 
    scope="Warehouse", idem=True, body="AdjustmentCreate", resp="Adjustment", resp_code="201",
    reqs=["INV-002", "BR-033"], audited=True, approval="value > tenant threshold (BR-033)",
    params=[{"name": "X-Approval-Id", "in": "header", "required": False, "schema": {"type": "string", "format": "uuid"}}])
+op("get", "/inventory/receipts", "listGoodsReceipts", "Inventory", "رسیدهای خرید اخیر", perm="reports.view", resp="GoodsReceipt",
+   list_of=True, reqs=["PRC-002"])
 op("get", "/inventory/adjustments", "listAdjustments", "Inventory", "تعدیل‌ها و ارزش آن‌ها (کشف AB-05)", perm="reports.view",
    resp="Adjustment", list_of=True, reqs=["INV-002", "BR-033", "AB-05"])
 op("post", "/inventory/transfers", "postTransfer", "Inventory", "انتقال بین انبارها (تک‌مرحله‌ای MVP)", perm="inventory.transfer",
@@ -918,7 +930,8 @@ op("put", "/inventory/negative-stock-policies", "setNegativeStockPolicy", "Inven
    desc="The most specific level wins (Variant, then Branch, then Tenant); the default is Forbid. Under Forbid a document "
         "that would make available stock negative is refused with 409 insufficient-stock listing every shortage.")
 tag("Procurement", "تأمین‌کننده، پرداخت و برگشت از خرید (PRC)")
-op("get", "/suppliers", "listSuppliers", "Procurement", "تأمین‌کنندگان", resp="Supplier", list_of=True, page=True, reqs=["PRC-001"])
+op("get", "/suppliers", "listSuppliers", "Procurement", "تأمین‌کنندگان", resp="Supplier", list_of=True, page=True, reqs=["PRC-001"],
+   params=[{"name": "q", "in": "query", "required": False, "schema": {"type": "string"}}])
 op("post", "/suppliers", "createSupplier", "Procurement", "ایجاد تأمین‌کننده", perm="inventory.receipt.create", scope="Tenant",
    body="SupplierCreate", resp="Supplier", resp_code="201", reqs=["PRC-001"], audited=True)
 op("post", "/suppliers/{supplierId}/payments", "paySupplier", "Procurement", "پرداخت به تأمین‌کننده",

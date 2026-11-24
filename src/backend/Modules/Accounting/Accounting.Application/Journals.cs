@@ -95,4 +95,11 @@ public interface IJournals
 
     /// <summary>ACC-004: an automatic entry built from a posting rule, posted once per (source, purpose) (DI-044).</summary>
     Task<AccountingResult<JournalView>> PostAutomaticAsync(IUnitOfWorkScope scope, PostingDraft draft, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// The balance of each detail (e.g. a supplier) on the account mapped to <paramref name="role"/>, credit minus debit,
+    /// over every posted entry (a reversed entry and its reversal cancel out). Details with no line are absent.
+    /// </summary>
+    Task<IReadOnlyDictionary<Guid, long>> DetailBalancesAsync(IUnitOfWorkScope scope, string role, string detailType, IReadOnlyCollection<Guid> detailIds,
+        CancellationToken cancellationToken);
 }

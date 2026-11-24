@@ -48,4 +48,24 @@ if (args is ["rebuild-stock", var tenantArg] && Guid.TryParse(tenantArg, out Gui
     return;
 }
 
+// Operator command (TEN-001.1): `RetailCloud.Workers setup-accounting <tenantId> [industry]` creates the chart of accounts,
+// the role mapping and the current fiscal year's periods for a store that missed them (idempotent), then exits.
+if (args is ["setup-accounting", var accountingTenantArg, ..] && Guid.TryParse(accountingTenantArg, out Guid accountingTenant))
+{
+    string industry = args.Length > 2 ? args[2] : "supermarket";
+    await host.Services.GetRequiredService<IUnitOfWork>().ExecuteAsync(new FixedTenantContext(new RetailCloud.BuildingBlocks.Domain.TenantId(accountingTenant)),
+        async (s, ct) =>
+        {
+            await new RetailCloud.Accounting.Infrastructure.TenantAccountingSetupConsumer().HandleAsync(s, new IntegrationEvent(Guid.CreateVersion7(),
+                "platform.tenant-registered", 1, new RetailCloud.BuildingBlocks.Domain.TenantId(accountingTenant), DateTimeOffset.UtcNow, null, null,
+                "operator", accountingTenant, System.Text.Json.JsonSerializer.SerializeToElement(new
+                {
+                    industryCode = industry, timeZone = "Asia/Tehran", registeredAt = DateTimeOffset.UtcNow,
+                })), ct);
+            return 0;
+        }, CancellationToken.None);
+    Console.WriteLine($"accounting set up for {accountingTenant} ({industry})");
+    return;
+}
+
 await host.RunAsync();

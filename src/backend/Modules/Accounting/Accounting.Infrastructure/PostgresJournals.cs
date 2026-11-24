@@ -183,7 +183,7 @@ public sealed class PostgresJournals : IJournals
                 return new(AccountingOutcome.UnknownRole, null, line.Role);
             }
 
-            lines.Add(new JournalLineSpec(account, line.Debit, line.Credit, null, null, null));
+            lines.Add(new JournalLineSpec(account, line.Debit, line.Credit, line.DetailType, line.DetailId, null));
         }
 
         if (JournalRules.Problem(lines) is { } problem)
@@ -207,6 +207,27 @@ public sealed class PostgresJournals : IJournals
             null, lines, cancellationToken);
         await ExecAsync(s, "UPDATE acc.journal_entry SET status = 'Posted', posted_at = now() WHERE id = $1", cancellationToken, id);
         return new(AccountingOutcome.Done, await GetAsync(scope, id, cancellationToken));
+    }
+
+    public async Task<IReadOnlyDictionary<Guid, long>> DetailBalancesAsync(IUnitOfWorkScope scope, string role, string detailType,
+        IReadOnlyCollection<Guid> detailIds, CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
+            "SELECT l.detail_id, sum(l.credit - l.debit)::bigint FROM acc.journal_line l " +
+            "JOIN acc.journal_entry e ON e.tenant_id = l.tenant_id AND e.id = l.entry_id AND e.status IN ('Posted', 'Reversed') " +
+            "JOIN acc.account_role r ON r.tenant_id = l.tenant_id AND r.account_id = l.account_id AND r.role = $1 " +
+            "WHERE l.detail_type = $2 AND l.detail_id = ANY($3) GROUP BY l.detail_id");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = role });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = detailType });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = detailIds.ToArray(), NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Uuid });
+        var balances = new Dictionary<Guid, long>();
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await r.ReadAsync(cancellationToken))
+        {
+            balances[r.GetGuid(0)] = r.GetInt64(1);
+        }
+
+        return balances;
     }
 
     public async Task<JournalView?> GetAsync(IUnitOfWorkScope scope, Guid journalId, CancellationToken cancellationToken) =>

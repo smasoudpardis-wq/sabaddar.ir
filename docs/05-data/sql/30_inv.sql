@@ -143,6 +143,66 @@ CREATE INDEX ix_adjustment_posted ON inv.stock_adjustment (tenant_id, posted_at 
 CREATE TRIGGER tr_adjustment_append_only BEFORE UPDATE OR DELETE ON inv.stock_adjustment
   FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
 
+-- PRC-001 / PRC-002 (US-071): suppliers and goods receipts. The payable is kept in the ledger (TradePayables with detail
+-- Supplier = supplier.id); a receipt's lines are the GoodsReceipt movements whose source is the receipt.
+CREATE TABLE inv.supplier (
+  tenant_id     uuid NOT NULL,
+  id            uuid NOT NULL,
+  name          text NOT NULL CHECK (char_length(btrim(name)) BETWEEN 1 AND 200),
+  national_id   text CHECK (national_id ~ '^[0-9]{10,11}$'),    -- 10: a person's national code, 11: a legal entity's national id
+  economic_code text CHECK (economic_code ~ '^[0-9]{12,14}$'),
+  phone         text CHECK (phone ~ '^\+?[0-9]{8,15}$'),
+  created_by    uuid NOT NULL,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, id)
+);
+CREATE UNIQUE INDEX ux_supplier_national_id ON inv.supplier (tenant_id, national_id) WHERE national_id IS NOT NULL;
+CALL core.enable_tenant_rls('inv.supplier');
+
+CREATE TABLE inv.goods_receipt (
+  tenant_id           uuid NOT NULL,
+  id                  uuid NOT NULL,
+  supplier_id         uuid NOT NULL,
+  warehouse_id        uuid NOT NULL,
+  supplier_invoice_no text CHECK (char_length(supplier_invoice_no) BETWEEN 1 AND 40),
+  effective_at        timestamptz NOT NULL,
+  net_total           bigint NOT NULL CHECK (net_total >= 0),   -- Σ line cost: what the stock is worth (Inventory debit)
+  input_vat           bigint NOT NULL CHECK (input_vat >= 0),   -- InputVat debit
+  total               bigint NOT NULL,                          -- TradePayables credit
+  journal_entry_id    uuid,                                     -- acc.journal_entry (cross-module: no FK)
+  created_by          uuid NOT NULL,
+  posted_at           timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, id),
+  FOREIGN KEY (tenant_id, supplier_id) REFERENCES inv.supplier (tenant_id, id),
+  FOREIGN KEY (tenant_id, warehouse_id) REFERENCES inv.warehouse (tenant_id, id),
+  CHECK (total = net_total + input_vat),
+  CHECK ((total = 0) = (journal_entry_id IS NULL))
+);
+CREATE INDEX ix_receipt_supplier_invoice ON inv.goods_receipt (tenant_id, supplier_id, supplier_invoice_no);
+CALL core.enable_tenant_rls('inv.goods_receipt');
+
+CREATE TABLE inv.goods_receipt_line (
+  tenant_id   uuid NOT NULL,
+  receipt_id  uuid NOT NULL,
+  line_no     int  NOT NULL CHECK (line_no BETWEEN 1 AND 500),
+  variant_id  uuid NOT NULL,                                    -- merch.tenant_variant (cross-module: no FK)
+  qty         numeric(18,6) NOT NULL CHECK (qty > 0),           -- in unit, as on the supplier's invoice
+  unit        text NOT NULL CHECK (unit ~ '^[A-Z0-9]{1,10}$'),
+  unit_factor numeric(18,6) NOT NULL CHECK (unit_factor > 0),   -- to the base unit, at that moment (BR-044)
+  unit_cost   bigint NOT NULL CHECK (unit_cost >= 0),           -- rials per unit
+  discount    bigint NOT NULL DEFAULT 0 CHECK (discount >= 0),
+  input_vat   bigint NOT NULL DEFAULT 0 CHECK (input_vat >= 0),
+  line_cost   bigint NOT NULL CHECK (line_cost >= 0),
+  PRIMARY KEY (tenant_id, receipt_id, line_no),
+  FOREIGN KEY (tenant_id, receipt_id) REFERENCES inv.goods_receipt (tenant_id, id),
+  CHECK (line_cost = round(qty * unit_cost) - discount)         -- half away from zero, as the application rounds
+);
+CALL core.enable_tenant_rls('inv.goods_receipt_line');
+CREATE TRIGGER tr_receipt_append_only BEFORE UPDATE OR DELETE ON inv.goods_receipt
+  FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
+CREATE TRIGGER tr_receipt_line_append_only BEFORE UPDATE OR DELETE ON inv.goods_receipt_line
+  FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
+
 CREATE TRIGGER tr_movement_append_only BEFORE UPDATE OR DELETE ON inv.stock_movement
   FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
 
@@ -152,6 +212,8 @@ GRANT SELECT, INSERT ON inv.posted_source TO rc_app;
 GRANT SELECT, INSERT, UPDATE ON inv.negative_stock_policy TO rc_app;
 GRANT SELECT ON inv.negative_stock_policy TO rc_worker, rc_reporting;
 GRANT SELECT, INSERT ON inv.stock_adjustment TO rc_app;
+GRANT SELECT, INSERT ON inv.supplier, inv.goods_receipt, inv.goods_receipt_line TO rc_app;
+GRANT SELECT ON inv.supplier, inv.goods_receipt, inv.goods_receipt_line TO rc_worker, rc_reporting;
 GRANT SELECT ON inv.stock_adjustment TO rc_worker, rc_reporting;
 GRANT EXECUTE ON FUNCTION inv.ensure_movement_partitions(int) TO rc_worker;
 -- INV-001 rebuild (operator command run by Workers): balances only, never the ledger

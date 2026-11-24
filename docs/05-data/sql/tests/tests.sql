@@ -221,6 +221,29 @@ INSERT INTO inv.stock_adjustment (tenant_id, id, warehouse_id, reason, line_coun
           gen_random_uuid(), gen_random_uuid());
 SELECT t.expect_error('T196 an adjustment is never changed by the app (AB-05)', '42501',
   $$UPDATE inv.stock_adjustment SET value = 0, shrinkage = 0, journal_entry_id = NULL WHERE id = 'a0000000-0000-0000-0000-000000000095'$$);
+-- US-071 suppliers and goods receipts (PRC-001/002)
+INSERT INTO inv.supplier (tenant_id, id, name, national_id, created_by)
+  VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000096', 'پخش البرز', '10101010101', gen_random_uuid());
+SELECT t.expect_error('T197 a national id belongs to one supplier of the store', '23505',
+  $$INSERT INTO inv.supplier (tenant_id, id, name, national_id, created_by) VALUES (core.current_tenant(), gen_random_uuid(), 'دیگری', '10101010101', gen_random_uuid())$$);
+SELECT t.expect_error('T198 a receipt total is its net cost plus input VAT', '23514',
+  $$INSERT INTO inv.goods_receipt (tenant_id, id, supplier_id, warehouse_id, effective_at, net_total, input_vat, total, journal_entry_id, created_by)
+    VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000096', 'a0000000-0000-0000-0000-000000000003', now(),
+            1000, 100, 1000, gen_random_uuid(), gen_random_uuid())$$);
+SELECT t.expect_error('T199 a valued receipt always has its journal entry (PRC-002)', '23514',
+  $$INSERT INTO inv.goods_receipt (tenant_id, id, supplier_id, warehouse_id, effective_at, net_total, input_vat, total, journal_entry_id, created_by)
+    VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000096', 'a0000000-0000-0000-0000-000000000003', now(),
+            1000, 0, 1000, NULL, gen_random_uuid())$$);
+INSERT INTO inv.goods_receipt (tenant_id, id, supplier_id, warehouse_id, effective_at, net_total, input_vat, total, journal_entry_id, created_by)
+  VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000097', 'a0000000-0000-0000-0000-000000000096', 'a0000000-0000-0000-0000-000000000003',
+          now(), 2500, 0, 2500, gen_random_uuid(), gen_random_uuid());
+SELECT t.expect_error('T200 a line costs its quantity times its unit cost less its discount', '23514',
+  $$INSERT INTO inv.goods_receipt_line (tenant_id, receipt_id, line_no, variant_id, qty, unit, unit_factor, unit_cost, discount, line_cost)
+    VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000097', 1, 'a0000000-0000-0000-0000-000000000011', 2.5, 'EA', 1, 1001, 0, 2500)$$);
+INSERT INTO inv.goods_receipt_line (tenant_id, receipt_id, line_no, variant_id, qty, unit, unit_factor, unit_cost, discount, line_cost)
+  VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000097', 1, 'a0000000-0000-0000-0000-000000000011', 2.5, 'EA', 1, 1001, 3, 2500);
+SELECT t.expect_error('T201 a posted receipt is never changed by the app', '42501',
+  $$UPDATE inv.goods_receipt_line SET unit_cost = 0 WHERE receipt_id = 'a0000000-0000-0000-0000-000000000097'$$);
 SELECT t.expect_error('T14 stock movement is append-only for the app role', '42501',
   $$UPDATE inv.stock_movement SET qty_base = -2$$);
 SELECT t.expect_error('T15 movement for another tenant via parent rejected', '42501',

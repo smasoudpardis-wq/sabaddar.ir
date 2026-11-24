@@ -138,6 +138,50 @@ public sealed class PostgresProductCatalog(IOutbox outbox) : IProductCatalog
             : null;
     }
 
+    public async Task<IReadOnlyDictionary<Guid, VariantUnits>> UnitsAsync(IUnitOfWorkScope scope, IReadOnlyCollection<Guid> variantIds,
+        CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
+            "SELECT v.id, p.base_unit_code, b.packaging_unit, b.unit_factor FROM merch.tenant_variant v " +
+            "JOIN merch.tenant_product p ON p.tenant_id = v.tenant_id AND p.id = v.product_id " +
+            "LEFT JOIN merch.tenant_product_barcode b ON b.tenant_id = v.tenant_id AND b.variant_id = v.id AND b.active WHERE v.id = ANY($1)");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = variantIds.ToArray(), NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Uuid });
+        var rows = new Dictionary<Guid, (string Base, List<(string Unit, decimal Factor)> Packs)>();
+        await using (NpgsqlDataReader r = await cmd.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await r.ReadAsync(cancellationToken))
+            {
+                Guid id = r.GetGuid(0);
+                if (!rows.TryGetValue(id, out var v))
+                {
+                    rows[id] = v = (r.GetString(1), []);
+                }
+
+                if (!r.IsDBNull(2))
+                {
+                    v.Packs.Add((r.GetString(2), r.GetDecimal(3)));
+                }
+            }
+        }
+
+        var result = new Dictionary<Guid, VariantUnits>();
+        foreach ((Guid id, (string baseUnit, List<(string Unit, decimal Factor)> packs)) in rows)
+        {
+            var factors = new Dictionary<string, decimal>(StringComparer.Ordinal) { [baseUnit] = 1 };
+            foreach (var g in packs.Where(p => p.Unit != baseUnit).GroupBy(p => p.Unit, StringComparer.Ordinal))
+            {
+                if (g.Select(p => p.Factor).Distinct().Count() == 1)
+                {
+                    factors[g.Key] = g.First().Factor;
+                }
+            }
+
+            result[id] = new VariantUnits(baseUnit, factors);
+        }
+
+        return result;
+    }
+
     public async Task<IReadOnlySet<Guid>> ExistingVariantsAsync(IUnitOfWorkScope scope, IReadOnlyCollection<Guid> variantIds,
         CancellationToken cancellationToken)
     {

@@ -50,6 +50,7 @@ public sealed class InventoryTests : IClassFixture<ApiFactory>, IAsyncLifetime
 
             return 0;
         });
+        await TestAccounting.SetUpAsync(Cs, _tenant);   // opening stock posts its entry (UC-01)
     }
 
     public Task DisposeAsync() => Task.CompletedTask;

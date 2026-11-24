@@ -41,6 +41,14 @@ DELETE FROM iam.support_access_request WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM iam.role_assignment WHERE user_id IN (SELECT id FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$CASHIER_SUB');
 DELETE FROM iam.tenant_membership WHERE user_id IN (SELECT id FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$CASHIER_SUB');
 DELETE FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$CASHIER_SUB';
+DELETE FROM inv.goods_receipt_line WHERE tenant_id IN ('$T1','$T2','$TF');
+DELETE FROM inv.goods_receipt WHERE tenant_id IN ('$T1','$T2','$TF');
+DELETE FROM inv.supplier WHERE tenant_id IN ('$T1','$T2','$TF');
+DELETE FROM acc.journal_line WHERE tenant_id IN ('$T1','$T2','$TF');
+DELETE FROM acc.journal_entry WHERE tenant_id IN ('$T1','$T2','$TF');
+DELETE FROM acc.account_role WHERE tenant_id IN ('$T1','$T2','$TF');
+DELETE FROM acc.account WHERE tenant_id IN ('$T1','$T2','$TF');
+DELETE FROM acc.fiscal_period WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM inv.stock_adjustment WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM inv.stock_movement WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM inv.posted_source WHERE tenant_id IN ('$T1','$T2','$TF');
@@ -104,6 +112,10 @@ trap cleanup EXIT
 # (CI saw "deps.json is being used by another process" and the Workers never started).
 ( cd "$BACKEND" && dotnet build Hosts/RetailCloud.Api -v q -nologo >"$LOGS/build.log" 2>&1 && dotnet build Hosts/RetailCloud.Workers -v q -nologo >>"$LOGS/build.log" 2>&1 ) \
   || { echo "backend build failed"; tail -30 "$LOGS/build.log"; exit 1; }
+# store A keeps books: receipts and adjustments post their entries in the same transaction (TEN-001.1)
+( cd "$BACKEND" && env DOTNET_ENVIRONMENT=Development ConnectionStrings__Main="$WORKER_PG" \
+  dotnet run --no-build --no-launch-profile --project Hosts/RetailCloud.Workers -- setup-accounting "$T1" >"$LOGS/setup-accounting.log" 2>&1 ) \
+  || { echo "accounting setup failed"; tail -30 "$LOGS/setup-accounting.log"; exit 1; }
 ( cd "$BACKEND" && exec setsid env ASPNETCORE_URLS=http://127.0.0.1:5080 ASPNETCORE_ENVIRONMENT=Development \
   Auth__Merchant__Authority="$ISSUER" Auth__Merchant__RequireHttpsMetadata=false ConnectionStrings__Main="$RC_TEST_PG" \
   dotnet run --no-build --no-launch-profile --project Hosts/RetailCloud.Api >"$LOGS/api.log" 2>&1 ) & API_PID=$!

@@ -1,7 +1,10 @@
 namespace RetailCloud.Accounting.Application;
 
-/// <summary>A line of a posting rule: an account role (D-30), mapped to the tenant's account when posted.</summary>
-public sealed record RoleLine(string Role, long Debit, long Credit);
+/// <summary>
+/// A line of a posting rule: an account role (D-30), mapped to the tenant's account when posted, with the detail
+/// (e.g. Supplier) a detail-required account needs (DI-043).
+/// </summary>
+public sealed record RoleLine(string Role, long Debit, long Credit, string? DetailType = null, Guid? DetailId = null);
 
 /// <summary>What a posting rule produces for one business event (ACC-004); the version is stored on the entry.</summary>
 public sealed record PostingDraft(string SourceType, Guid SourceId, string Purpose, int RuleVersion, DateTimeOffset EffectiveAt, string Description,
@@ -54,4 +57,52 @@ public static class InventoryAdjustmentRule
         return lines.Count == 0 ? null : new PostingDraft("StockAdjustment", adjustmentId, "inventory-adjustment", Version, postedAt,
             "تعدیل موجودی: " + reasonText, lines);
     }
+}
+
+/// <summary>
+/// D02 §5.8.1 «رسید خرید» (PRC-002): Inventory (the net cost) and InputVat debit, the supplier's payable credit.
+/// Version 1 (the accountant's review is OQ-05). Nothing to post when the receipt is worth nothing (a gift).
+/// </summary>
+public static class GoodsReceiptRule
+{
+    public const int Version = 1;
+
+    public static PostingDraft? For(Guid receiptId, Guid supplierId, long netCost, long inputVat, DateTimeOffset effectiveAt, string description)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(netCost);
+        ArgumentOutOfRangeException.ThrowIfNegative(inputVat);
+        long total = checked(netCost + inputVat);
+        if (total == 0)
+        {
+            return null;
+        }
+
+        var lines = new List<RoleLine>();
+        if (netCost > 0)
+        {
+            lines.Add(new RoleLine("Inventory", netCost, 0));
+        }
+
+        if (inputVat > 0)
+        {
+            lines.Add(new RoleLine("InputVat", inputVat, 0));
+        }
+
+        lines.Add(new RoleLine("TradePayables", 0, total, "Supplier", supplierId));
+        return new PostingDraft("GoodsReceipt", receiptId, "goods-receipt", Version, effectiveAt, description, lines);
+    }
+}
+
+/// <summary>D02 UC-01 step 9: a new product's opening stock debits Inventory and credits OpeningBalanceEquity. Version 1.</summary>
+public static class OpeningStockRule
+{
+    public const int Version = 1;
+
+    public static PostingDraft? For(Guid productId, long cost, DateTimeOffset at, string productName) => cost switch
+    {
+        < 0 => throw new ArgumentOutOfRangeException(nameof(cost)),
+        0 => null,
+        _ => new PostingDraft("Product", productId, "opening-stock", Version, at, "موجودی افتتاحیه: " + productName,
+            [new RoleLine("Inventory", cost, 0), new RoleLine("OpeningBalanceEquity", 0, cost)]),
+    };
 }

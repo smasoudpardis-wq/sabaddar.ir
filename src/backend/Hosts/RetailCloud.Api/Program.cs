@@ -33,6 +33,7 @@ builder.Services.AddSingleton<IPriceLists, PostgresPriceLists>();
 builder.Services.AddSingleton<IDiscounts, PostgresDiscounts>();
 builder.Services.AddSingleton<IStockLedger, RetailCloud.Inventory.Infrastructure.PostgresStockLedger>();
 builder.Services.AddSingleton<IStockAdjustments, RetailCloud.Inventory.Infrastructure.PostgresStockAdjustments>();
+builder.Services.AddSingleton<IProcurement, RetailCloud.Inventory.Infrastructure.PostgresProcurement>();
 builder.Services.AddSingleton<IShifts, PostgresShifts>();
 builder.Services.AddSingleton<IJournals, PostgresJournals>();
 ObjectStorageOptions? storage = builder.Configuration.GetSection("Storage").Get<ObjectStorageOptions>();
@@ -443,6 +444,12 @@ IResult AccountingProblem(HttpContext http, AccountingOutcome outcome, string? d
     AccountingOutcome.UnknownRole => Problems.Validation(http, new Dictionary<string, string[]> { ["mappings"] = [$"unknown role: {detail}"] }),
     _ => Problems.Validation(http, new Dictionary<string, string[]> { ["lines"] = [detail ?? "unknown account"] }),
 };
+
+// an automatic entry that cannot be posted refuses its business document: a role with no account, or no open period
+IResult AutomaticEntryProblem(HttpContext http, AccountingResult<JournalView> entry) => entry.Outcome == AccountingOutcome.UnknownRole
+    ? Problems.Create(http, StatusCodes.Status422UnprocessableEntity, "account-role-unmapped",
+        $"No account is mapped to the role {entry.Detail}; set it in the account mappings")
+    : AccountingProblem(http, entry.Outcome, entry.Detail);
 
 v1.MapGet("/accounting/accounts", async (RequestContext ctx, IUnitOfWork uow, IJournals journals, CancellationToken ct) =>
         Results.Ok(await uow.ExecuteAsync(ctx, (s, c) => journals.AccountsAsync(s, c), ct)))
@@ -935,6 +942,13 @@ v1.MapIdempotentPost<ProductCreate>("/products", "catalog.create-product", async
             StockResult opening = await http.RequestServices.GetRequiredService<IStockLedger>().PostAsync(scope, new StockDocument("Product", result.Value!.Id,
                 DateTimeOffset.UtcNow, [new StockLine(1, warehouseId, result.Value.Variants[0].Id, MovementType.OpeningBalance, openingQty, openingCost)], "opening-stock"), ct);
             if (opening.Outcome != StockOutcome.Done) throw new InvalidOperationException($"opening stock of a new product: {opening.Outcome}");
+
+            // UC-01 step 9: the entry «Inventory / OpeningBalanceEquity» in the same transaction
+            if (OpeningStockRule.For(result.Value.Id, openingCost, DateTimeOffset.UtcNow, result.Value.Name) is { } draft)
+            {
+                AccountingResult<JournalView> entry = await http.RequestServices.GetRequiredService<IJournals>().PostAutomaticAsync(scope, draft, ct);
+                if (entry.Outcome != AccountingOutcome.Done) return CommandResult.Fail(AutomaticEntryProblem(http, entry));
+            }
         }
 
         await Audit(http, scope, ActorOf(ctx, http), new AuditEntry("catalog.product.created", "Product", result.Value!.Id.ToString(),
@@ -1406,13 +1420,7 @@ v1.MapIdempotentPost<AdjustmentInput>("/inventory/adjustments", "inventory.post-
         if (InventoryAdjustmentRule.For(id, shrinkage, overage, now, ReasonFa(body.Reason!)) is { } draft)
         {
             AccountingResult<JournalView> entry = await http.RequestServices.GetRequiredService<IJournals>().PostAutomaticAsync(scope, draft, ct);
-            if (entry.Outcome == AccountingOutcome.UnknownRole)
-            {
-                return CommandResult.Fail(Problems.Create(http, StatusCodes.Status422UnprocessableEntity, "account-role-unmapped",
-                    $"No account is mapped to the role {entry.Detail}; set it in the account mappings"));
-            }
-
-            if (entry.Outcome != AccountingOutcome.Done) return CommandResult.Fail(AccountingProblem(http, entry.Outcome, entry.Detail));
+            if (entry.Outcome != AccountingOutcome.Done) return CommandResult.Fail(AutomaticEntryProblem(http, entry));
             journalId = entry.Value!.Id;
         }
 
@@ -1442,6 +1450,179 @@ v1.MapGet("/inventory/adjustments", async (RequestContext ctx, IUnitOfWork uow, 
             }
 
             return new { items = rows.Where(a => canSee[a.WarehouseId]).Select(a => AdjustmentJson(a)) };
+        }, ct));
+    })
+    .RequirePermission(Permissions.ReportsView);
+
+// ---------------- US-071: suppliers (PRC-001) and goods receipts (PRC-002, UC-05): movements, WAC, balances and the entry
+// «Inventory + InputVat / the supplier's payable» in one transaction.
+object SupplierJson(SupplierRecord s, long balance) => new
+{
+    s.Id, s.Name, s.NationalId, s.EconomicCode, s.Phone, balance = Rial(balance),
+};
+
+object ReceiptJson(ReceiptRecord r, IReadOnlyList<PostedMovement>? posted = null, IReadOnlyList<string>? warnings = null) => new
+{
+    r.Id, r.SupplierId, r.WarehouseId, r.SupplierInvoiceNo, r.EffectiveAt, netTotal = Rial(r.NetTotal), inputVat = Rial(r.InputVat), total = Rial(r.Total),
+    lines = r.Lines.Select(l => new
+    {
+        l.LineNo, l.VariantId, qty = Qty(l.Qty), l.Unit, unitFactor = Qty(l.UnitFactor), qtyBase = Qty(l.QtyBase), unitCost = Rial(l.UnitCost),
+        discount = Rial(l.Discount), inputVat = Rial(l.InputVat), lineCost = Rial(l.LineCost),
+        newWac = posted?.FirstOrDefault(m => m.Line == l.LineNo) is { } m ? Rial(m.WacAfter) : null,
+    }),
+    r.JournalEntryId, r.CreatedBy, r.PostedAt, warnings = warnings ?? [],
+};
+
+v1.MapGet("/suppliers", async (RequestContext ctx, IUnitOfWork uow, IProcurement procurement, IJournals journals, string? q, CancellationToken ct) =>
+        Results.Ok(await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            var suppliers = await procurement.SuppliersAsync(s, string.IsNullOrWhiteSpace(q) ? null : q.Trim(), c);
+            var balances = await journals.DetailBalancesAsync(s, "TradePayables", "Supplier", [.. suppliers.Select(x => x.Id)], c);
+            return new
+            {
+                items = suppliers.Select(x => SupplierJson(x, balances.GetValueOrDefault(x.Id))),
+                page = new { nextCursor = (string?)null, hasMore = suppliers.Count == 200 },
+            };
+        }, ct)))
+    .RequireTenantMember();
+
+v1.MapPost("/suppliers", async (SupplierInput body, RequestContext ctx, IUnitOfWork uow, IProcurement procurement, HttpContext http, CancellationToken ct) =>
+    {
+        var errors = new Dictionary<string, string[]>();
+        string name = body.Name?.Trim() ?? "";
+        if (name.Length is < 1 or > 200) errors["name"] = ["1-200 characters"];
+        string? Blank(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
+        string? nationalId = Blank(body.NationalId), economicCode = Blank(body.EconomicCode), phone = Blank(body.Phone);
+        if (!ReceiptRules.ValidNationalId(nationalId)) errors["nationalId"] = ["10 digits (person) or 11 digits (legal entity)"];
+        if (!ReceiptRules.ValidEconomicCode(economicCode)) errors["economicCode"] = ["12-14 digits"];
+        if (!ReceiptRules.ValidPhone(phone)) errors["phone"] = ["8-15 digits, optionally starting with +"];
+        if (errors.Count > 0) return Problems.Validation(http, errors);
+        if (!AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.InventoryReceiptCreate, ScopeRef.Tenant)) return Forbidden(http);
+        return await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            var (outcome, supplier) = await procurement.CreateSupplierAsync(s, name, nationalId, economicCode, phone, ctx.User!.Value.Value, c);
+            if (outcome == SupplierOutcome.DuplicateNationalId)
+            {
+                return Problems.Create(http, StatusCodes.Status409Conflict, "duplicate-national-id", "A supplier with this national id already exists");
+            }
+
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry("procurement.supplier.created", "Supplier", supplier!.Id.ToString(),
+                Details: new { supplier.Name, supplier.NationalId, supplier.EconomicCode }), c);
+            return Results.Created($"/api/v1/suppliers/{supplier.Id}", SupplierJson(supplier, 0));
+        }, ct);
+    })
+    .RequirePermission(Permissions.InventoryReceiptCreate);
+
+v1.MapIdempotentPost<ReceiptInput>("/inventory/receipts", "inventory.post-goods-receipt", async (body, scope, http, ct) =>
+    {
+        RequestContext ctx = http.RequestServices.GetRequiredService<RequestContext>();
+        var errors = new Dictionary<string, string[]>();
+        if (body.SupplierId is null) errors["supplierId"] = ["required"];
+        if (body.WarehouseId is null) errors["warehouseId"] = ["required"];
+        string? invoiceNo = string.IsNullOrWhiteSpace(body.SupplierInvoiceNo) ? null : body.SupplierInvoiceNo.Trim();
+        if (invoiceNo is { Length: > 40 }) errors["supplierInvoiceNo"] = ["up to 40 characters"];
+        if (body.EffectiveDate is not null) errors["effectiveDate"] = ["not-yet-supported"];   // a back-dated receipt: with the accountant (OQ-05)
+        string[] confirmed = body.ConfirmedWarnings ?? [];
+        var inputs = new List<(Guid Variant, decimal Qty, string Unit, long UnitCost, long Discount, long Vat)>();
+        if (body.Lines is not { Length: >= 1 and <= ReceiptRules.MaxLines }) errors["lines"] = [$"1-{ReceiptRules.MaxLines} lines"];
+        for (int i = 0; i < (body.Lines?.Length ?? 0) && body.Lines!.Length <= ReceiptRules.MaxLines; i++)
+        {
+            ReceiptLineInput? l = body.Lines[i];
+            bool ok = true;
+            if (l?.VariantId is null) { errors[$"lines[{i}].variantId"] = ["required"]; ok = false; }
+            if (l?.Qty is null || !ProductRules.TryFactor(l.Qty, out decimal qty)) { errors[$"lines[{i}].qty"] = ["positive decimal, up to 6 places"]; ok = false; qty = 0; }
+            if (!ProductRules.ValidUnit(l?.Unit)) { errors[$"lines[{i}].unit"] = ["1-10 of A-Z 0-9"]; ok = false; }
+            if (!TryMoney(l?.UnitCost, positive: false, out long unitCost)) { errors[$"lines[{i}].unitCost"] = ["rials per unit as a whole-number string"]; ok = false; }
+            long discount = 0, vat = 0;
+            if (l?.Discount is not null && !TryMoney(l.Discount, positive: false, out discount)) { errors[$"lines[{i}].discount"] = ["rials as a whole-number string"]; ok = false; }
+            if (l?.InputVat is not null && !TryMoney(l.InputVat, positive: false, out vat)) { errors[$"lines[{i}].inputVat"] = ["rials as a whole-number string"]; ok = false; }
+            if (ok && ReceiptRules.LineCost(qty, unitCost, discount) < 0) { errors[$"lines[{i}].discount"] = ["not more than the line's amount"]; ok = false; }
+            if (ok) inputs.Add((l!.VariantId!.Value, qty, l.Unit!, unitCost, discount, vat));
+        }
+
+        if (errors.Count > 0) return CommandResult.Fail(Problems.Validation(http, errors));
+
+        Guid warehouseId = body.WarehouseId!.Value, supplierId = body.SupplierId!.Value;
+        if (await ResolveScope(scope, http.RequestServices.GetServices<IScopeLookup>(), ScopeType.Warehouse, warehouseId, ct) is not { } warehouse)
+        {
+            return CommandResult.Fail(Problems.Validation(http, new Dictionary<string, string[]> { ["warehouseId"] = ["not a warehouse of this store"] }));
+        }
+
+        if (!AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.InventoryReceiptCreate, warehouse)) return CommandResult.Fail(Forbidden(http));
+        IProcurement procurement = http.RequestServices.GetRequiredService<IProcurement>();
+        if (await procurement.SupplierAsync(scope, supplierId, ct) is not { } supplier)
+        {
+            return CommandResult.Fail(Problems.Validation(http, new Dictionary<string, string[]> { ["supplierId"] = ["not a supplier of this store"] }));
+        }
+
+        // BR-044: the unit must be the base unit or a packaging unit of the variant; its factor is taken now and kept
+        var units = await http.RequestServices.GetRequiredService<IProductCatalog>().UnitsAsync(scope, [.. inputs.Select(x => x.Variant).Distinct()], ct);
+        var lines = new List<ReceiptLine>();
+        for (int i = 0; i < inputs.Count; i++)
+        {
+            var x = inputs[i];
+            if (!units.TryGetValue(x.Variant, out VariantUnits? vu))
+            {
+                return CommandResult.Fail(Problems.Validation(http, new Dictionary<string, string[]> { [$"lines[{i}].variantId"] = ["not a variant of this store"] }));
+            }
+
+            if (!vu.Factors.TryGetValue(x.Unit, out decimal factor))
+            {
+                return CommandResult.Fail(Problems.WithContext(http, StatusCodes.Status422UnprocessableEntity, "unknown-unit",
+                    "This unit has no conversion to the product's base unit", new { line = i, unit = x.Unit, units = vu.Factors.Keys }));
+            }
+
+            lines.Add(new ReceiptLine(i + 1, x.Variant, x.Qty, x.Unit, factor, x.UnitCost, x.Discount, x.Vat));
+        }
+
+        // UC-05: a zero cost and a repeated supplier invoice are confirmed explicitly, not refused
+        IReadOnlyList<string> warnings = ReceiptRules.Warnings(lines, invoiceNo is not null && await procurement.InvoiceSeenAsync(scope, supplierId, invoiceNo, ct));
+        if (warnings.Except(confirmed).Any())
+        {
+            return CommandResult.Fail(Problems.WithContext(http, StatusCodes.Status422UnprocessableEntity, "confirmation-required",
+                "Confirm the warnings and send the receipt again", new { warnings = warnings.Except(confirmed) }));
+        }
+
+        Guid id = Guid.CreateVersion7();
+        DateTimeOffset now = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
+        StockResult posted = await http.RequestServices.GetRequiredService<IStockLedger>().PostAsync(scope, new StockDocument("GoodsReceipt", id, now,
+            [.. lines.Select(l => new StockLine(l.LineNo, warehouseId, l.VariantId, MovementType.GoodsReceipt, l.Qty, l.LineCost,
+                l.UnitFactor == 1 ? null : new EnteredUnit(l.Unit, l.UnitFactor)))]), ct);
+        if (posted.Outcome != StockOutcome.Done) throw new InvalidOperationException($"goods receipt {id}: {posted.Outcome}");
+
+        long net = lines.Sum(l => l.LineCost), vatTotal = lines.Sum(l => l.InputVat);
+        Guid? journalId = null;
+        if (GoodsReceiptRule.For(id, supplierId, net, vatTotal, now, $"رسید خرید از {supplier.Name}{(invoiceNo is null ? "" : $" (فاکتور {invoiceNo})")}") is { } draft)
+        {
+            AccountingResult<JournalView> entry = await http.RequestServices.GetRequiredService<IJournals>().PostAutomaticAsync(scope, draft, ct);
+            if (entry.Outcome != AccountingOutcome.Done) return CommandResult.Fail(AutomaticEntryProblem(http, entry));
+            journalId = entry.Value!.Id;
+        }
+
+        ReceiptRecord receipt = await procurement.RecordReceiptAsync(scope, new ReceiptRecord(id, supplierId, warehouseId, invoiceNo, now, lines, net, vatTotal,
+            net + vatTotal, journalId, ctx.User!.Value.Value, now), ct);
+        await Audit(http, scope, ActorOf(ctx, http), new AuditEntry("inventory.goods-receipt.posted", "GoodsReceipt", id.ToString(), null, new
+        {
+            supplierId, warehouseId, invoiceNo, net, inputVat = vatTotal, journalId, lines = lines.Count, confirmed = warnings,
+        }), ct);
+        return CommandResult.Created(ReceiptJson(receipt, posted.Movements, [.. warnings, .. posted.Warnings]));
+    })
+    .RequirePermission(Permissions.InventoryReceiptCreate);
+
+v1.MapGet("/inventory/receipts", async (RequestContext ctx, IUnitOfWork uow, IProcurement procurement, HttpContext http, CancellationToken ct) =>
+    {
+        var lookups = http.RequestServices.GetServices<IScopeLookup>();
+        return Results.Ok(await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            var rows = await procurement.ReceiptsAsync(s, null, c);
+            var canSee = new Dictionary<Guid, bool>();
+            foreach (Guid w in rows.Select(r => r.WarehouseId).Distinct())
+            {
+                canSee[w] = await ResolveScope(s, lookups, ScopeType.Warehouse, w, c) is { } scope
+                            && AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.ReportsView, scope);
+            }
+
+            return new { items = rows.Where(r => canSee[r.WarehouseId]).Select(r => ReceiptJson(r)) };
         }, ct));
     })
     .RequirePermission(Permissions.ReportsView);
@@ -2260,6 +2441,10 @@ internal sealed record DiscountCapsInput(Dictionary<string, int>? Caps);
 internal sealed record NegativeStockPolicyInput(string? ScopeType, Guid? ScopeId, string? Policy);
 internal sealed record AdjustmentLineInput(Guid? VariantId, string? QtyDelta);
 internal sealed record AdjustmentInput(Guid? WarehouseId, string? Reason, AdjustmentLineInput?[]? Lines, string? Note);
+internal sealed record SupplierInput(string? Name, string? NationalId, string? EconomicCode, string? Phone);
+internal sealed record ReceiptLineInput(Guid? VariantId, string? Qty, string? Unit, string? UnitCost, string? Discount, string? InputVat);
+internal sealed record ReceiptInput(Guid? SupplierId, Guid? WarehouseId, ReceiptLineInput?[]? Lines, string? SupplierInvoiceNo, string? EffectiveDate,
+    string[]? ConfirmedWarnings);
 internal sealed record PriceItemInput(Guid? VariantId, string? UnitPrice);
 internal sealed record PriceSetInput(PriceItemInput?[]? Items, DateTimeOffset? ValidFrom, string? Reason);
 internal sealed record WeightedProfileInput(Guid? Id, string? Prefix, int? ItemCodeLength, string? ValueType, int? ValueLength, int? Decimals,

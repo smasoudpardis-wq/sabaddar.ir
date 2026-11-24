@@ -35,6 +35,8 @@ public sealed record BarcodeSpec(string Code, string Normalized, string Packagin
 
 public sealed record BarcodeMatch(Guid ProductId, Guid VariantId, string Name, string Sku, string BaseUnit, bool IsInternal, long? UnitPrice);
 
+public sealed record VariantUnits(string BaseUnit, IReadOnlyDictionary<string, decimal> Factors);
+
 public sealed record VariantSpec(string Sku, IReadOnlyDictionary<string, string> AxisValues, IReadOnlyList<BarcodeSpec> Barcodes);
 
 /// <summary><paramref name="Axes"/>: CAT-008 matrix axes; when present every variant names exactly these axes.</summary>
@@ -85,6 +87,12 @@ public interface IProductCatalog
     Task<CatalogOutcome> RemoveBarcodeAsync(IUnitOfWorkScope scope, Guid productId, Guid variantId, Guid barcodeId, CancellationToken cancellationToken);
 
     /// <summary>Which of these ids are variants of this store, active or switched off (stock of either can be adjusted).</summary>
+    /// <summary>
+    /// BR-044: the units each variant can be counted in, with their factor to the base unit: the base unit (1) and the
+    /// packaging unit of each active barcode. A unit whose barcodes disagree on the factor is left out (ambiguous).
+    /// </summary>
+    Task<IReadOnlyDictionary<Guid, VariantUnits>> UnitsAsync(IUnitOfWorkScope scope, IReadOnlyCollection<Guid> variantIds, CancellationToken cancellationToken);
+
     Task<IReadOnlySet<Guid>> ExistingVariantsAsync(IUnitOfWorkScope scope, IReadOnlyCollection<Guid> variantIds, CancellationToken cancellationToken);
 }
 

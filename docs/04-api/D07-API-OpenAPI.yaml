@@ -2592,6 +2592,43 @@ paths:
       - BR-042
       - UC-05
       x-audited: true
+    get:
+      operationId: listGoodsReceipts
+      tags:
+      - Inventory
+      summary: رسیدهای خرید اخیر
+      security: *id001
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - items
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GoodsReceipt'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: reports.view
+      x-idempotent: false
+      x-requirements:
+      - PRC-002
   /inventory/adjustments:
     post:
       operationId: postAdjustment
@@ -3110,6 +3147,11 @@ paths:
       parameters:
       - $ref: '#/components/parameters/Cursor'
       - $ref: '#/components/parameters/Limit'
+      - name: q
+        in: query
+        required: false
+        schema:
+          type: string
       responses:
         '200':
           description: Success
@@ -3132,6 +3174,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
         '429':
           $ref: '#/components/responses/TooManyRequests'
         default:
@@ -9980,29 +10024,73 @@ components:
         warehouseId:
           type: string
           format: uuid
+        supplierInvoiceNo:
+          type:
+          - string
+          - 'null'
+        effectiveAt:
+          type: string
+          format: date-time
+        netTotal:
+          $ref: '#/components/schemas/Money'
+          description: 'Σ line cost: the Inventory debit'
+        inputVat:
+          $ref: '#/components/schemas/Money'
         total:
           $ref: '#/components/schemas/Money'
+          description: The supplier's payable credit
         lines:
           type: array
           items:
             type: object
             additionalProperties: false
             properties:
+              lineNo:
+                type: integer
+                format: int32
               variantId:
                 type: string
                 format: uuid
+              qty:
+                $ref: '#/components/schemas/Quantity'
+              unit:
+                type: string
+              unitFactor:
+                $ref: '#/components/schemas/Quantity'
               qtyBase:
                 $ref: '#/components/schemas/Quantity'
               unitCost:
                 $ref: '#/components/schemas/Money'
-              newWac:
+              discount:
                 $ref: '#/components/schemas/Money'
+              inputVat:
+                $ref: '#/components/schemas/Money'
+              lineCost:
+                $ref: '#/components/schemas/Money'
+              newWac:
+                anyOf:
+                - $ref: '#/components/schemas/Money'
+                - type: 'null'
+                description: The WAC after this line; only in the response to postGoodsReceipt
             required:
+            - lineNo
             - variantId
+            - qty
+            - unit
+            - unitFactor
             - qtyBase
             - unitCost
+            - discount
+            - inputVat
+            - lineCost
             - newWac
         journalEntryId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: Null only for a receipt worth nothing
+        createdBy:
           type: string
           format: uuid
         warnings:
@@ -10016,9 +10104,14 @@ components:
       - id
       - supplierId
       - warehouseId
+      - supplierInvoiceNo
+      - effectiveAt
+      - netTotal
+      - inputVat
       - total
       - lines
       - journalEntryId
+      - createdBy
       - warnings
       - postedAt
     GoodsReceiptCreate:
@@ -10040,6 +10133,12 @@ components:
         effectiveDate:
           type: string
           format: date
+          description: Not yet supported (a back-dated receipt waits for OQ-05)
+        confirmedWarnings:
+          type: array
+          items:
+            type: string
+          description: 'UC-05 warnings the user confirmed: zero-cost, duplicate-supplier-invoice'
       required:
       - supplierId
       - warehouseId
@@ -11336,14 +11435,19 @@ components:
           format: uuid
         qty:
           $ref: '#/components/schemas/Quantity'
+          description: In unit, as on the supplier's invoice
         unit:
           type: string
+          description: The base unit or a packaging unit of the variant (BR-044); otherwise 422 unknown-unit
         unitCost:
           $ref: '#/components/schemas/Money'
+          description: Rials per unit
         discount:
           $ref: '#/components/schemas/Money'
+          description: Rials off the line
         inputVat:
           $ref: '#/components/schemas/Money'
+          description: Rials of purchase VAT on the line
       required:
       - variantId
       - qty
@@ -12525,11 +12629,27 @@ components:
           format: uuid
         name:
           type: string
+        nationalId:
+          type:
+          - string
+          - 'null'
+        economicCode:
+          type:
+          - string
+          - 'null'
+        phone:
+          type:
+          - string
+          - 'null'
         balance:
           $ref: '#/components/schemas/Money'
+          description: 'What the store owes: TradePayables credit − debit with this supplier as detail'
       required:
       - id
       - name
+      - nationalId
+      - economicCode
+      - phone
       - balance
     SupplierCreate:
       type: object
@@ -13552,7 +13672,13 @@ x-error-catalog:
     meaning: BR-053
   confirmation-required:
     status: 422
-    meaning: Low-confidence catalog data must be confirmed (CAT-004.1)
+    meaning: Low-confidence catalog data (CAT-004.1) or UC-05 receipt warnings (context.warnings[]) must be confirmed
+  unknown-unit:
+    status: 422
+    meaning: The unit has no conversion to the product's base unit (BR-044); context.units[]
+  duplicate-national-id:
+    status: 409
+    meaning: A supplier with this national id already exists (PRC-001)
   invalid-barcode:
     status: 422
     meaning: Check digit/format (CAT-003)

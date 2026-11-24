@@ -3,7 +3,6 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Npgsql;
-using RetailCloud.Accounting.Infrastructure;
 using RetailCloud.BuildingBlocks.Api;
 using RetailCloud.BuildingBlocks.Application;
 using RetailCloud.BuildingBlocks.Domain;
@@ -57,17 +56,7 @@ public sealed class AdjustmentTests : IClassFixture<ApiFactory>, IAsyncLifetime
             return 0;
         });
 
-        // the chart of accounts, the role mapping and the open periods, as tenant registration sets them up (TEN-001.1)
-        await using var worker = NpgsqlDataSource.Create(new NpgsqlConnectionStringBuilder(Cs) { Username = "rc_worker_test", Password = "rc_worker_test" }.ToString());
-        await new PostgresUnitOfWork(worker).ExecuteAsync(new FixedTenantContext(new TenantId(_tenant)), async (s, ct) =>
-        {
-            await new TenantAccountingSetupConsumer().HandleAsync(s, new IntegrationEvent(Guid.CreateVersion7(), "platform.tenant-registered", 1,
-                new TenantId(_tenant), DateTimeOffset.UtcNow, null, null, "platform", _tenant, JsonSerializer.SerializeToElement(new
-                {
-                    industryCode = "supermarket", timeZone = "Asia/Tehran", registeredAt = DateTimeOffset.UtcNow,
-                })), ct);
-            return 0;
-        });
+        await TestAccounting.SetUpAsync(Cs, _tenant);
     }
 
     public Task DisposeAsync() => Task.CompletedTask;

@@ -364,6 +364,38 @@ try {
   const refused = (await page.getByTestId('adjust-error').textContent()) ?? '';
   check('J03', 'the balance is 3 and taking 9 is refused for lack of stock (BR-040)', stock === '3' && refused.includes('موجودی کافی نیست'), `${stock} ${refused}`);
   await shot(page, 'adjustments');
+  // G01–G03 US-071: a supplier, a receipt with input VAT that re-averages the cost and is owed, and a gift confirmed first
+  await page.goto(`${BFF}/receipts`);
+  await page.getByTestId('supplier-name').fill('پخش آزمایشی');
+  await page.getByTestId('supplier-submit').click();
+  await page.locator('[data-testid="suppliers"] [data-supplier="پخش آزمایشی"]').waitFor();
+  await page.locator('[data-testid="receipt-supplier"] option', { hasText: 'پخش آزمایشی' }).waitFor({ state: 'attached' });
+  check('G01', 'the owner adds a supplier (PRC-001)', true);
+  await page.getByTestId('receipt-supplier').selectOption({ label: 'پخش آزمایشی' });
+  await page.getByTestId('receipt-invoice').fill('E2E-F1');
+  await page.getByTestId('receipt-sku-0').fill('E2E-COLA');
+  await page.getByTestId('receipt-qty-0').fill('۱۲');
+  await page.getByTestId('receipt-cost-0').fill('50,000');
+  await page.getByTestId('receipt-vat-0').fill('54000');
+  await page.getByTestId('receipt-submit').click();
+  await page.getByTestId('receipt-done').waitFor();
+  const posted = (await page.getByTestId('receipt-done').textContent()) ?? '';
+  await page.locator('[data-testid="receipt-list"] [data-invoice="E2E-F1"]').waitFor();
+  const owed = (await page.locator('[data-supplier="پخش آزمایشی"]').textContent()) ?? '';
+  // 3 on hand at no cost + 12 at 50,000: WAC 40,000; the supplier is owed 600,000 + 54,000 VAT (AT-240, PRC-002)
+  check('G02', 'a receipt re-averages the cost and books what is owed to the supplier', posted.includes('۴۰٬۰۰۰') && owed.includes('۶۵۴٬۰۰۰'),
+    `${posted} | ${owed}`);
+  await page.getByTestId('receipt-supplier').selectOption({ label: 'پخش آزمایشی' });
+  await page.getByTestId('receipt-sku-0').fill('E2E-COLA');
+  await page.getByTestId('receipt-qty-0').fill('2');
+  await page.getByTestId('receipt-cost-0').fill('0');
+  await page.getByTestId('receipt-submit').click();
+  await page.getByTestId('receipt-confirm').waitFor();
+  const asked = (await page.getByTestId('receipt-confirm').textContent()) ?? '';
+  await page.getByTestId('receipt-confirm-submit').click();
+  await page.getByTestId('receipt-done').waitFor();
+  check('G03', 'a zero-cost line is posted only after the user confirms it (UC-05)', asked.includes('بهای صفر'), asked);
+  await shot(page, 'receipts');
   // W01–W03 US-045: the owner sets a scale label format; a printed label then decodes to the item and its weight
   await page.goto(`${BFF}/products`);
   await page.getByTestId('product-name').fill('پنیر فله آزمایشی');

@@ -758,6 +758,7 @@
   "scope": "Warehouse",
   "pathParams": [],
   "bodyProps": [
+   "confirmedWarnings",
    "effectiveDate",
    "lines",
    "supplierId",
@@ -765,6 +766,17 @@
    "warehouseId"
   ],
   "idempotent": true
+ },
+ {
+  "operationId": "listGoodsReceipts",
+  "method": "GET",
+  "path": "/inventory/receipts",
+  "permission": "reports.view",
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "postAdjustment",
