@@ -118,6 +118,7 @@ public sealed class PostgresJournals : IJournals
     public async Task<AccountingResult<JournalView>> PostAsync(IUnitOfWorkScope scope, Guid journalId, CancellationToken cancellationToken)
     {
         var s = (PostgresUnitOfWorkScope)scope;
+        await ExecAsync(s, "SELECT 1 FROM acc.journal_entry WHERE id = $1 FOR UPDATE", cancellationToken, journalId);   // posting races deleting
         if (await GetAsync(scope, journalId, cancellationToken) is not { } journal)
         {
             return new(AccountingOutcome.NotFound, null);
@@ -135,6 +136,25 @@ public sealed class PostgresJournals : IJournals
 
         await ExecAsync(s, "UPDATE acc.journal_entry SET status = 'Posted', posted_at = now() WHERE id = $1 AND status = 'Draft'", cancellationToken, journalId);
         return new(AccountingOutcome.Done, await GetAsync(scope, journalId, cancellationToken));
+    }
+
+    public async Task<AccountingResult<JournalView>> DeleteDraftAsync(IUnitOfWorkScope scope, Guid journalId, CancellationToken cancellationToken)
+    {
+        var s = (PostgresUnitOfWorkScope)scope;
+        await ExecAsync(s, "SELECT 1 FROM acc.journal_entry WHERE id = $1 FOR UPDATE", cancellationToken, journalId);
+        if (await GetAsync(scope, journalId, cancellationToken) is not { } draft)
+        {
+            return new(AccountingOutcome.NotFound, null);
+        }
+
+        if (draft.Status != "Draft")
+        {
+            return new(AccountingOutcome.NotDraft, null);
+        }
+
+        await ExecAsync(s, "DELETE FROM acc.journal_line WHERE entry_id = $1", cancellationToken, journalId);
+        await ExecAsync(s, "DELETE FROM acc.journal_entry WHERE id = $1 AND status = 'Draft'", cancellationToken, journalId);
+        return new(AccountingOutcome.Done, draft);
     }
 
     public async Task<AccountingResult<JournalView>> ReverseAsync(IUnitOfWorkScope scope, Guid journalId, string reason, CancellationToken cancellationToken)

@@ -430,6 +430,44 @@ try {
   await page.locator('[data-testid="settlement-suppliers"] [data-supplier="پخش آزمایشی"][data-balance="-40000"]').waitFor();
   check('Y03', 'paying more than is owed is confirmed first and leaves the supplier owing the store', true);
   await shot(page, 'settlements');
+  // Z01–Z04 US-112: the owner writes a manual entry (bank fee), which is refused while unbalanced, posts it, reverses it,
+  // and deletes a draft that will not be posted (ACC-003, ACC-006)
+  await page.goto(`${BFF}/journals`);
+  await page.locator('[data-testid="journal-account-0"] option', { hasText: 'کارمزد بانکی' }).waitFor({ state: 'attached' });
+  const fillEntry = async (text, debit, credit) => {
+    await page.getByTestId('journal-description').fill(text);
+    await page.getByTestId('journal-account-0').selectOption({ label: '5106 کارمزد بانکی' });
+    await page.getByTestId('journal-debit-0').fill(debit);
+    await page.getByTestId('journal-account-1').selectOption({ label: '1102 بانک' });
+    await page.getByTestId('journal-credit-1').fill(credit);
+  };
+  await fillEntry('کارمزد آزمایشی', '۱۲,۰۰۰', '10000');
+  const unbalancedShown = await page.getByTestId('journal-totals').getAttribute('data-balanced');
+  await page.getByTestId('journal-submit').click();
+  await page.getByTestId('journal-error').waitFor();
+  const unbalanced = (await page.getByTestId('journal-error').textContent()) ?? '';
+  check('Z01', 'an unbalanced entry shows the gap and is refused (ACC-002)', unbalancedShown === 'false' && unbalanced.includes('برابر نیست'), unbalanced);
+  await page.getByTestId('journal-credit-1').fill('12000');
+  await page.getByTestId('journal-submit').click();
+  const fee = page.locator('[data-testid="journal-list"] > li[data-description="کارمزد آزمایشی"]');
+  await fee.and(page.locator('[data-status="Draft"]')).waitFor();
+  await fee.getByTestId('journal-post').click();
+  await fee.and(page.locator('[data-status="Posted"]')).waitFor();
+  check('Z02', 'a balanced manual draft is posted (ACC-006)', true);
+  await fee.getByTestId('journal-reason').fill('ثبت اشتباه آزمایشی');
+  await fee.getByTestId('journal-reverse').click();
+  await fee.and(page.locator('[data-status="Reversed"]')).waitFor();
+  check('Z03', 'a posted entry is not edited: it is reversed by a mirror entry and marked reversed (ACC-003)',
+    (await page.locator('[data-testid="journal-list"] > li[data-description="کارمزد آزمایشی"]').count()) === 1
+    && (await page.locator('[data-testid="journal-list"] > li', { hasText: 'سند معکوس' }).count()) >= 1);
+  await fillEntry('پیش‌نویس رهاشده', '500', '500');
+  await page.getByTestId('journal-submit').click();
+  const dropped = page.locator('[data-testid="journal-list"] > li[data-description="پیش‌نویس رهاشده"]');
+  await dropped.waitFor();
+  await dropped.getByTestId('journal-delete').click();
+  await dropped.waitFor({ state: 'detached' });
+  check('Z04', 'a draft that will not be posted is deleted (D02 §6.3)', true);
+  await shot(page, 'journals');
   // V01–V04 US-082: on a paired device the owner opens a shift; a barcode reader is read without focus (keyboard wedge),
   // a double read within 1.5 s is ignored, a later scan adds to the line, and a line can be removed
   await page.goto(`${BFF}/terminals`);

@@ -84,6 +84,9 @@ public interface IJournals
 
     Task<AccountingResult<JournalView>> PostAsync(IUnitOfWorkScope scope, Guid journalId, CancellationToken cancellationToken);
 
+    /// <summary>D02 §6.3: only a manual draft is deleted (with its lines); the deleted entry is returned for the audit record.</summary>
+    Task<AccountingResult<JournalView>> DeleteDraftAsync(IUnitOfWorkScope scope, Guid journalId, CancellationToken cancellationToken);
+
     /// <summary>ACC-003: a posted entry is corrected only by its mirror image, dated now (in the open period).</summary>
     Task<AccountingResult<JournalView>> ReverseAsync(IUnitOfWorkScope scope, Guid journalId, string reason, CancellationToken cancellationToken);
 

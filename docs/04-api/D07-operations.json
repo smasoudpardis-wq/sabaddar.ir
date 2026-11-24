@@ -1637,6 +1637,19 @@
   "idempotent": true
  },
  {
+  "operationId": "deleteJournalDraft",
+  "method": "DELETE",
+  "path": "/accounting/journals/{journalId}",
+  "permission": "accounting.journal.post",
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [
+   "journalId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
+ },
+ {
   "operationId": "reverseJournal",
   "method": "POST",
   "path": "/accounting/journals/{journalId}/reverse",

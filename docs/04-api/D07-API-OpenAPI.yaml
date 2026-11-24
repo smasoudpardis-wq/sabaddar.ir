@@ -5595,6 +5595,47 @@ paths:
       - DI-040
       - DI-042
       x-audited: true
+  /accounting/journals/{journalId}:
+    delete:
+      operationId: deleteJournalDraft
+      tags:
+      - Accounting
+      summary: حذف سند دستی Draft
+      description: Only a manual Draft is deleted, with its lines (D02 §6.3); a posted entry is corrected by reversal (409
+        journal-not-draft).
+      security: *id001
+      parameters:
+      - name: journalId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: No content
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: accounting.journal.post
+      x-scope: Tenant
+      x-idempotent: false
+      x-requirements:
+      - ACC-006
+      x-audited: true
   /accounting/journals/{journalId}/reverse:
     post:
       operationId: reverseJournal

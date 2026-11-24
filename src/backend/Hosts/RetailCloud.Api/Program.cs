@@ -443,7 +443,7 @@ IResult AccountingProblem(HttpContext http, AccountingOutcome outcome, string? d
     AccountingOutcome.NotFound => Problems.NotFound(http),
     AccountingOutcome.NoOpenPeriod => Problems.Create(http, StatusCodes.Status422UnprocessableEntity, "no-open-period", "No fiscal period covers this date"),
     AccountingOutcome.PeriodClosed => Problems.Create(http, StatusCodes.Status409Conflict, "period-closed", "The fiscal period is closed"),
-    AccountingOutcome.NotDraft => Problems.Create(http, StatusCodes.Status409Conflict, "journal-not-draft", "Only a draft entry can be posted"),
+    AccountingOutcome.NotDraft => Problems.Create(http, StatusCodes.Status409Conflict, "journal-not-draft", "Only a draft entry can be posted or deleted"),
     AccountingOutcome.AlreadyReversed => Problems.Create(http, StatusCodes.Status409Conflict, "journal-already-reversed", "This entry is already reversed"),
     AccountingOutcome.DuplicateCode => Problems.Create(http, StatusCodes.Status409Conflict, "duplicate-code", "This account code is already used"),
     AccountingOutcome.UnknownRole => Problems.Validation(http, new Dictionary<string, string[]> { ["mappings"] = [$"unknown role: {detail}"] }),
@@ -594,6 +594,25 @@ v1.MapIdempotentPost<JournalPostInput>("/accounting/journals/{journalId:guid}/po
         if (r.Outcome != AccountingOutcome.Done) return CommandResult.Fail(AccountingProblem(http, r.Outcome, r.Detail));
         await Audit(http, scope, ActorOf(ctx, http), new AuditEntry("accounting.journal.posted", "Journal", journalId.ToString()), ct);
         return CommandResult.Ok(JournalJson(r.Value!));
+    })
+    .RequirePermission(Permissions.AccountingJournalPost);
+
+// D02 §6.3: a manual draft that will not be posted is deleted, with an audit record of what it held
+v1.MapDelete("/accounting/journals/{journalId:guid}", async (Guid journalId, RequestContext ctx, IUnitOfWork uow, IJournals journals, HttpContext http,
+        CancellationToken ct) =>
+    {
+        var r = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            var deleted = await journals.DeleteDraftAsync(s, journalId, c);
+            if (deleted.Outcome == AccountingOutcome.Done)
+            {
+                await Audit(http, s, ActorOf(ctx, http), new AuditEntry("accounting.journal.draft-deleted", "Journal", journalId.ToString(), deleted.Value!.Description,
+                    new { lines = deleted.Value.Lines.Count, total = deleted.Value.Lines.Sum(l => l.Debit), deleted.Value.EffectiveAt }), c);
+            }
+
+            return deleted;
+        }, ct);
+        return r.Outcome == AccountingOutcome.Done ? Results.NoContent() : AccountingProblem(http, r.Outcome, r.Detail);
     })
     .RequirePermission(Permissions.AccountingJournalPost);
 

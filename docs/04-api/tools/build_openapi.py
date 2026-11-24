@@ -1149,6 +1149,9 @@ op("post", "/accounting/journals/{journalId}/post", "postJournal", "Accounting",
    reqs=["ACC-002", "ACC-006", "DI-040", "DI-042"], audited=True,
    desc="No body. Idempotent by key; without the key's replay an entry still goes Draft -> Posted only once (409 journal-not-draft). "
         "Entries carry no version.")
+op("delete", "/accounting/journals/{journalId}", "deleteJournalDraft", "Accounting", "حذف سند دستی Draft", perm="accounting.journal.post",
+   scope="Tenant", no_content=True, conflict=True, reqs=["ACC-006"], audited=True,
+   desc="Only a manual Draft is deleted, with its lines (D02 §6.3); a posted entry is corrected by reversal (409 journal-not-draft).")
 op("post", "/accounting/journals/{journalId}/reverse", "reverseJournal", "Accounting", "سند معکوس", perm="accounting.journal.post",
    scope="Tenant", idem=True, body="JournalReverse", resp="Journal", resp_code="201", reqs=["ACC-003", "ACC-009", "DI-045"], audited=True,
    desc="The mirror entry is dated now in the open period (ACC-009); an entry is reversed once (409 journal-already-reversed).")

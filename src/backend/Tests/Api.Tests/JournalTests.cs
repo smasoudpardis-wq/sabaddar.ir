@@ -10,7 +10,7 @@ using RetailCloud.BuildingBlocks.Infrastructure;
 
 namespace RetailCloud.Api.Tests;
 
-/// <summary>US-111 / ACC-001..004, ACC-009 / AT-100..104: chart, mappings, drafts, posting and reversal.</summary>
+/// <summary>US-111 / US-112 / ACC-001..004, ACC-006, ACC-009 / AT-100..104: chart, mappings, drafts (posted or deleted), posting and reversal.</summary>
 public sealed class JournalTests : IClassFixture<ApiFactory>, IAsyncLifetime
 {
     private readonly ApiFactory _factory;
@@ -110,6 +110,34 @@ public sealed class JournalTests : IClassFixture<ApiFactory>, IAsyncLifetime
         JsonElement second = await Body(await owner.GetAsync($"/api/v1/accounting/journals?limit=1&cursor={cursor}"));
         Assert.Equal(id, second.GetProperty("items")[0].GetProperty("id").GetGuid());    // newest first: the mirror, then the original
         Assert.Equal("Reversed", second.GetProperty("items")[0].GetProperty("status").GetString());
+    }
+
+    [DbFact]
+    public async Task US112_a_draft_that_will_not_be_posted_is_deleted_but_a_posted_entry_is_only_reversed()
+    {
+        HttpClient owner = Owner();
+        Guid draft = (await Body(await Idem(owner, "/api/v1/accounting/journals", Sale(7_000)))).GetProperty("id").GetGuid();
+        Assert.Equal(HttpStatusCode.NoContent, (await owner.DeleteAsync($"/api/v1/accounting/journals/{draft}")).StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, (await owner.DeleteAsync($"/api/v1/accounting/journals/{draft}")).StatusCode);
+        Assert.Equal("not-found", await Code(await Idem(owner, $"/api/v1/accounting/journals/{draft}/post", null)));
+        JsonElement listed = await Body(await owner.GetAsync("/api/v1/accounting/journals?limit=200"));
+        Assert.DoesNotContain(draft, listed.GetProperty("items").EnumerateArray().Select(e => e.GetProperty("id").GetGuid()));
+
+        Guid posted = (await Body(await Idem(owner, "/api/v1/accounting/journals", Sale(8_000)))).GetProperty("id").GetGuid();
+        Assert.Equal(HttpStatusCode.OK, (await Idem(owner, $"/api/v1/accounting/journals/{posted}/post", null)).StatusCode);
+        HttpResponseMessage refused = await owner.DeleteAsync($"/api/v1/accounting/journals/{posted}");
+        Assert.Equal(HttpStatusCode.Conflict, refused.StatusCode);
+        Assert.Equal("journal-not-draft", await Code(refused));
+
+        await using var ds = NpgsqlDataSource.Create(Cs);
+        long audited = await new PostgresUnitOfWork(ds).ExecuteAsync(new FixedTenantContext(new TenantId(_tenant)), async (s, ct) =>
+        {
+            await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)s).Command(
+                "SELECT count(*) FROM audit.audit_record WHERE action = 'accounting.journal.draft-deleted' AND resource_id = $1");
+            cmd.Parameters.Add(new NpgsqlParameter { Value = draft.ToString() });
+            return (long)(await cmd.ExecuteScalarAsync(ct))!;
+        });
+        Assert.Equal(1, audited);
     }
 
     [DbFact]
