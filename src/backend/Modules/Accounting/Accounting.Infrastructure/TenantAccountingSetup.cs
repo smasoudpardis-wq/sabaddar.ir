@@ -50,7 +50,19 @@ public sealed class TenantAccountingSetupConsumer : IIntegrationEventConsumer
             }
         }
 
-        foreach (FiscalPeriodSpan p in FiscalCalendar.Periods(FiscalCalendar.FiscalYearOf(registeredAt, tz), tz))
+        await FiscalPeriods.EnsureYearAsync(scope, FiscalCalendar.FiscalYearOf(registeredAt, tz), tz, cancellationToken);
+    }
+}
+
+/// <summary>TEN-001.1 / ACC-009: the twelve Open periods of a fiscal year, created once (idempotent).</summary>
+public static class FiscalPeriods
+{
+    /// <summary>Creates the year's missing periods in the context tenant; returns how many were created.</summary>
+    public static async Task<int> EnsureYearAsync(IUnitOfWorkScope scope, int fiscalYear, TimeZoneInfo timeZone, CancellationToken cancellationToken)
+    {
+        var s = (PostgresUnitOfWorkScope)scope;
+        int created = 0;
+        foreach (FiscalPeriodSpan p in FiscalCalendar.Periods(fiscalYear, timeZone))
         {
             await using NpgsqlCommand per = s.Command(
                 "INSERT INTO acc.fiscal_period (tenant_id, id, fiscal_year, period_no, span) " +
@@ -60,8 +72,10 @@ public sealed class TenantAccountingSetupConsumer : IIntegrationEventConsumer
             per.Parameters.Add(new NpgsqlParameter { Value = p.PeriodNo });
             per.Parameters.Add(new NpgsqlParameter { Value = p.StartUtc });
             per.Parameters.Add(new NpgsqlParameter { Value = p.EndUtc });
-            await per.ExecuteNonQueryAsync(cancellationToken);
+            created += await per.ExecuteNonQueryAsync(cancellationToken);
         }
+
+        return created;
     }
 }
 

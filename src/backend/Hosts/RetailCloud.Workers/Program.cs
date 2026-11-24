@@ -34,6 +34,8 @@ if (builder.Configuration.GetValue<bool>("Notifications:DevChannel"))
 }
 
 builder.Services.AddSingleton<OracleRunner>();
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<RetailCloud.Workers.FiscalYearRollover>();
 builder.Services.AddSingleton<RetailCloud.Inventory.Infrastructure.StockMaintenance>();
 builder.Services.AddHostedService<NightlyService>();
 builder.Services.AddHostedService<ReservationExpiryService>();
