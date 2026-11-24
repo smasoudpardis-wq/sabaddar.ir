@@ -3,7 +3,7 @@
 SELECT 'missing-rls' AS violation, n.nspname || '.' || c.relname AS object
 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE c.relkind IN ('r','p') AND NOT c.relispartition
-  AND n.nspname IN ('platform','merch','inv','sales','acc','ar','cid','tax','notif','audit')
+  AND n.nspname IN ('platform','merch','inv','sales','pay','acc','ar','cid','tax','notif','audit')
   AND (EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'tenant_id' AND NOT a.attisdropped)
        OR (n.nspname, c.relname) = ('platform','tenant'))
   AND (NOT c.relrowsecurity OR NOT c.relforcerowsecurity

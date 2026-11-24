@@ -41,6 +41,7 @@ DELETE FROM iam.support_access_request WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM iam.role_assignment WHERE user_id IN (SELECT id FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$CASHIER_SUB');
 DELETE FROM iam.tenant_membership WHERE user_id IN (SELECT id FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$CASHIER_SUB');
 DELETE FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$CASHIER_SUB';
+DELETE FROM pay.payment WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM sales.sale_line WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM sales.sale_tender WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM sales.sale WHERE tenant_id IN ('$T1','$T2','$TF');

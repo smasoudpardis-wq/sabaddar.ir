@@ -13311,6 +13311,16 @@ components:
           type:
           - string
           - 'null'
+        tendered:
+          anyOf:
+          - $ref: '#/components/schemas/Money'
+          - type: 'null'
+          description: 'Cash: what was handed over'
+        change:
+          anyOf:
+          - $ref: '#/components/schemas/Money'
+          - type: 'null'
+          description: 'Cash: what was given back (SAL-006.1)'
       required:
       - seq
       - method
@@ -13344,6 +13354,7 @@ components:
         approvalId:
           type: string
           format: uuid
+          description: A manager's approval to record a repeated card reference (PAY-002.1)
       required:
       - method
       - amount
@@ -13753,6 +13764,12 @@ x-error-catalog:
   no-open-period:
     status: 422
     meaning: No fiscal period covers this date (ACC-001.1)
+  amount-exceeds-remaining:
+    status: 409
+    meaning: A payment larger than what is left on the bill; context.remaining (SAL-006)
+  sale-has-payments:
+    status: 409
+    meaning: Payments were taken; the bill's lines no longer change (RC026)
   barcode-not-found:
     status: 404
     meaning: 'No product of this store has this code: define it (UC-01) or search by name (UC-02 2a)'

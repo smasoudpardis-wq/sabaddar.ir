@@ -6,7 +6,9 @@ type Register = { id: string; code: string; mayOpenShift: boolean; shift: { id: 
 type Context = { terminalId: string; branchId: string; registers: Register[] };
 type Line = { lineNo: number; name: string; sku: string; qty: string; unit: string; weighted: boolean; unitPrice: string; lineTotal: string;
   discounts: { amount: string }[] };
-type Sale = { id: string; version: number; lines: Line[]; totals: { gross: string; discount: string; tax: string; total: string } };
+type Tender = { seq: number; method: string; amount: string; reference: string | null; tendered: string | null; change: string | null };
+type Sale = { id: string; version: number; lines: Line[]; tenders: Tender[];
+  totals: { gross: string; discount: string; tax: string; total: string; paid: string; remaining: string; change: string } };
 
 /** SAL-002.1 / AT-061: the same code again within this window is a double read, not a second item (configurable later). */
 const DUPLICATE_MS = 1500;
@@ -24,6 +26,9 @@ const ERRORS: Record<string, string> = {
   'version-conflict': 'سبد هم‌زمان تغییر کرد؛ دوباره امتحان کنید.',
   'shift-not-open': 'شیفت باز نیست.',
   'terminal-not-registered': 'این دستگاه صندوق ثبت‌شده این شعبه نیست.',
+  'sale-has-payments': 'برای این فاکتور پرداخت ثبت شده است؛ اقلام دیگر تغییر نمی‌کنند.',
+  'amount-exceeds-remaining': 'مبلغ از باقیمانده فاکتور بیشتر است.',
+  'duplicate-reference': 'این شماره پیگیری امروز برای همین کارتخوان ثبت شده است.',
 };
 
 const store = {
@@ -45,6 +50,8 @@ export default function PosPage() {
   const [error, setError] = useState('');
   const [ignored, setIgnored] = useState(0);
   const [camera, setCamera] = useState(false);
+  const [pay, setPay] = useState({ cash: '', tendered: '', card: '', reference: '', terminalNo: '', last4: '' });
+  const [override, setOverride] = useState<{ approvalId: string; body: Record<string, unknown> } | null>(null);
   const last = useRef<{ code: string; at: number } | null>(null);
   const buffer = useRef({ text: '', at: 0 });
   const busy = useRef<Promise<void>>(Promise.resolve());
@@ -199,6 +206,32 @@ export default function PosPage() {
     if (r.ok) setSale(body); else setError(body?.code ?? `http-${r.status}`);
   }
 
+  // US-101: one payment at a time; a repeated card slip waits for a manager and is then sent again with the approval
+  async function tender(body: Record<string, unknown>) {
+    if (!sale) return;
+    setError('');
+    const r = await fetch(`/bff/pos/sales/${sale.id}/tenders`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf(), 'idempotency-key': crypto.randomUUID() },
+      body: JSON.stringify(body),
+    });
+    const p = await r.json().catch(() => null);
+    if (r.ok) {
+      current.current = p;
+      setSale(p);
+      setOverride(null);
+      setPay({ cash: '', tendered: '', card: '', reference: '', terminalNo: '', last4: '' });
+      return;
+    }
+    if (p?.code === 'duplicate-reference' && p.context?.approvalRequestId) {
+      setOverride({ approvalId: p.context.approvalRequestId, body: { ...body, approvalId: undefined } });
+      if (body.approvalId) setError('approval-not-yet');
+      else setError('duplicate-reference');
+      return;
+    }
+    setError(p?.code ?? `http-${r.status}`);
+  }
+  const money = (v: string) => latin(v).replace(/[,٬]/g, '');
+
   if (!context) {
     return (
       <section>
@@ -248,7 +281,7 @@ export default function PosPage() {
                 <tr key={l.lineNo} data-sku={l.sku} data-qty={l.qty}>
                   <td>{l.name}</td>
                   <td>
-                    {l.weighted ? Number(l.qty).toLocaleString('fa-IR') : (
+                    {l.weighted || (sale?.tenders.length ?? 0) > 0 ? Number(l.qty).toLocaleString('fa-IR') : (
                       <>
                         <button type="button" style={{ minHeight: 44, minWidth: 44 }} aria-label="یکی کمتر" disabled={Number(l.qty) <= 1}
                           onClick={() => void change(l, { qty: step(l.qty, -1) })}>−</button>{' '}
@@ -259,7 +292,7 @@ export default function PosPage() {
                     )}
                   </td>
                   <td>
-                    {l.weighted ? l.unit : (
+                    {l.weighted || (sale?.tenders.length ?? 0) > 0 ? l.unit : (
                       <select value={l.unit} onChange={(e) => void change(l, { unit: e.target.value })} aria-label="واحد">
                         {[...new Set([l.unit, ...UNITS])].map((u) => <option key={u} value={u}>{u}</option>)}
                       </select>
@@ -268,7 +301,8 @@ export default function PosPage() {
                   <td>{rial(l.unitPrice)}</td>
                   <td>{l.discounts.length > 0 ? rial(l.discounts[0].amount) : '—'}</td>
                   <td>{rial(l.lineTotal)}</td>
-                  <td><button type="button" style={{ minHeight: 44 }} onClick={() => void remove(l)} data-testid={`pos-remove-${l.sku}`}>حذف</button></td>
+                  <td>{(sale?.tenders.length ?? 0) === 0 && (
+                    <button type="button" style={{ minHeight: 44 }} onClick={() => void remove(l)} data-testid={`pos-remove-${l.sku}`}>حذف</button>)}</td>
                 </tr>
               ))}
             </tbody>
@@ -279,7 +313,64 @@ export default function PosPage() {
               <strong>قابل پرداخت: {rial(sale.totals.total)} ریال</strong>
             </p>
           )}
-          <p>پرداخت و صدور فاکتور در گام بعدی (EP-07) اضافه می‌شود.</p>
+          {sale && sale.lines.length > 0 && (
+            <div data-testid="pos-pay" data-remaining={sale.totals.remaining}>
+              <h2>پرداخت</h2>
+              <ul data-testid="pos-tenders">
+                {sale.tenders.map((t) => (
+                  <li key={t.seq} data-method={t.method}>
+                    {t.method === 'Cash' ? 'نقد' : 'کارتخوان'}: {rial(t.amount)} ریال
+                    {t.reference ? ` (پیگیری ${t.reference})` : ''}
+                    {t.change && t.change !== '0' ? ` · دریافتی ${rial(t.tendered ?? '0')} · باقیمانده به مشتری ${rial(t.change)}` : ''}
+                  </li>
+                ))}
+              </ul>
+              <p>پرداخت‌شده: {rial(sale.totals.paid)} · <strong data-testid="pos-remaining">مانده: {rial(sale.totals.remaining)} ریال</strong></p>
+              {sale.totals.remaining !== '0' ? (
+                <>
+                  <form onSubmit={(e) => {
+                    e.preventDefault();
+                    const amount = money(pay.cash) || sale.totals.remaining;
+                    void tender({ method: 'Cash', amount, tendered: money(pay.tendered) || amount });
+                  }} data-testid="pos-cash-form">
+                    <label>نقد (ریال) <input value={pay.cash} placeholder={rial(sale.totals.remaining)} onChange={(e) => setPay({ ...pay, cash: e.target.value })}
+                      dir="ltr" inputMode="numeric" size={10} data-testid="pos-cash-amount" /></label>{' '}
+                    <label>مبلغ دریافتی <input value={pay.tendered} onChange={(e) => setPay({ ...pay, tendered: e.target.value })} dir="ltr" inputMode="numeric"
+                      size={10} data-testid="pos-cash-tendered" /></label>{' '}
+                    {pay.tendered && (
+                      <span data-testid="pos-change-preview">باقیمانده به مشتری: {rial(String(Math.max(0,
+                        Number(money(pay.tendered)) - Number(money(pay.cash) || sale.totals.remaining))))}</span>
+                    )}{' '}
+                    <button type="submit" style={{ minHeight: 44 }} data-testid="pos-cash-submit">ثبت نقد</button>
+                  </form>
+                  <form onSubmit={(e) => {
+                    e.preventDefault();
+                    void tender({
+                      method: 'ExternalCardTerminal', amount: money(pay.card) || sale.totals.remaining, referenceNo: latin(pay.reference),
+                      terminalNo: latin(pay.terminalNo) || undefined, cardLast4: latin(pay.last4) || undefined,
+                    });
+                  }} data-testid="pos-card-form">
+                    <label>کارتخوان (ریال) <input value={pay.card} placeholder={rial(sale.totals.remaining)} onChange={(e) => setPay({ ...pay, card: e.target.value })}
+                      dir="ltr" inputMode="numeric" size={10} data-testid="pos-card-amount" /></label>{' '}
+                    <label>شماره پیگیری <input required value={pay.reference} onChange={(e) => setPay({ ...pay, reference: e.target.value })} dir="ltr" size={14}
+                      data-testid="pos-card-reference" /></label>{' '}
+                    <label>شماره پایانه <input value={pay.terminalNo} onChange={(e) => setPay({ ...pay, terminalNo: e.target.value })} dir="ltr" size={8} /></label>{' '}
+                    <label>۴ رقم آخر کارت <input value={pay.last4} onChange={(e) => setPay({ ...pay, last4: e.target.value })} dir="ltr" size={4} inputMode="numeric" /></label>{' '}
+                    <button type="submit" style={{ minHeight: 44 }} data-testid="pos-card-submit">ثبت کارتخوان</button>
+                  </form>
+                  {override && (
+                    <p role="status" data-testid="pos-override">
+                      برای ثبت دوباره این شماره پیگیری، تأیید مدیر لازم است (<a href="/approvals">تأییدها</a>).{' '}
+                      <button type="button" style={{ minHeight: 44 }} onClick={() => void tender({ ...override.body, approvalId: override.approvalId })}>
+                        ثبت پس از تأیید</button>
+                    </p>
+                  )}
+                </>
+              ) : (
+                <p role="status" data-testid="pos-paid">مبلغ فاکتور کامل پرداخت شد. نهایی‌سازی و صدور فاکتور در گام بعد (US-091) اضافه می‌شود.</p>
+              )}
+            </div>
+          )}
         </>
       )}
       {error && <p role="alert" data-testid="pos-error">{ERRORS[error] ?? MESSAGES[error] ?? (error === 'camera-unsupported'

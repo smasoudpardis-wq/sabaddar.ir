@@ -296,4 +296,87 @@ public sealed class SaleTests : IClassFixture<ApiFactory>, IAsyncLifetime
         await first;
         Assert.Equal(1, seen);   // waited for the first change to commit, instead of reading the cart from before it
     }
+
+    private async Task<HttpResponseMessage> Tender(Guid sale, object body, string? key = null, string user = "cashier")
+    {
+        var req = new HttpRequestMessage(HttpMethod.Post, $"/api/v1/pos/sales/{sale}/tenders") { Content = JsonContent.Create(body) };
+        req.Headers.Add("Idempotency-Key", key ?? Guid.NewGuid().ToString("N"));
+        return await As(user).SendAsync(req);
+    }
+
+    [DbFact]
+    public async Task AT080_AT066_a_bill_is_paid_by_card_and_cash_with_change_and_is_then_fixed()
+    {
+        await OpenShift("cashier", _r1);
+        await Product("SL-OIL", "450000", 0, new { code = "SL-OIL", isInternal = true });
+        Guid sale = (await Cart("cashier", _r1)).GetProperty("id").GetGuid();
+        await Scan(sale, "SL-OIL", "2");   // 900,000
+
+        // PAY-002: the card slip's reference confirms it (ConfirmedManual)
+        HttpResponseMessage card = await Tender(sale, new { method = "ExternalCardTerminal", amount = "600000", referenceNo = "558812345678", terminalNo = "8899", cardLast4 = "1234" });
+        Assert.Equal(HttpStatusCode.OK, card.StatusCode);
+        Assert.Equal("300000", Totals2(await Body(card)).Remaining);
+        Assert.Equal("amount-exceeds-remaining", await Code(await Tender(sale, new { method = "Cash", amount = "300001", tendered = "500000" })));
+
+        // SAL-006.1: 500,000 handed over for 300,000: change 200,000; a retry with the same key takes nothing twice
+        string key = Guid.NewGuid().ToString("N");
+        JsonElement paid = await Body(await Tender(sale, new { method = "Cash", amount = "300000", tendered = "500000" }, key));
+        Assert.Equal(("900000", "0", "200000"), Totals2(paid));
+        Assert.Equal(2, (await Body(await Tender(sale, new { method = "Cash", amount = "300000", tendered = "500000" }, key))).GetProperty("tenders").GetArrayLength());
+        JsonElement cash = paid.GetProperty("tenders")[1];
+        Assert.Equal(("Cash", "300000", "500000", "200000"), (cash.GetProperty("method").GetString(), cash.GetProperty("amount").GetString(),
+            cash.GetProperty("tendered").GetString(), cash.GetProperty("change").GetString()));
+        Assert.Equal("558812345678", paid.GetProperty("tenders")[0].GetProperty("reference").GetString());
+
+        // what was paid for does not change underneath the payments
+        Assert.Equal("sale-has-payments", await Code(await Scan(sale, "SL-OIL")));
+        Assert.Equal("sale-has-payments", await Code(await As("cashier").DeleteAsync($"/api/v1/pos/sales/{sale}/lines/1?expectedVersion={paid.GetProperty("version").GetInt32()}")));
+        Assert.Equal(HttpStatusCode.BadRequest, (await Tender(sale, new { method = "Cash", amount = "1", tendered = "0" })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await Tender(sale, new { method = "CustomerCredit", amount = "1" })).StatusCode);
+    }
+
+    [DbFact]
+    public async Task AT082_a_card_reference_is_taken_once_a_day_unless_a_manager_overrides_it()
+    {
+        await OpenShift("cashier", _r1);
+        await Product("SL-SOAP", "100000", 0, new { code = "SL-SOAP", isInternal = true });
+        Guid first = (await Cart("cashier", _r1)).GetProperty("id").GetGuid(), second = (await Cart("cashier", _r1)).GetProperty("id").GetGuid();
+        await Scan(first, "SL-SOAP");
+        await Scan(second, "SL-SOAP");
+        object slip = new { method = "ExternalCardTerminal", amount = "100000", referenceNo = "777000111222", terminalNo = "41" };
+        Assert.Equal(HttpStatusCode.OK, (await Tender(first, slip)).StatusCode);
+
+        HttpResponseMessage again = await Tender(second, slip);
+        JsonElement problem = await Body(again);
+        Assert.Equal((HttpStatusCode.Conflict, "duplicate-reference"), (again.StatusCode, problem.GetProperty("code").GetString()));
+        Guid approval = problem.GetProperty("context").GetProperty("approvalRequestId").GetGuid();
+        // another terminal's slip with the same number is a different payment
+        Assert.Equal(HttpStatusCode.OK, (await Tender(second, new { method = "ExternalCardTerminal", amount = "50000", referenceNo = "777000111222", terminalNo = "42" })).StatusCode);
+
+        // not the cashier (a cashier cannot supervise), the owner may; the override fits this bill and amount only
+        Assert.Equal(HttpStatusCode.NotFound, (await As("cashier2").PostAsJsonAsync($"/api/v1/approvals/{approval}/decision", new { decision = "Approve" })).StatusCode);   // not shown to who cannot decide
+        Assert.Equal(HttpStatusCode.OK, (await As("owner", false).PostAsJsonAsync($"/api/v1/approvals/{approval}/decision", new { decision = "Approve" })).StatusCode);
+        Assert.Equal("duplicate-reference", await Code(await Tender(second, new { method = "ExternalCardTerminal", amount = "50000", referenceNo = "777000111222", terminalNo = "41", approvalId = approval })));
+        approval = (await Body(await Tender(second, new { method = "ExternalCardTerminal", amount = "50000", referenceNo = "777000111222", terminalNo = "41" })))
+            .GetProperty("context").GetProperty("approvalRequestId").GetGuid();
+        Assert.Equal(HttpStatusCode.OK, (await As("owner", false).PostAsJsonAsync($"/api/v1/approvals/{approval}/decision", new { decision = "Approve" })).StatusCode);
+        HttpResponseMessage allowed = await Tender(second, new { method = "ExternalCardTerminal", amount = "50000", referenceNo = "777000111222", terminalNo = "41", approvalId = approval });
+        Assert.Equal(HttpStatusCode.OK, allowed.StatusCode);
+        Assert.Equal("0", Totals2(await Body(allowed)).Remaining);
+
+        long overrides = await new PostgresUnitOfWork(NpgsqlDataSource.Create(Cs)).ExecuteAsync(new FixedTenantContext(new TenantId(_tenant)), async (x, ct) =>
+        {
+            await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)x).Command(
+                "SELECT count(*) FROM audit.audit_record WHERE action = 'payments.reference.override' AND resource_id = $1");
+            cmd.Parameters.Add(new NpgsqlParameter { Value = second.ToString() });
+            return (long)(await cmd.ExecuteScalarAsync(ct))!;
+        });
+        Assert.Equal(1, overrides);
+    }
+
+    private static (string Paid, string Remaining, string Change) Totals2(JsonElement sale)
+    {
+        JsonElement t = sale.GetProperty("totals");
+        return (t.GetProperty("paid").GetString()!, t.GetProperty("remaining").GetString()!, t.GetProperty("change").GetString()!);
+    }
 }

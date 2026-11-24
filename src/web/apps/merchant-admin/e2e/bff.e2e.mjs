@@ -426,6 +426,26 @@ try {
   await page.getByTestId('pos-remove-E2E-COLA').click();
   await page.locator('[data-testid="pos-total"][data-total="0"]').waitFor();
   check('V04', 'a line is removed and the total follows (SAL-001)', true);
+  // V05–V06 US-101: part by card (its slip's reference), the rest in cash with change; then the bill is fixed
+  await page.waitForTimeout(1600);   // the same code again within 1.5 s would be (rightly) ignored
+  await page.locator('h1').click();
+  await page.keyboard.type('4006381333931');
+  await page.keyboard.press('Enter');
+  await page.locator('[data-sku="E2E-COLA"][data-qty="1"]').waitFor();
+  const due = Number(await page.getByTestId('pos-pay').getAttribute('data-remaining'));
+  await page.getByTestId('pos-card-amount').fill('100000');
+  await page.getByTestId('pos-card-reference').fill('E2E558812');
+  await page.getByTestId('pos-card-submit').click();
+  await page.locator(`[data-testid="pos-pay"][data-remaining="${due - 100000}"]`).waitFor();
+  await page.getByTestId('pos-cash-tendered').fill('۲۰۰٬۰۰۰');
+  const preview = (await page.getByTestId('pos-change-preview').textContent()) ?? '';
+  await page.getByTestId('pos-cash-submit').click();
+  await page.getByTestId('pos-paid').waitFor();
+  const cashLine = (await page.locator('[data-testid="pos-tenders"] [data-method="Cash"]').textContent()) ?? '';
+  const change = (200000 - (due - 100000)).toLocaleString('fa-IR');
+  check('V05', 'paid by card with its reference and the rest in cash; the change is shown before and after (SAL-006.1)',
+    preview.includes(change) && cashLine.includes(change), `${due} ${preview} | ${cashLine}`);
+  check('V06', 'once paid, the bill can no longer be changed', (await page.getByTestId('pos-remove-E2E-COLA').count()) === 0);
   await shot(page, 'pos');
   await page.goto(`${BFF}/terminals`);
   await page.getByTestId('revoke-صندوق-فروش').click();

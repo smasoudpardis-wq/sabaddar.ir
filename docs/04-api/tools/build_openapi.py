@@ -317,7 +317,8 @@ schema("SaleLine", lineNo="int", variantId="uuid", name="str", sku="str", qty="q
        **{"unitFactor?": "qty", "weighted?": ("desc", "bool", "From a scale label: the quantity is fixed"), "gross?": "money"}, unitPrice="money",
        discounts=["#LineDiscount"], net="money", taxRate="bp", tax="money", lineTotal="money", returnedQty="qty")
 schema("Tender", seq="int", method=("enum", ["Cash", "ExternalCardTerminal", "OnlineGateway", "CustomerCredit", "StoreCredit"]),
-       amount="money", status=("enum", ["Confirmed", "Pending", "Failed"]), paymentId="uuid?", reference="str?")
+       amount="money", status=("enum", ["Confirmed", "Pending", "Failed"]), paymentId="uuid?", reference="str?",
+       **{"tendered?": ("desc", "money?", "Cash: what was handed over"), "change?": ("desc", "money?", "Cash: what was given back (SAL-006.1)")})
 schema("Sale", id="uuid", status=("enum", ["Draft", "Held", "PendingPayment", "Finalized", "Cancelled"]),
        returnStatus=("enum", ["None", "Partial", "Full"]), branchId="uuid", registerId="uuid", shiftId="uuid",
        **{"cashierId?": "uuid", "terminalId?": "uuid", "channel?": ("enum", ["POS", "Admin", "API"]), "clientDraftId?": "str",
@@ -337,7 +338,8 @@ schema("AttachCustomer", expectedVersion="int", **{"qrToken?": "str", "publicCod
 schema("TenderInput", method=("enum", ["Cash", "ExternalCardTerminal", "CustomerCredit", "StoreCredit"]), amount="money",
        **{"tendered?": ("desc", "money", "Cash only: amount handed over; change is computed (SAL-006.1)"),
           "referenceNo?": ("desc", "str", "ExternalCardTerminal: tracking/reference number (PAY-002)"),
-          "terminalNo?": "str", "cardLast4?": "str", "approvalId?": "uuid"})
+          "terminalNo?": "str", "cardLast4?": "str",
+          "approvalId?": ("desc", "uuid", "A manager's approval to record a repeated card reference (PAY-002.1)")})
 schema("VersionOnly", expectedVersion="int")
 schema("CancelRequest", expectedVersion="int", reason="str")
 schema("JournalReverse", reason=("desc", "str", "3-200 characters; becomes the reversal's description"))
@@ -543,6 +545,8 @@ ERROR_CATALOG = {
     "payment-failed": (409, "Gateway verify failed"),
     "period-closed": (409, "Fiscal period closed (DI-042)"),
     "no-open-period": (422, "No fiscal period covers this date (ACC-001.1)"),
+    "amount-exceeds-remaining": (409, "A payment larger than what is left on the bill; context.remaining (SAL-006)"),
+    "sale-has-payments": (409, "Payments were taken; the bill's lines no longer change (RC026)"),
     "barcode-not-found": (404, "No product of this store has this code: define it (UC-01) or search by name (UC-02 2a)"),
     "price-missing": (422, "The product has no price in the default list yet (CAT-009)"),
     "not-sellable": (422, "The product or its combination is switched off (CAT-008)"),

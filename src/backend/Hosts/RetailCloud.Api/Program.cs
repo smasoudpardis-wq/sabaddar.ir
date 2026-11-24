@@ -15,6 +15,7 @@ using RetailCloud.Sales.Infrastructure;
 using RetailCloud.Accounting.Application;
 using RetailCloud.Accounting.Infrastructure;
 using RetailCloud.Inventory.Application;
+using RetailCloud.Payments.Application;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -35,6 +36,7 @@ builder.Services.AddSingleton<IStockLedger, RetailCloud.Inventory.Infrastructure
 builder.Services.AddSingleton<IStockAdjustments, RetailCloud.Inventory.Infrastructure.PostgresStockAdjustments>();
 builder.Services.AddSingleton<IProcurement, RetailCloud.Inventory.Infrastructure.PostgresProcurement>();
 builder.Services.AddSingleton<ISales, PostgresSales>();
+builder.Services.AddSingleton<RetailCloud.Payments.Application.IPayments, RetailCloud.Payments.Infrastructure.PostgresPayments>();
 builder.Services.AddSingleton<IShifts, PostgresShifts>();
 builder.Services.AddSingleton<IJournals, PostgresJournals>();
 ObjectStorageOptions? storage = builder.Configuration.GetSection("Storage").Get<ObjectStorageOptions>();
@@ -1632,9 +1634,10 @@ v1.MapGet("/inventory/receipts", async (RequestContext ctx, IUnitOfWork uow, IPr
 // worked on a registered device of the branch (ABAC-04, BR-050); every amount is the server's (BR-013..BR-018).
 string Money(long v) => v.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
-object SaleJson(SaleView s, IReadOnlyList<string>? warnings = null)
+object SaleJson(SaleView s, IReadOnlyList<string>? warnings = null, IReadOnlyList<PaymentView>? payments = null)
 {
     var t = SaleMath.Totals(s.Lines);
+    long change = payments?.Sum(p => p.Change ?? 0) ?? 0;
     return new
     {
         s.Id, s.Status, s.ReturnStatus, s.BranchId, s.RegisterId, s.ShiftId, cashierId = s.CashierId, terminalId = s.TerminalId, s.Channel,
@@ -1650,16 +1653,29 @@ object SaleJson(SaleView s, IReadOnlyList<string>? warnings = null)
             },
             net = Money(l.Net), taxRate = l.TaxRateBp, tax = Money(l.Tax), lineTotal = Money(l.LineTotal), returnedQty = Qty(l.ReturnedQty),
         }),
-        saleDiscount = (object?)null, tenders = Array.Empty<object>(),
+        saleDiscount = (object?)null,
+        tenders = (s.Tenders ?? []).Select(x =>
+        {
+            PaymentView? p = payments?.FirstOrDefault(p => p.Id == x.PaymentId);
+            return new
+            {
+                x.Seq, x.Method, amount = Money(x.Amount), status = "Confirmed", x.PaymentId, reference = p?.ReferenceNo,
+                tendered = p?.Tendered is long td ? Money(td) : null, change = p?.Change is long ch ? Money(ch) : null,
+            };
+        }),
         totals = new
         {
             gross = Money(t.Gross), discount = Money(t.Discount), net = Money(t.Net), tax = Money(t.Tax), total = Money(t.Total),
-            paid = "0", remaining = Money(t.Total), change = "0",
+            paid = Money(s.Paid), remaining = Money(s.Remaining), change = Money(change),
         },
         s.FinalizedAt, receiptUrl = (string?)null, s.Version,
         warnings = warnings ?? (s.Status is "Draft" or "Held" ? ["price-preview-only"] : []),
     };
 }
+
+// US-101: once a payment is taken the bill is fixed (the database agrees, RC026)
+IResult PaidInto(HttpContext http) =>
+    Problems.Create(http, StatusCodes.Status409Conflict, "sale-has-payments", "Payments were taken on this bill; its lines no longer change");
 
 IResult SaleProblem(HttpContext http, SaleOutcome outcome) => outcome switch
 {
@@ -1780,11 +1796,15 @@ v1.MapPost("/pos/sales", async (SaleCreateInput body, RequestContext ctx, IUnitO
     })
     .RequirePermission(Permissions.PosSell);
 
-v1.MapGet("/pos/sales/{saleId:guid}", async (Guid saleId, RequestContext ctx, IUnitOfWork uow, ISales sales, HttpContext http, CancellationToken ct) =>
-        await uow.ExecuteAsync(ctx, (s, c) => sales.GetAsync(s, saleId, c), ct) is { } sale
-        && AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.PosSell, new ScopeRef(ScopeType.Register, sale.RegisterId, sale.BranchId))
-            ? Results.Ok(SaleJson(sale))
-            : Problems.NotFound(http))
+v1.MapGet("/pos/sales/{saleId:guid}", async (Guid saleId, RequestContext ctx, IUnitOfWork uow, ISales sales, IPayments payments, HttpContext http,
+        CancellationToken ct) =>
+    {
+        var (sale, paid) = await uow.ExecuteAsync(ctx, async (s, c) => (await sales.GetAsync(s, saleId, c), await payments.ForSaleAsync(s, saleId, c)), ct);
+        return sale is not null
+               && AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.PosSell, new ScopeRef(ScopeType.Register, sale.RegisterId, sale.BranchId))
+            ? Results.Ok(SaleJson(sale, payments: paid))
+            : Problems.NotFound(http);
+    })
     .RequirePermission(Permissions.PosSell);
 
 v1.MapPost("/pos/sales/{saleId:guid}/lines", async (Guid saleId, SaleLineInput body, RequestContext ctx, IUnitOfWork uow, ISales sales,
@@ -1810,6 +1830,7 @@ v1.MapPost("/pos/sales/{saleId:guid}/lines", async (Guid saleId, SaleLineInput b
             if (locked.Outcome == SaleOutcome.NotFound) return Problems.NotFound(http);
             if (await MayWorkOn(http, ctx, s, locked.Sale!, c) is { } denied) return denied;
             if (locked.Outcome != SaleOutcome.Done) return SaleProblem(http, locked.Outcome);
+            if (locked.Sale!.Tenders is { Count: > 0 }) return PaidInto(http);
             SaleView sale = locked.Sale!;
 
             // CAT-003 / CAT-007: a scale label first, then the code itself; an unknown code is for UC-01 (define) or a name search
@@ -1902,6 +1923,7 @@ v1.MapPatch("/pos/sales/{saleId:guid}/lines/{lineNo:int}", async (Guid saleId, i
             if (locked.Outcome == SaleOutcome.NotFound) return Problems.NotFound(http);
             if (await MayWorkOn(http, ctx, s, locked.Sale!, c) is { } denied) return denied;
             if (locked.Outcome != SaleOutcome.Done) return SaleProblem(http, locked.Outcome);
+            if (locked.Sale!.Tenders is { Count: > 0 }) return PaidInto(http);
             if (locked.Sale!.Lines.FirstOrDefault(l => l.LineNo == lineNo) is not { } old) return Problems.NotFound(http);
             if (old.WeightedCode is not null)
             {
@@ -1934,6 +1956,7 @@ v1.MapDelete("/pos/sales/{saleId:guid}/lines/{lineNo:int}", async (Guid saleId, 
             if (await MayWorkOn(http, ctx, s, locked.Sale!, c) is { } denied) return denied;
             if (expectedVersion is null) return Problems.Validation(http, new Dictionary<string, string[]> { ["expectedVersion"] = ["required"] });
             if (locked.Outcome != SaleOutcome.Done) return SaleProblem(http, locked.Outcome);
+            if (locked.Sale!.Tenders is { Count: > 0 }) return PaidInto(http);
             if (locked.Sale!.Lines.FirstOrDefault(l => l.LineNo == lineNo) is not { } old) return Problems.NotFound(http);
             SaleView after = await sales.RemoveLineAsync(s, saleId, lineNo, c);
             await Audit(http, s, ActorOf(ctx, http), new AuditEntry("sales.line.removed", "Sale", saleId.ToString(), null, new
@@ -1943,6 +1966,105 @@ v1.MapDelete("/pos/sales/{saleId:guid}/lines/{lineNo:int}", async (Guid saleId, 
             }), c);
             return Results.Ok(SaleJson(after));
         }, ct);
+    })
+    .RequirePermission(Permissions.PosSell);
+
+// ---------------- US-101: taking payment on a bill (SAL-006, PAY-001/002). Cash shows the change and only the applied amount
+// counts (SAL-006.1); a standalone card terminal is confirmed by its reference, once per terminal and day unless a manager
+// overrides (PAY-002.1, AB-14). Several payments may share a bill; together never more than its total (RC027).
+v1.MapIdempotentPost<TenderInput>("/pos/sales/{saleId:guid}/tenders", "pos.record-tender", async (body, scope, http, ct) =>
+    {
+        RequestContext ctx = http.RequestServices.GetRequiredService<RequestContext>();
+        Guid saleId = Guid.Parse((string)http.GetRouteValue("saleId")!, System.Globalization.CultureInfo.InvariantCulture);
+        var errors = new Dictionary<string, string[]>();
+        if (body.Method is not ("Cash" or "ExternalCardTerminal"))
+        {
+            errors["method"] = [body.Method is "CustomerCredit" or "StoreCredit" ? "not-yet-supported" : "Cash|ExternalCardTerminal|CustomerCredit|StoreCredit"];
+        }
+
+        if (!TryMoney(body.Amount, positive: true, out long amount)) errors["amount"] = ["positive rial amount as a whole-number string"];
+        long tendered = amount;
+        if (body.Method == "Cash" && body.Tendered is not null && (!TryMoney(body.Tendered, positive: true, out tendered) || tendered < amount))
+        {
+            errors["tendered"] = ["rials handed over, at least the amount"];
+        }
+
+        if (body.Method == "ExternalCardTerminal")
+        {
+            if (!PaymentRules.ValidReference(body.ReferenceNo)) errors["referenceNo"] = ["4-32 letters or digits from the card terminal's slip"];
+            if (!PaymentRules.ValidTerminalNo(body.TerminalNo)) errors["terminalNo"] = ["1-16 letters or digits"];
+            if (!PaymentRules.ValidLast4(body.CardLast4)) errors["cardLast4"] = ["4 digits"];
+        }
+        else if (body.ReferenceNo is not null || body.TerminalNo is not null || body.CardLast4 is not null)
+        {
+            errors["referenceNo"] = ["only for ExternalCardTerminal"];
+        }
+
+        if (errors.Count > 0) return CommandResult.Fail(Problems.Validation(http, errors));
+
+        ISales sales = http.RequestServices.GetRequiredService<ISales>();
+        SaleResult locked = await sales.LockDraftAsync(scope, saleId, null, ct);
+        if (locked.Outcome == SaleOutcome.NotFound) return CommandResult.Fail(Problems.NotFound(http));
+        if (await MayWorkOn(http, ctx, scope, locked.Sale!, ct) is { } denied) return CommandResult.Fail(denied);
+        if (locked.Outcome != SaleOutcome.Done) return CommandResult.Fail(SaleProblem(http, locked.Outcome));
+        SaleView sale = locked.Sale!;
+        if (sale.Lines.Count == 0 || amount > sale.Remaining)
+        {
+            return CommandResult.Fail(Problems.WithContext(http, StatusCodes.Status409Conflict, "amount-exceeds-remaining",
+                "More than is left to pay on this bill", new { remaining = Money(sale.Remaining) }));
+        }
+
+        // PAY-002.1: the day of the reference is the store's local day
+        TenantProfile profile = (await http.RequestServices.GetRequiredService<ITenantProfileQuery>().GetAsync(ctx.ActiveTenant!.Value, ct))!;
+        DateTimeOffset now = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
+        DateOnly businessDate = DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(now, TimeZoneInfo.FindSystemTimeZoneById(profile.TimeZone)).DateTime);
+        var origin = new PaymentOrigin(sale.Id, sale.RegisterId, sale.ShiftId, ctx.User!.Value.Value, businessDate);
+        IPayments payments = http.RequestServices.GetRequiredService<IPayments>();
+        PaymentView payment;
+        Guid? overrideId = null;
+        if (body.Method == "Cash")
+        {
+            payment = await payments.RecordCashAsync(scope, amount, tendered, origin, ct);
+        }
+        else
+        {
+            PaymentResult card = await payments.RecordManualCardAsync(scope, amount, body.ReferenceNo!, body.TerminalNo, body.CardLast4, null, origin, ct);
+            if (card.Outcome == PaymentOutcome.DuplicateReference)
+            {
+                // the same slip twice is refused; another manager may let it through for this bill and amount (audited)
+                var ask = new ApprovalAsk(Permissions.ShiftSupervise, "CardReference",
+                    PaymentRules.OverrideBinding(sale.Id, body.TerminalNo, body.ReferenceNo!, businessDate, amount),
+                    new ScopeRef(ScopeType.Register, sale.RegisterId, sale.BranchId), "duplicate-reference", body.ReferenceNo, null,
+                    $"payment {card.ExistingPaymentId}");
+                IApprovals approvals = http.RequestServices.GetRequiredService<IApprovals>();
+                if (body.ApprovalId is { } given && await approvals.ConsumeAsync(scope, given, ask, ctx.User!.Value, ct))
+                {
+                    card = await payments.RecordManualCardAsync(scope, amount, body.ReferenceNo!, body.TerminalNo, body.CardLast4, given, origin, ct);
+                    overrideId = given;
+                }
+                else
+                {
+                    Guid requested = body.ApprovalId is { } pending && await approvals.GetAsync(scope, pending, ct) is { Status: "Pending" } open
+                                     && open.RequestedBy == ctx.User!.Value.Value && open.ResourceId == ask.ResourceId
+                        ? pending
+                        : await http.RequestServices.GetRequiredService<IUnitOfWork>().ExecuteAsync(ctx, (s, c) => approvals.RequestAsync(s, ask, ctx.User!.Value, c), ct);
+                    return CommandResult.Fail(Problems.WithContext(http, StatusCodes.Status409Conflict, "duplicate-reference",
+                        "This card reference was already recorded today; a manager may override it",
+                        new { existingPaymentId = card.ExistingPaymentId, approvalRequestId = requested }));
+                }
+            }
+
+            payment = card.Payment!;
+        }
+
+        SaleView after = await sales.AddTenderAsync(scope, sale.Id, body.Method!, amount, payment.Id, ct);
+        await Audit(http, scope, ActorOf(ctx, http), new AuditEntry(overrideId is null ? "sales.tender.recorded" : "payments.reference.override", "Sale",
+            sale.Id.ToString(), null, new
+            {
+                method = body.Method, amount, paymentId = payment.Id, payment.ReferenceNo, payment.TerminalNo, overrideApprovalId = overrideId,
+                sale.RegisterId, sale.ShiftId,
+            }), ct);
+        return CommandResult.Ok(SaleJson(after, payments: await payments.ForSaleAsync(scope, sale.Id, ct)));
     })
     .RequirePermission(Permissions.PosSell);
 
@@ -2760,6 +2882,8 @@ internal sealed record DiscountCapsInput(Dictionary<string, int>? Caps);
 internal sealed record NegativeStockPolicyInput(string? ScopeType, Guid? ScopeId, string? Policy);
 internal sealed record AdjustmentLineInput(Guid? VariantId, string? QtyDelta);
 internal sealed record AdjustmentInput(Guid? WarehouseId, string? Reason, AdjustmentLineInput?[]? Lines, string? Note);
+internal sealed record TenderInput(string? Method, string? Amount, string? Tendered, string? ReferenceNo, string? TerminalNo, string? CardLast4,
+    Guid? ApprovalId);
 internal sealed record SaleCreateInput(Guid? RegisterId, string? ClientDraftId);
 internal sealed record SaleLineInput(Guid? VariantId, string? Barcode, string? Unit, string? Qty);
 internal sealed record SaleLinePatchInput(int? ExpectedVersion, string? Qty, string? Unit);

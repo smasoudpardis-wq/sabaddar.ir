@@ -335,6 +335,40 @@ SELECT t.expect_error('T206 a sale says which channel made it: POS, Admin or API
     VALUES (core.current_tenant(), gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000030', gen_random_uuid(),
             gen_random_uuid(), 'draft-0206', 'TaxExclusive', 'Phone')$$);
 
+-- US-101 payments and tenders (PAY-001/002, SAL-006)
+INSERT INTO sales.sale (tenant_id, id, branch_id, register_id, shift_id, cashier_id, terminal_id, client_draft_id, pricing_mode, total)
+  VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000043', 'a0000000-0000-0000-0000-000000000001', 'a0000000-0000-0000-0000-000000000002',
+          'a0000000-0000-0000-0000-000000000030', gen_random_uuid(), gen_random_uuid(), 'draft-0043', 'TaxExclusive', 1000);
+INSERT INTO sales.sale_line (tenant_id, sale_id, line_no, variant_id, qty, unit_price, gross, net, tax_rate_bp, tax, line_total)
+  VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000043', 1, 'a0000000-0000-0000-0000-000000000011', 1, 1000, 1000, 1000, 0, 0, 1000);
+INSERT INTO pay.payment (tenant_id, id, method, status, amount, reference_no, terminal_no, business_date, recorded_by)
+  VALUES (core.current_tenant(), gen_random_uuid(), 'ExternalCardTerminal', 'ConfirmedManual', 600, '123456789012', '8899', '2026-11-24', gen_random_uuid());
+SELECT t.expect_error('T207 a card reference is taken once per bank terminal and day (PAY-002.1)', '23505',
+  $$INSERT INTO pay.payment (tenant_id, id, method, status, amount, reference_no, terminal_no, business_date, recorded_by)
+    VALUES (core.current_tenant(), gen_random_uuid(), 'ExternalCardTerminal', 'ConfirmedManual', 400, '123456789012', '8899', '2026-11-24', gen_random_uuid())$$);
+INSERT INTO pay.payment (tenant_id, id, method, status, amount, reference_no, terminal_no, business_date, recorded_by, override_approval_id)
+  VALUES (core.current_tenant(), gen_random_uuid(), 'ExternalCardTerminal', 'ConfirmedManual', 400, '123456789012', '8899', '2026-11-24', gen_random_uuid(), gen_random_uuid());
+SELECT t.ok('T208 a manager-approved override may repeat it; another day or terminal is a different reference', true);
+SELECT t.expect_error('T209 cash records what was handed over and the change from it (SAL-006.1)', '23514',
+  $$INSERT INTO pay.payment (tenant_id, id, method, status, amount, tendered, change_given, business_date, recorded_by)
+    VALUES (core.current_tenant(), gen_random_uuid(), 'Cash', 'ConfirmedCash', 400, 1000, 500, '2026-11-24', gen_random_uuid())$$);
+SELECT t.expect_error('T210 a card payment always carries its reference (PAY-002)', '23514',
+  $$INSERT INTO pay.payment (tenant_id, id, method, status, amount, business_date, recorded_by)
+    VALUES (core.current_tenant(), gen_random_uuid(), 'ExternalCardTerminal', 'ConfirmedManual', 400, '2026-11-24', gen_random_uuid())$$);
+INSERT INTO sales.sale_tender (tenant_id, sale_id, seq, method, amount, payment_id)
+  VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000043', 1, 'ExternalCardTerminal', 600, gen_random_uuid());
+SELECT t.expect_error('T211 tenders never add up to more than the total (RC027)', 'RC027',
+  $$INSERT INTO sales.sale_tender (tenant_id, sale_id, seq, method, amount, payment_id)
+    VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000043', 2, 'Cash', 401, gen_random_uuid())$$);
+SELECT t.expect_error('T212 once paid into, the lines of a bill do not change (RC026)', 'RC026',
+  $$UPDATE sales.sale_line SET qty = 2 WHERE sale_id = 'a0000000-0000-0000-0000-000000000043'$$);
+UPDATE sales.sale_line SET cost_at_sale = 300000, snapshot = '{"name":"شیر"}' WHERE sale_id = 'a0000000-0000-0000-0000-000000000043';
+SELECT t.ok('T214 Finalize may still write the snapshot and cost of a paid bill''s lines (SAL-005)',
+  (SELECT cost_at_sale FROM sales.sale_line WHERE sale_id = 'a0000000-0000-0000-0000-000000000043') = 300000);
+SELECT t.expect_error('T213 payments are taken only on an open sale (RC027)', 'RC027',
+  $$INSERT INTO sales.sale_tender (tenant_id, sale_id, seq, method, amount, payment_id)
+    VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000042', 1, 'Cash', 1, gen_random_uuid())$$);
+
 ------------------------------------------------------------------ accounting
 \echo '== accounting'
 SELECT t.expect_error('T30 unbalanced posted journal rejected at commit (DI-040)', 'RC010',

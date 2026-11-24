@@ -16,9 +16,17 @@ public sealed record SaleLineView(int LineNo, Guid VariantId, string Name, strin
     long UnitPrice, long Gross, long Discount, string? DiscountSource, int? DiscountBp, Guid? DiscountRuleId, long Net, int TaxRateBp, long Tax,
     long LineTotal, decimal ReturnedQty);
 
+/// <summary>A payment applied to the bill (SAL-006); the payment itself lives in Payments (<paramref name="PaymentId"/>).</summary>
+public sealed record SaleTenderView(int Seq, string Method, long Amount, Guid? PaymentId);
+
 public sealed record SaleView(Guid Id, string Status, string ReturnStatus, Guid BranchId, Guid RegisterId, Guid ShiftId, Guid CashierId, Guid TerminalId,
     string Channel, string ClientDraftId, PricingMode PricingMode, string? InvoiceNo, long Total, DateTimeOffset? FinalizedAt, int Version,
-    IReadOnlyList<SaleLineView> Lines);
+    IReadOnlyList<SaleLineView> Lines, IReadOnlyList<SaleTenderView>? Tenders = null)
+{
+    public long Paid => Tenders?.Sum(t => t.Amount) ?? 0;
+
+    public long Remaining => Total - Paid;
+}
 
 /// <summary>A priced line to write: everything but its number, which the cart assigns.</summary>
 public sealed record SaleLineSpec(Guid VariantId, string Name, string Sku, decimal Qty, string Unit, decimal UnitFactor, string? WeightedCode,
@@ -56,6 +64,9 @@ public interface ISales
     Task<SaleView> WriteLineAsync(IUnitOfWorkScope scope, Guid saleId, int? replaceLineNo, SaleLineSpec line, CancellationToken cancellationToken);
 
     Task<SaleView> RemoveLineAsync(IUnitOfWorkScope scope, Guid saleId, int lineNo, CancellationToken cancellationToken);
+
+    /// <summary>SAL-006: applies a payment to the locked bill (the database refuses more than the total, RC027); bumps the version.</summary>
+    Task<SaleView> AddTenderAsync(IUnitOfWorkScope scope, Guid saleId, string method, long amount, Guid? paymentId, CancellationToken cancellationToken);
 }
 
 /// <summary>BR-013 / BR-016 / D-13: the amounts of a line, rounded half up to the rial at each step.</summary>

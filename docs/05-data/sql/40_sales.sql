@@ -191,6 +191,13 @@ BEGIN
   IF v_status IN ('Held','PendingPayment','Cancelled') THEN
     RAISE EXCEPTION 'lines change only while the sale is a Draft (it is %)', v_status USING ERRCODE = 'RC026';
   END IF;
+  -- once a payment is taken the bill is fixed: what was paid for cannot be changed underneath it (US-101)
+  IF v_status = 'Draft'
+     AND NOT (TG_OP = 'UPDATE' AND (to_jsonb(NEW) - ARRAY['snapshot','cost_at_sale']) = (to_jsonb(OLD) - ARRAY['snapshot','cost_at_sale']))  -- Finalize's snapshot (SAL-005)
+     AND EXISTS (SELECT 1 FROM sales.sale_tender t WHERE t.tenant_id = COALESCE(OLD.tenant_id, NEW.tenant_id)
+                                      AND t.sale_id = COALESCE(OLD.sale_id, NEW.sale_id)) THEN
+    RAISE EXCEPTION 'lines of a sale with payments do not change' USING ERRCODE = 'RC026';
+  END IF;
   IF v_status = 'Finalized' THEN
     IF TG_OP <> 'UPDATE'
        OR (to_jsonb(NEW) - 'returned_qty') IS DISTINCT FROM (to_jsonb(OLD) - 'returned_qty')
@@ -215,6 +222,23 @@ CREATE TABLE sales.sale_tender (
   CHECK ((method = 'CustomerCredit') = (payment_id IS NULL) OR method = 'StoreCredit')
 );
 CALL core.enable_tenant_rls('sales.sale_tender');
+
+-- SAL-006 / US-101: tenders are taken only on an open bill, and never add up to more than its total (RC027); a tender is a
+-- fact (no UPDATE grant): a mistake is voided by a later story, not edited.
+CREATE OR REPLACE FUNCTION sales.tender_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE v_status text; v_total bigint; v_paid bigint;
+BEGIN
+  SELECT status, total INTO v_status, v_total FROM sales.sale WHERE tenant_id = NEW.tenant_id AND id = NEW.sale_id FOR UPDATE;
+  IF v_status NOT IN ('Draft','PendingPayment') THEN
+    RAISE EXCEPTION 'payments are taken only on an open sale (it is %)', v_status USING ERRCODE = 'RC027';
+  END IF;
+  SELECT coalesce(sum(amount), 0) INTO v_paid FROM sales.sale_tender WHERE tenant_id = NEW.tenant_id AND sale_id = NEW.sale_id;
+  IF v_paid + NEW.amount > v_total THEN
+    RAISE EXCEPTION 'payments % + % exceed the total %', v_paid, NEW.amount, v_total USING ERRCODE = 'RC027';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tr_tender_guard BEFORE INSERT ON sales.sale_tender FOR EACH ROW EXECUTE FUNCTION sales.tender_guard();
 
 -- Idempotency records live in core.idempotency_record (shared by every module, US-006).
 

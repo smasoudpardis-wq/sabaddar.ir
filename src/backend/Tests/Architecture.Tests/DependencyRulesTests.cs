@@ -22,6 +22,7 @@ public class DependencyRulesTests
         typeof(RetailCloud.Accounting.Application.ChartOfAccountsTemplate).Assembly,
         typeof(RetailCloud.Merchandising.Application.IProductCatalog).Assembly,
         typeof(RetailCloud.Sales.Application.IShifts).Assembly,
+        typeof(RetailCloud.Payments.Application.IPayments).Assembly,
         typeof(RetailCloud.Notifications.Application.INotifications).Assembly,
     ];
 
@@ -33,6 +34,7 @@ public class DependencyRulesTests
         typeof(RetailCloud.Accounting.Infrastructure.TenantAccountingSetupConsumer).Assembly,
         typeof(RetailCloud.Merchandising.Infrastructure.PostgresProductCatalog).Assembly,
         typeof(RetailCloud.Sales.Infrastructure.PostgresShifts).Assembly,
+        typeof(RetailCloud.Payments.Infrastructure.PostgresPayments).Assembly,
         typeof(RetailCloud.Notifications.Infrastructure.NotificationDispatcher).Assembly,
     ];
 
