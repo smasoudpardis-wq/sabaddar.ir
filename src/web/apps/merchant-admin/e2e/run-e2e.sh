@@ -49,6 +49,7 @@ DELETE FROM sales.sale_tender WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM sales.sale WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM sales.cash_movement WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM sales.shift WHERE tenant_id IN ('$T1','$T2','$TF');
+DELETE FROM merch.receipt_template_override WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM inv.supplier_payment WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM inv.purchase_return_line WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM inv.purchase_return WHERE tenant_id IN ('$T1','$T2','$TF');

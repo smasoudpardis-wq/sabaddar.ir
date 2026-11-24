@@ -55,6 +55,18 @@ public sealed class EndpointPolicyTests : IClassFixture<ApiFactory>
             {
                 Operation? op = d07.SingleOrDefault(o => o.Method == method && o.Path == path);
                 string? declared = e.Metadata.GetMetadata<EndpointPolicyAttribute>()?.Permission;
+                if (op is not null && path.StartsWith("/platform/", StringComparison.Ordinal))
+                {
+                    // the platform audience: no tenant permission, the platform realm's admin policy instead (D06 §6.2, TM-071)
+                    if (!e.Metadata.GetOrderedMetadata<Microsoft.AspNetCore.Authorization.IAuthorizeData>()
+                            .Any(a => a.Policy == RetailCloud.BuildingBlocks.Api.ServiceCollectionExtensions.PlatformAdminPolicy))
+                    {
+                        problems.Add($"{method} {path} ({op.OperationId}): a platform operation without the platform-admin policy");
+                    }
+
+                    continue;
+                }
+
                 if (op is null)
                 {
                     problems.Add($"{method} {path}: not in D07 (undocumented endpoint)");

@@ -499,9 +499,13 @@ schema("TaxDashboard", byStatus=[{"status": "str", "count": "int"}], oldestPendi
        atRisk="int")
 
 # Templates / Reports / Audit / Integrations
-schema("ReceiptTemplate", industryTemplateVersion="str", lockedFields=["str"], legalText="str",
-       overrides={"logoObjectKey?": "str", "footerText?": "str", "signature?": "str"}, version="int")
-schema("ReceiptTemplateUpdate", expectedVersion="int", overrides={"logoObjectKey?": "str", "footerText?": "str", "signature?": "str"})
+schema("ReceiptTemplate", industryTemplateVersion=("desc", "str", "e.g. supermarket@3: the industry version a receipt cites (BR-086)"),
+       industryName="str", lockedFields=["str"], legalText="str",
+       overrides={"logoObjectKey?": "str", "footerText?": "str", "signature?": "str"},
+       version=("desc", "int", "The store's override version; 0 before its first change"))
+schema("ReceiptTemplateUpdate", expectedVersion="int",
+       overrides={"logoObjectKey?": ("desc", "str", "Not yet supported (uploads with US-092)"), "footerText?": ("desc", "str", "Up to 300 characters"),
+                  "signature?": ("desc", "str", "Up to 100 characters")})
 schema("SalesDailyRow", businessDate="date", jalaliDate="jalali", branchId="uuid", registerId="uuid?", cashierId="uuid?",
        invoices="int", gross="money", discount="money", tax="money", net="money", returns="money")
 schema("StockReportRow", warehouseId="uuid", variantId="uuid", sku="str", name="str", onHand="qty", value="money", belowReorderPoint="bool")
@@ -526,8 +530,10 @@ schema("TaxSubmissionPolicyCreate", validFrom="dt", periodType=("enum", ["Monthl
 schema("RetentionPolicy", category=("enum", ["FinancialDocuments", "TaxInvoices", "InventoryLedger", "Audit", "CustomerCrm",
                                              "CustomerIdentity", "Notifications", "TechnicalLogs"]),
        minimumDays="int", defaultDays="int", validFrom="dt")
-schema("IndustryProfile", code="str", name="str", receiptTemplateVersion="str", lockedFields=["str"], legalText="str")
-schema("IndustryProfileUpdate", expectedVersion="int", legalText="str", lockedFields=["str"], reason="str")
+schema("IndustryProfile", code="str", name="str", receiptTemplateVersion="str", version="int", lockedFields=["str"], legalText="str",
+       reason="str", publishedAt="dt")
+schema("IndustryProfileUpdate", expectedVersion=("desc", "int", "The newest version; the update publishes the next one"), legalText="str",
+       lockedFields=("desc", ["str"], "Known receipt fields; legalName, invoiceNo, issuedAt, lines and totals are always locked"), reason="str")
 schema("CatalogReviewDecision", decision=("enum", ["Publish", "Reject"]), **{"edits?": {"name?": "str", "brand?": "str", "category?": "str"}},
        reason="str")
 schema("CatalogSuggestion", id="uuid", gtin14="str", fields={"name?": "str", "brand?": "str", "category?": "str"},

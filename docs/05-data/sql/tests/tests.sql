@@ -302,6 +302,17 @@ INSERT INTO inv.purchase_return (tenant_id, id, supplier_id, warehouse_id, cost,
           900, 1000, gen_random_uuid(), gen_random_uuid());
 SELECT t.expect_error('T236 a posted purchase return is never changed by the app', '42501',
   $$UPDATE inv.purchase_return SET agreed_amount = 1 WHERE id = 'a0000000-0000-0000-0000-000000000062'$$);
+-- US-172 receipt templates (BR-086, DI-085)
+SELECT t.ok('T240 every industry starts with template v1 and its locked fields',
+  (SELECT count(*) FROM platform.receipt_template_industry WHERE version = 1 AND 'invoiceNo' = ANY(locked_fields)) = 3);
+SELECT t.expect_error('T241 a published template version is never changed', '42501',
+  $$UPDATE platform.receipt_template_industry SET legal_text = 'دیگر' WHERE industry_code = 'general'$$);
+SELECT t.expect_error('T242 only known receipt fields can be locked', '23514',
+  $$INSERT INTO platform.receipt_template_industry (industry_code, version, legal_text, locked_fields, reason, created_by)
+    VALUES ('general', 2, 'متن', ARRAY['invoiceNo','favouriteColour'], 'آزمون', 'test')$$);
+SELECT t.expect_error('T243 the app cannot add an industry (reference data)', '42501',
+  $$INSERT INTO platform.industry_profile (code, name) VALUES ('bakery', 'نانوایی')$$);
+INSERT INTO merch.receipt_template_override (tenant_id, footer_text, updated_by) VALUES (core.current_tenant(), 'با سپاس از خرید شما', gen_random_uuid());
 SELECT t.expect_error('T14 stock movement is append-only for the app role', '42501',
   $$UPDATE inv.stock_movement SET qty_base = -2$$);
 SELECT t.expect_error('T15 movement for another tenant via parent rejected', '42501',

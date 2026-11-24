@@ -484,6 +484,21 @@ try {
   check('Z06', 'the current month cannot be closed: today\'s documents need an open period (D02 UC-02 8d)',
     (await page.locator(`[data-testid="period-list"] [data-period="${current}"][data-status="Open"]`).count()) === 1, `current=${current}`);
   await shot(page, 'journals');
+  // RT01–RT02 US-172: the store sees its industry's legal text as fixed and sets only its own footer and signature (BR-086, DI-085)
+  await page.goto(`${BFF}/receipt-template`);
+  await page.getByTestId('template-legal').or(page.getByTestId('template-error')).waitFor();
+  if (await page.getByTestId('template-error').count()) throw new Error(`receipt template: ${await page.getByTestId('template-error').textContent()}`);
+  const version = await page.getByTestId('template-version').getAttribute('data-version');
+  const fixed = (await page.getByTestId('template-legal').evaluate((n) => n.tagName)) === 'P'
+    && (await page.locator('[data-testid="template-form"] textarea, [data-testid="template-form"] input').count()) === 2;
+  check('RT01', 'the industry template (versioned) is shown and its legal text cannot be edited', /@\d+$/.test(version ?? '') && fixed, version);
+  await page.getByTestId('template-footer').fill('با سپاس از خرید شما — آزمون');
+  await page.getByTestId('template-signature').fill('فروشگاه آزمایشی');
+  await page.getByTestId('template-save').click();
+  await page.getByTestId('template-saved').waitFor();
+  const templatePreview = (await page.getByTestId('template-preview').textContent()) ?? '';
+  check('RT02', 'the footer and signature are saved and shown under the legal text', templatePreview.includes('آزمون') && templatePreview.includes('فروشگاه آزمایشی'), templatePreview);
+  await shot(page, 'receipt-template');
   // V01–V04 US-082: on a paired device the owner opens a shift; a barcode reader is read without focus (keyboard wedge),
   // a double read within 1.5 s is ignored, a later scan adds to the line, and a line can be removed
   await page.goto(`${BFF}/terminals`);

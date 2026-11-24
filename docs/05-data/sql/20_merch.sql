@@ -235,6 +235,19 @@ END $$;
 CREATE TRIGGER weighted_prefix_disjoint BEFORE INSERT OR UPDATE ON merch.weighted_barcode_profile
   FOR EACH ROW EXECUTE FUNCTION merch.weighted_prefix_disjoint();
 
+-- BR-086 / DI-085 (US-172): what a store may change on its receipts — only these parts; the industry's legal text and
+-- locked fields come from platform.receipt_template_industry and cannot be overridden (there is nowhere to put them).
+CREATE TABLE merch.receipt_template_override (
+  tenant_id       uuid PRIMARY KEY,
+  footer_text     text CHECK (char_length(footer_text) BETWEEN 1 AND 300),
+  signature       text CHECK (char_length(signature) BETWEEN 1 AND 100),
+  logo_object_key text CHECK (logo_object_key ~ '^tenants/[0-9a-f-]{36}/logos/[A-Za-z0-9._-]{1,100}$'),
+  version         int  NOT NULL DEFAULT 1,
+  updated_by      uuid NOT NULL,
+  updated_at      timestamptz NOT NULL DEFAULT now()
+);
+CALL core.enable_tenant_rls('merch.receipt_template_override');
+
 GRANT USAGE ON SCHEMA merch TO rc_app, rc_worker, rc_reporting;
 GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA merch TO rc_app;
 GRANT SELECT ON ALL TABLES IN SCHEMA merch TO rc_worker, rc_reporting;

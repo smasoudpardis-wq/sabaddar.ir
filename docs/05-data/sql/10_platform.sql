@@ -82,6 +82,35 @@ BEGIN
 END $$;
 CREATE TRIGGER terminal_no_unrevoke BEFORE UPDATE ON platform.terminal FOR EACH ROW EXECUTE FUNCTION platform.terminal_no_unrevoke();
 
+-- BR-086 / SAL-012 / D-32 (US-172): each industry's receipt template, defined by the platform and versioned. A version is
+-- never changed: a new text is a new version, with who made it and why (the history is the record). Global reference
+-- data: no tenant_id; the merchant API only reads it (the platform API writes new versions). The legal text of v1 is a
+-- placeholder until the tax adviser's text arrives (X-05, G-05).
+CREATE TABLE platform.industry_profile (
+  code text PRIMARY KEY CHECK (code ~ '^[a-z]{2,30}$'),
+  name text NOT NULL CHECK (char_length(btrim(name)) BETWEEN 1 AND 100)
+);
+INSERT INTO platform.industry_profile (code, name) VALUES ('supermarket', 'سوپرمارکت'), ('apparel', 'پوشاک'), ('general', 'عمومی');
+
+CREATE TABLE platform.receipt_template_industry (
+  industry_code text NOT NULL REFERENCES platform.industry_profile (code),
+  version       int  NOT NULL CHECK (version >= 1),
+  legal_text    text NOT NULL CHECK (char_length(btrim(legal_text)) BETWEEN 1 AND 2000),
+  -- the fields every receipt of the industry must show; a store cannot hide them (DI-085)
+  locked_fields text[] NOT NULL CHECK (locked_fields <@ ARRAY['legalName','economicCode','nationalId','businessLicenseNo','branchAddress',
+                 'invoiceNo','issuedAt','cashier','lines','totals','tax','payments','qrCode']::text[] AND cardinality(locked_fields) >= 1),
+  reason        text NOT NULL CHECK (char_length(btrim(reason)) BETWEEN 3 AND 500),
+  created_by    text NOT NULL,                     -- the platform operator (issuer|subject); not a merchant user
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (industry_code, version)
+);
+CREATE TRIGGER tr_receipt_template_industry_append_only BEFORE UPDATE OR DELETE ON platform.receipt_template_industry
+  FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
+INSERT INTO platform.receipt_template_industry (industry_code, version, legal_text, locked_fields, reason, created_by)
+SELECT code, 1, 'این فاکتور بر اساس قوانین مالیات بر ارزش افزوده صادر شده است. (متن نهایی پس از تأیید مشاور مالیاتی)',
+       ARRAY['legalName','economicCode','invoiceNo','issuedAt','lines','totals','tax','qrCode'], 'نسخه اولیه (پیش‌نویس، X-05)', 'migration'
+  FROM platform.industry_profile;
+
 -- Plans and entitlements (TEN-003, US-014, [DEC D-97]). A plan is global reference data; NULL limit = unlimited.
 -- The numbers below were approved by the client on 2026-11-23; operators change them by migration.
 CREATE TABLE platform.plan (
@@ -225,6 +254,8 @@ $$;
 
 GRANT USAGE ON SCHEMA platform TO rc_app, rc_worker, rc_reporting;
 GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA platform TO rc_app;
+REVOKE INSERT, UPDATE ON platform.industry_profile FROM rc_app;   -- reference data: changed by migration only
+REVOKE UPDATE ON platform.receipt_template_industry FROM rc_app;   -- a version is only added (the trigger refuses changes too)
 GRANT SELECT ON ALL TABLES IN SCHEMA platform TO rc_worker, rc_reporting;
 REVOKE INSERT, UPDATE ON platform.plan, platform.subscription FROM rc_app;   -- read-only for the application
 -- TEN-004: suspension is a platform decision, so the application may edit only the settings of TenantUpdate (D07),

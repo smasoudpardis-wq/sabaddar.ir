@@ -18,6 +18,8 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
 {
     public const string Issuer = "https://id.test/realms/merchant";
     public const string Audience = "merchant-api";
+    public const string PlatformIssuer = "https://id.test/realms/platform";
+    public const string PlatformAudience = "platform-api";
     private static readonly RSA Rsa = RSA.Create(2048);
     public static readonly RsaSecurityKey SigningKey = new(Rsa) { KeyId = "test-key" };
 
@@ -29,6 +31,8 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
         builder.UseSetting("ConnectionStrings:Main", Environment.GetEnvironmentVariable("RC_TEST_PG") ?? "Host=unused");
         builder.UseSetting("Auth:Merchant:Authority", Issuer);
         builder.UseSetting("Auth:Merchant:Audience", Audience);
+        builder.UseSetting("Auth:Platform:Authority", PlatformIssuer);
+        builder.UseSetting("Auth:Platform:Audience", PlatformAudience);
         builder.UseSetting("Network:TrustedProxies", "*"); // TestServer has no peer address; the tests act as the BFF
         builder.ConfigureTestServices(services =>
         {
@@ -36,6 +40,14 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
             {
                 o.Authority = null;
                 var config = new OpenIdConnectConfiguration { Issuer = Issuer };
+                config.SigningKeys.Add(SigningKey);
+                o.Configuration = config;
+                o.TokenValidationParameters.IssuerSigningKey = SigningKey;
+            });
+            services.PostConfigure<JwtBearerOptions>(RetailCloud.BuildingBlocks.Api.ServiceCollectionExtensions.PlatformScheme, o =>
+            {
+                o.Authority = null;
+                var config = new OpenIdConnectConfiguration { Issuer = PlatformIssuer };
                 config.SigningKeys.Add(SigningKey);
                 o.Configuration = config;
                 o.TokenValidationParameters.IssuerSigningKey = SigningKey;

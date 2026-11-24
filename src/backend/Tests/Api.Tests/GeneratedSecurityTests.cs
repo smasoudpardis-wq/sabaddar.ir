@@ -241,7 +241,8 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
             .SelectMany(e => e.Metadata.GetMetadata<IHttpMethodMetadata>()!.HttpMethods.Select(m =>
                 (m, System.Text.RegularExpressions.Regex.Replace(e.RoutePattern.RawText!["/api/v1".Length..], @"\{(\w+):[^}]+\}", "{$1}"))))
             .ToHashSet();
-        List<Operation> ops = [.. d07.Where(o => mapped.Contains((o.Method, o.Path)))];
+        // the platform audience has its own realm and tests (PlatformTemplateTests); these are the merchant operations
+        List<Operation> ops = [.. d07.Where(o => mapped.Contains((o.Method, o.Path)) && !o.Path.StartsWith("/platform/", StringComparison.Ordinal))];
         Assert.True(ops.Count >= 20, $"only {ops.Count} implemented operations found");
         return ops;
     }

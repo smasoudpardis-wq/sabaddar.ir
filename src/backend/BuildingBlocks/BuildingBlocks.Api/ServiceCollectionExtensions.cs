@@ -17,34 +17,85 @@ public sealed class MerchantAuthOptions
     public bool RequireHttpsMetadata { get; set; } = true;
 }
 
+/// <summary>The platform operators' realm (D06 §6.2, TM-071): its own issuer and audience, never accepted as a merchant.</summary>
+public sealed class PlatformAuthOptions
+{
+    public string Authority { get; set; } = string.Empty;
+
+    public string Audience { get; set; } = "platform-api";
+
+    public bool RequireHttpsMetadata { get; set; } = true;
+}
+
 public static class ServiceCollectionExtensions
 {
     public const string MerchantPolicy = "merchant";
+
+    /// <summary>JWT bearer scheme of the platform realm.</summary>
+    public const string PlatformScheme = "platform";
+
+    /// <summary>PlatformSuperAdmin with a second factor (D06 §6.2, AUTH-02): global templates and policies.</summary>
+    public const string PlatformAdminPolicy = "platform-admin";
+
+    /// <summary>Roles of the platform realm, as Keycloak puts them in <c>realm_access.roles</c>.</summary>
+    public static bool HasRealmRole(System.Security.Claims.ClaimsPrincipal user, string role)
+    {
+        ArgumentNullException.ThrowIfNull(user);
+        string? access = user.FindFirst("realm_access")?.Value;
+        if (access is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(access);
+            return doc.RootElement.TryGetProperty("roles", out var roles) && roles.ValueKind == System.Text.Json.JsonValueKind.Array
+                && roles.EnumerateArray().Any(r => r.ValueKind == System.Text.Json.JsonValueKind.String && r.GetString() == role);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return false;
+        }
+    }
 
     /// <summary>JWT bearer for the merchant audience (ADR-003, AUTH-05, BR-004) plus request context.</summary>
     public static IServiceCollection AddRetailCloudApi(this IServiceCollection services, IConfiguration configuration)
     {
         var auth = configuration.GetSection("Auth:Merchant").Get<MerchantAuthOptions>() ?? new MerchantAuthOptions();
-        services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(o =>
+        var platform = configuration.GetSection("Auth:Platform").Get<PlatformAuthOptions>() ?? new PlatformAuthOptions();
+        static TokenValidationParameters Validation(string issuer, string audience) => new()
         {
-            o.Authority = string.IsNullOrEmpty(auth.Authority) ? null : auth.Authority;
-            o.RequireHttpsMetadata = auth.RequireHttpsMetadata;
-            o.MapInboundClaims = false;
-            o.TokenValidationParameters = new TokenValidationParameters
+            ValidateIssuer = true,
+            ValidIssuer = string.IsNullOrEmpty(issuer) ? "unconfigured" : issuer,   // an unset realm accepts nobody
+            ValidateAudience = true,
+            ValidAudience = audience,
+            ValidateLifetime = true,
+            RequireExpirationTime = true,
+            RequireSignedTokens = true,
+            ValidAlgorithms = [SecurityAlgorithms.RsaSha256, SecurityAlgorithms.EcdsaSha256],
+            ClockSkew = TimeSpan.FromSeconds(30),
+            NameClaimType = "preferred_username",
+        };
+        services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+            .AddJwtBearer(o =>
             {
-                ValidateIssuer = true,
-                ValidIssuer = auth.Authority,
-                ValidateAudience = true,
-                ValidAudience = auth.Audience,
-                ValidateLifetime = true,
-                RequireExpirationTime = true,
-                RequireSignedTokens = true,
-                ValidAlgorithms = [SecurityAlgorithms.RsaSha256, SecurityAlgorithms.EcdsaSha256],
-                ClockSkew = TimeSpan.FromSeconds(30),
-                NameClaimType = "preferred_username",
-            };
-        });
-        services.AddAuthorizationBuilder().AddPolicy(MerchantPolicy, p => p.RequireAuthenticatedUser());
+                o.Authority = string.IsNullOrEmpty(auth.Authority) ? null : auth.Authority;
+                o.RequireHttpsMetadata = auth.RequireHttpsMetadata;
+                o.MapInboundClaims = false;
+                o.TokenValidationParameters = Validation(auth.Authority, auth.Audience);
+            })
+            .AddJwtBearer(PlatformScheme, o =>
+            {
+                o.Authority = string.IsNullOrEmpty(platform.Authority) ? null : platform.Authority;
+                o.RequireHttpsMetadata = platform.RequireHttpsMetadata;
+                o.MapInboundClaims = false;
+                o.TokenValidationParameters = Validation(platform.Authority, platform.Audience);
+            });
+        services.AddAuthorizationBuilder()
+            .AddPolicy(MerchantPolicy, p => p.RequireAuthenticatedUser())
+            .AddPolicy(PlatformAdminPolicy, p => p.AddAuthenticationSchemes(PlatformScheme).RequireAuthenticatedUser()
+                .RequireClaim("acr", MfaPolicy.MfaAcr).RequireAssertion(c => HasRealmRole(c.User, "PlatformSuperAdmin")));
         services.AddMemoryCache();
         services.AddScoped<RequestContext>();
         // Brute-force bounds for guessable secrets (D07 x-rate-limit): pairing codes, invitation links. Per identity.

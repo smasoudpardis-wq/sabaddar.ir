@@ -32,6 +32,8 @@ builder.Services.AddSingleton<IProductCatalog, PostgresProductCatalog>();
 builder.Services.AddSingleton<IWeightedBarcodeProfiles, PostgresWeightedBarcodeProfiles>();
 builder.Services.AddSingleton<IPriceLists, PostgresPriceLists>();
 builder.Services.AddSingleton<IDiscounts, PostgresDiscounts>();
+builder.Services.AddSingleton<IIndustryTemplates, RetailCloud.Platform.Infrastructure.PostgresIndustryTemplates>();
+builder.Services.AddSingleton<IReceiptTemplateOverrides, PostgresReceiptTemplateOverrides>();
 builder.Services.AddSingleton<IStockLedger, RetailCloud.Inventory.Infrastructure.PostgresStockLedger>();
 builder.Services.AddSingleton<IStockAdjustments, RetailCloud.Inventory.Infrastructure.PostgresStockAdjustments>();
 builder.Services.AddSingleton<IProcurement, RetailCloud.Inventory.Infrastructure.PostgresProcurement>();
@@ -95,6 +97,87 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
 RouteGroupBuilder v1 = app.MapGroup("/api/v1").RequireAuthorization(ServiceCollectionExtensions.MerchantPolicy)
     .AddEndpointFilter<DefaultDenyFilter>()
     .AddEndpointFilter<ReadOnlyTenantFilter>();   // TEN-004: a read-only tenant writes only x-allowed-when-read-only
+
+// ---------------- US-172 / BR-086 / D-32: receipt templates. The industry's template (legal text, locked fields) is the
+// platform's and versioned; a store changes only its footer and signature (DI-085: there is nowhere to put anything else).
+object IndustryJson(IndustryTemplate t) => new
+{
+    code = t.IndustryCode, name = t.IndustryName, receiptTemplateVersion = t.Ref, version = t.Version, t.LockedFields, t.LegalText, t.Reason,
+    publishedAt = t.CreatedAt,
+};
+
+object ReceiptTemplateJson(IndustryTemplate t, ReceiptOverride o) => new
+{
+    industryTemplateVersion = t.Ref, industryName = t.IndustryName, lockedFields = t.LockedFields, legalText = t.LegalText,
+    overrides = new { footerText = o.FooterText, signature = o.Signature, logoObjectKey = o.LogoObjectKey }, version = o.Version,
+};
+
+v1.MapGet("/templates/receipt", async (RequestContext ctx, IUnitOfWork uow, ITenantProfileQuery profiles, IIndustryTemplates industries,
+        IReceiptTemplateOverrides overrides, HttpContext http, CancellationToken ct) =>
+    {
+        if (await profiles.GetAsync(ctx.ActiveTenant!.Value, ct) is not { } tenant) return Problems.NotFound(http);
+        var (template, own) = await uow.ExecuteAsync(ctx, async (s, c) => (await industries.LatestAsync(s, tenant.IndustryCode, c), await overrides.GetAsync(s, c)), ct);
+        return template is null ? Problems.NotFound(http) : Results.Ok(ReceiptTemplateJson(template, own));
+    })
+    .RequireTenantMember();
+
+v1.MapPut("/templates/receipt", async (ReceiptTemplateUpdateInput body, RequestContext ctx, IUnitOfWork uow, ITenantProfileQuery profiles,
+        IIndustryTemplates industries, IReceiptTemplateOverrides overrides, HttpContext http, CancellationToken ct) =>
+    {
+        var errors = new Dictionary<string, string[]>();
+        if (body.ExpectedVersion is not int expected || expected < 0) errors["expectedVersion"] = ["required (0 before the first change)"];
+        string? footer = string.IsNullOrWhiteSpace(body.Overrides?.FooterText) ? null : body.Overrides!.FooterText!.Trim();
+        string? signature = string.IsNullOrWhiteSpace(body.Overrides?.Signature) ? null : body.Overrides!.Signature!.Trim();
+        if (footer is { Length: > 300 }) errors["overrides.footerText"] = ["up to 300 characters"];
+        if (signature is { Length: > 100 }) errors["overrides.signature"] = ["up to 100 characters"];
+        if (body.Overrides?.LogoObjectKey is not null) errors["overrides.logoObjectKey"] = ["not-yet-supported"];   // uploads come with US-092
+        if (errors.Count > 0) return Problems.Validation(http, errors);
+        if (await profiles.GetAsync(ctx.ActiveTenant!.Value, ct) is not { } tenant) return Problems.NotFound(http);
+        return await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            if (await industries.LatestAsync(s, tenant.IndustryCode, c) is not { } template) return Problems.NotFound(http);
+            if (await overrides.SetAsync(s, body.ExpectedVersion!.Value, footer, signature, ctx.User!.Value.Value, c) is not { } saved)
+            {
+                return Problems.Create(http, StatusCodes.Status409Conflict, "version-conflict", "The template changed; reload it");
+            }
+
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry("templates.receipt.updated", "ReceiptTemplate", null, null,
+                new { footer, signature, saved.Version, industryTemplate = template.Ref }), c);
+            return Results.Ok(ReceiptTemplateJson(template, saved));
+        }, ct);
+    })
+    .RequirePermission(Permissions.TemplatesReceiptManage);
+
+// The platform API (D07 audience "platform", D06 §6.2): only a token of the platform realm with PlatformSuperAdmin and a
+// second factor (TM-071: a merchant token is refused here, and a platform token is refused on the merchant API). Global
+// data only: no tenant context, no merchant data.
+ILogger platformLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("RetailCloud.Platform");
+RouteGroupBuilder platformApi = app.MapGroup("/api/v1/platform").RequireAuthorization(ServiceCollectionExtensions.PlatformAdminPolicy);
+
+platformApi.MapGet("/industry-profiles", async (IUnitOfWork uow, IIndustryTemplates industries, CancellationToken ct) =>
+    Results.Ok(new { items = (await uow.ExecuteWithoutTenantAsync(null, (s, c) => industries.LatestAsync(s, c), ct)).Select(IndustryJson) }));
+
+platformApi.MapPut("/industry-profiles/{code}", async (string code, IndustryProfileUpdateInput body, IUnitOfWork uow, IIndustryTemplates industries,
+        HttpContext http, CancellationToken ct) =>
+    {
+        var errors = new Dictionary<string, string[]>();
+        if (body.ExpectedVersion is null) errors["expectedVersion"] = ["required"];
+        if (body.Reason is null || body.Reason.Trim().Length is < 3 or > 500) errors["reason"] = ["3-500 characters"];
+        if (ReceiptTemplateRules.Problem(body.LegalText, body.LockedFields) is { } problem) errors[problem.Split(':')[0]] = [problem];
+        if (errors.Count > 0) return Problems.Validation(http, errors);
+        string operatorId = $"{http.User.FindFirst("iss")?.Value}|{http.User.FindFirst("sub")?.Value}";
+        var (outcome, template) = await uow.ExecuteWithoutTenantAsync(null, (s, c) => industries.PublishAsync(s, code, body.ExpectedVersion!.Value,
+            body.LegalText!.Trim(), body.LockedFields!, body.Reason!.Trim(), operatorId, c), ct);
+        if (outcome == TemplateOutcome.NotFound) return Problems.NotFound(http);
+        if (outcome == TemplateOutcome.VersionConflict)
+        {
+            return Problems.Create(http, StatusCodes.Status409Conflict, "version-conflict", "A newer version was published; reload it");
+        }
+
+        // the template row itself is the record (who, why, when); the log line feeds the platform's own audit trail (US-171)
+        PlatformLog.TemplatePublished(platformLogger, template!.IndustryCode, template.Version, operatorId);
+        return Results.Ok(IndustryJson(template));
+    });
 
 // getMe (D07). Effective permissions of the active tenant (US-025); MFA state from the token (US-022).
 v1.MapGet("/me", (RequestContext ctx) => Results.Ok(new
@@ -3807,6 +3890,9 @@ internal sealed record CountCreateInput(Guid? WarehouseId, string? Scope, Guid[]
 internal sealed record CountEntryInput(Guid? VariantId, string? Qty);
 internal sealed record CountEntriesInput(CountEntryInput?[]? Entries, string? ClientBatchId);
 internal sealed record VersionInput(int? ExpectedVersion);
+internal sealed record ReceiptOverridesInput(string? LogoObjectKey, string? FooterText, string? Signature);
+internal sealed record ReceiptTemplateUpdateInput(int? ExpectedVersion, ReceiptOverridesInput? Overrides);
+internal sealed record IndustryProfileUpdateInput(int? ExpectedVersion, string? LegalText, string[]? LockedFields, string? Reason);
 internal sealed record HoldInput(int? ExpectedVersion, string? Note);
 internal sealed record ResumeInput(int? ExpectedVersion, Guid? RegisterId);
 internal sealed record CancelInput(int? ExpectedVersion, string? Reason);
@@ -3875,4 +3961,10 @@ static class AuditCursor
             && System.Text.Encoding.ASCII.GetString(bytes[..n]) is ['a', ':', .. string digits]
             && long.TryParse(digits, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out seq) && seq > 0;
     }
+}
+
+internal static partial class PlatformLog
+{
+    [LoggerMessage(EventId = 6101, Level = LogLevel.Information, Message = "platform.receipt-template.published {Industry} v{Version} by {Operator}")]
+    public static partial void TemplatePublished(ILogger logger, string industry, int version, string @operator);
 }

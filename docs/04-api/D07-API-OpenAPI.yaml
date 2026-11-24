@@ -10775,18 +10775,29 @@ components:
           type: string
         receiptTemplateVersion:
           type: string
+        version:
+          type: integer
+          format: int32
         lockedFields:
           type: array
           items:
             type: string
         legalText:
           type: string
+        reason:
+          type: string
+        publishedAt:
+          type: string
+          format: date-time
       required:
       - code
       - name
       - receiptTemplateVersion
+      - version
       - lockedFields
       - legalText
+      - reason
+      - publishedAt
     IndustryProfileUpdate:
       type: object
       additionalProperties: false
@@ -10794,12 +10805,14 @@ components:
         expectedVersion:
           type: integer
           format: int32
+          description: The newest version; the update publishes the next one
         legalText:
           type: string
         lockedFields:
           type: array
           items:
             type: string
+          description: Known receipt fields; legalName, invoiceNo, issuedAt, lines and totals are always locked
         reason:
           type: string
       required:
@@ -12273,6 +12286,9 @@ components:
       properties:
         industryTemplateVersion:
           type: string
+          description: 'e.g. supermarket@3: the industry version a receipt cites (BR-086)'
+        industryName:
+          type: string
         lockedFields:
           type: array
           items:
@@ -12292,8 +12308,10 @@ components:
         version:
           type: integer
           format: int32
+          description: The store's override version; 0 before its first change
       required:
       - industryTemplateVersion
+      - industryName
       - lockedFields
       - legalText
       - overrides
@@ -12311,10 +12329,13 @@ components:
           properties:
             logoObjectKey:
               type: string
+              description: Not yet supported (uploads with US-092)
             footerText:
               type: string
+              description: Up to 300 characters
             signature:
               type: string
+              description: Up to 100 characters
       required:
       - expectedVersion
       - overrides
