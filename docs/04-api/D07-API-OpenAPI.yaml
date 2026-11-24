@@ -13764,6 +13764,15 @@ x-error-catalog:
   no-open-period:
     status: 422
     meaning: No fiscal period covers this date (ACC-001.1)
+  payment-incomplete:
+    status: 409
+    meaning: Confirmed payments do not cover the bill; context.remaining (SAL-006)
+  sale-empty:
+    status: 409
+    meaning: A sale without items is not finalized
+  no-sellable-warehouse:
+    status: 422
+    meaning: The branch has no sellable warehouse to issue the stock from (INV-001)
   amount-exceeds-remaining:
     status: 409
     meaning: A payment larger than what is left on the bill; context.remaining (SAL-006)

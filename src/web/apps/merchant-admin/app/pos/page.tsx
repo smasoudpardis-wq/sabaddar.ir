@@ -7,7 +7,7 @@ type Context = { terminalId: string; branchId: string; registers: Register[] };
 type Line = { lineNo: number; name: string; sku: string; qty: string; unit: string; weighted: boolean; unitPrice: string; lineTotal: string;
   discounts: { amount: string }[] };
 type Tender = { seq: number; method: string; amount: string; reference: string | null; tendered: string | null; change: string | null };
-type Sale = { id: string; version: number; lines: Line[]; tenders: Tender[];
+type Sale = { id: string; version: number; status: string; invoiceNo: string | null; lines: Line[]; tenders: Tender[];
   totals: { gross: string; discount: string; tax: string; total: string; paid: string; remaining: string; change: string } };
 
 /** SAL-002.1 / AT-061: the same code again within this window is a double read, not a second item (configurable later). */
@@ -29,6 +29,10 @@ const ERRORS: Record<string, string> = {
   'sale-has-payments': 'برای این فاکتور پرداخت ثبت شده است؛ اقلام دیگر تغییر نمی‌کنند.',
   'amount-exceeds-remaining': 'مبلغ از باقیمانده فاکتور بیشتر است.',
   'duplicate-reference': 'این شماره پیگیری امروز برای همین کارتخوان ثبت شده است.',
+  'price-changed': 'قیمت تغییر کرده است؛ جمع تازه را با مشتری تأیید کنید.',
+  'payment-incomplete': 'پرداخت‌ها هنوز جمع فاکتور را پوشش نمی‌دهند.',
+  'insufficient-stock': 'موجودی کافی نیست؛ اقلام را اصلاح کنید.',
+  'in-progress': 'در حال ثبت؛ چند لحظه دیگر دوباره امتحان می‌شود.',
 };
 
 const store = {
@@ -52,6 +56,8 @@ export default function PosPage() {
   const [camera, setCamera] = useState(false);
   const [pay, setPay] = useState({ cash: '', tendered: '', card: '', reference: '', terminalNo: '', last4: '' });
   const [override, setOverride] = useState<{ approvalId: string; body: Record<string, unknown> } | null>(null);
+  const [finalKey, setFinalKey] = useState<string | null>(null);   // kept until it succeeds: a retry is the same request (UC-02 6a)
+  const [pendingFinal, setPendingFinal] = useState(false);
   const last = useRef<{ code: string; at: number } | null>(null);
   const buffer = useRef({ text: '', at: 0 });
   const busy = useRef<Promise<void>>(Promise.resolve());
@@ -222,6 +228,10 @@ export default function PosPage() {
       setPay({ cash: '', tendered: '', card: '', reference: '', terminalNo: '', last4: '' });
       return;
     }
+    if (p?.code === 'price-changed') {   // SAL-005.1: the cart now shows the new prices
+      const fresh = await fetch(`/bff/pos/sales/${sale.id}`, { cache: 'no-store' });
+      if (fresh.ok) { const f = await fresh.json(); current.current = f; setSale(f); }
+    }
     if (p?.code === 'duplicate-reference' && p.context?.approvalRequestId) {
       setOverride({ approvalId: p.context.approvalRequestId, body: { ...body, approvalId: undefined } });
       if (body.approvalId) setError('approval-not-yet');
@@ -231,6 +241,53 @@ export default function PosPage() {
     setError(p?.code ?? `http-${r.status}`);
   }
   const money = (v: string) => latin(v).replace(/[,٬]/g, '');
+
+  // US-091: never shown as done until the server says so; a lost answer is retried with the same key
+  async function finalize() {
+    if (!sale) return;
+    setError('');
+    const key = finalKey ?? crypto.randomUUID();
+    setFinalKey(key);
+    setPendingFinal(true);
+    for (let attempt = 0; attempt < 5; attempt++) {
+      let r: Response;
+      try {
+        r = await fetch(`/bff/sales/${sale.id}/finalize`, {
+          method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf(), 'idempotency-key': key },
+          body: JSON.stringify({ expectedVersion: sale.version, expectedTotal: sale.totals.total }),
+        });
+      } catch {
+        await new Promise((ok) => setTimeout(ok, 1000 * 2 ** attempt));
+        continue;
+      }
+      const p = await r.json().catch(() => null);
+      if (r.ok) {
+        current.current = p;
+        setSale(p);
+        setPendingFinal(false);
+        setFinalKey(null);
+        store.set(draftKey, null);
+        return;
+      }
+      if (p?.code === 'in-progress') { await new Promise((ok) => setTimeout(ok, 1000)); continue; }
+      setPendingFinal(false);
+      setFinalKey(null);   // a business error is not stored: the next attempt is a new request (D-34)
+      if (p?.code === 'price-changed') {
+        const fresh = await fetch(`/bff/pos/sales/${sale.id}`, { cache: 'no-store' });
+        if (fresh.ok) { const f = await fresh.json(); current.current = f; setSale(f); }
+      }
+      return setError(p?.code ?? `http-${r.status}`);
+    }
+    setPendingFinal(false);
+    setError('finalize-unknown');
+  }
+
+  function nextSale() {
+    current.current = null;
+    setSale(null);
+    setError('');
+    store.set(draftKey, null);
+  }
 
   if (!context) {
     return (
@@ -366,8 +423,17 @@ export default function PosPage() {
                     </p>
                   )}
                 </>
+              ) : sale.status === 'Finalized' ? (
+                <p role="status" data-testid="pos-finalized" data-invoice={sale.invoiceNo ?? ''}>
+                  فاکتور {sale.invoiceNo} صادر شد.{' '}
+                  <button type="button" style={{ minHeight: 44 }} onClick={nextSale} data-testid="pos-next">فروش بعدی</button>
+                </p>
               ) : (
-                <p role="status" data-testid="pos-paid">مبلغ فاکتور کامل پرداخت شد. نهایی‌سازی و صدور فاکتور در گام بعد (US-091) اضافه می‌شود.</p>
+                <p role="status" data-testid="pos-paid">
+                  مبلغ فاکتور کامل پرداخت شد.{' '}
+                  <button type="button" style={{ minHeight: 44 }} onClick={() => void finalize()} disabled={pendingFinal} data-testid="pos-finalize">
+                    {pendingFinal ? 'در انتظار تأیید…' : 'نهایی‌سازی و صدور فاکتور'}</button>
+                </p>
               )}
             </div>
           )}
@@ -375,7 +441,8 @@ export default function PosPage() {
       )}
       {error && <p role="alert" data-testid="pos-error">{ERRORS[error] ?? MESSAGES[error] ?? (error === 'camera-unsupported'
         ? 'این مرورگر خواندن بارکد با دوربین را پشتیبانی نمی‌کند؛ از بارکدخوان یا ورود دستی استفاده کنید.'
-        : error === 'camera-denied' ? 'اجازه دوربین داده نشد.' : error)}</p>}
+        : error === 'camera-denied' ? 'اجازه دوربین داده نشد.'
+          : error === 'finalize-unknown' ? 'پاسخ سرور نرسید؛ فاکتور ممکن است ثبت شده باشد. دوباره «نهایی‌سازی» بزنید (تکرار امن است).' : error)}</p>}
       <p><a href="/">بازگشت</a></p>
     </section>
   );

@@ -106,3 +106,58 @@ public static class OpeningStockRule
             [new RoleLine("Inventory", cost, 0), new RoleLine("OpeningBalanceEquity", 0, cost)]),
     };
 }
+
+/// <summary>
+/// D02 §5.8.1 «فروش» (ACC-006, D-04, D-20): each payment method's account debited with what it brought in (cash: CashOnHand;
+/// a standalone card terminal: CardInTransit until the bank settles, G-04), SalesRevenue credited with Σ net and OutputVat
+/// with Σ tax. Discounts are not posted: the sale is booked at its net. Version 1 (the accountant's review is OQ-05).
+/// </summary>
+public static class SaleRule
+{
+    public const int Version = 1;
+
+    public static PostingDraft For(Guid saleId, string invoiceNo, long cash, long card, long net, long tax, DateTimeOffset finalizedAt)
+    {
+        if (cash < 0 || card < 0 || net < 0 || tax < 0 || cash + card != net + tax || net + tax == 0)
+        {
+            throw new ArgumentException($"a sale's payments ({cash} + {card}) must equal its net + tax ({net} + {tax}) and be positive");
+        }
+
+        var lines = new List<RoleLine>();
+        if (cash > 0)
+        {
+            lines.Add(new RoleLine("CashOnHand", cash, 0));
+        }
+
+        if (card > 0)
+        {
+            lines.Add(new RoleLine("CardInTransit", card, 0));
+        }
+
+        if (net > 0)
+        {
+            lines.Add(new RoleLine("SalesRevenue", 0, net));
+        }
+
+        if (tax > 0)
+        {
+            lines.Add(new RoleLine("OutputVat", 0, tax));
+        }
+
+        return new PostingDraft("Sale", saleId, "sale", Version, finalizedAt, $"فروش فاکتور {invoiceNo}", lines);
+    }
+}
+
+/// <summary>D02 §5.8.1 «بهای تمام‌شده فروش»: COGS debited and Inventory credited with Σ qty × WAC of the moment (INV-006). Version 1.</summary>
+public static class SaleCostRule
+{
+    public const int Version = 1;
+
+    public static PostingDraft? For(Guid saleId, string invoiceNo, long cost, DateTimeOffset finalizedAt) => cost switch
+    {
+        < 0 => throw new ArgumentOutOfRangeException(nameof(cost)),
+        0 => null,
+        _ => new PostingDraft("Sale", saleId, "sale-cost", Version, finalizedAt, $"بهای تمام‌شده فاکتور {invoiceNo}",
+            [new RoleLine("COGS", cost, 0), new RoleLine("Inventory", 0, cost)]),
+    };
+}

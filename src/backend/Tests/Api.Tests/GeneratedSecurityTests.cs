@@ -50,6 +50,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
         ["addSaleLine"] = _ => new { barcode = "GEN-NONE", qty = "1" },
         ["updateSaleLine"] = _ => new { expectedVersion = 1, qty = "2" },
         ["recordTender"] = _ => new { method = "Cash", amount = "1", tendered = "1" },
+        ["finalizeSale"] = _ => new { expectedVersion = 1, expectedTotal = "1000" },
         ["setPrices"] = f => new { items = new[] { new { variantId = f.Variant, unitPrice = "1000" } }, validFrom = DateTimeOffset.UtcNow.AddDays(1) },
     };
 

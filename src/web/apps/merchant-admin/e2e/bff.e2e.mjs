@@ -446,6 +446,18 @@ try {
   check('V05', 'paid by card with its reference and the rest in cash; the change is shown before and after (SAL-006.1)',
     preview.includes(change) && cashLine.includes(change), `${due} ${preview} | ${cashLine}`);
   check('V06', 'once paid, the bill can no longer be changed', (await page.getByTestId('pos-remove-E2E-COLA').count()) === 0);
+  // V07 US-091: Finalize issues the invoice number, the stock leaves and the next sale starts clean
+  await page.getByTestId('pos-finalize').click();
+  await page.getByTestId('pos-finalized').waitFor();
+  const invoice = await page.getByTestId('pos-finalized').getAttribute('data-invoice');
+  const card = await page.evaluate(async () => {
+    const p = (await (await fetch('/bff/products?q=E2E-COLA', { cache: 'no-store' })).json()).items[0];
+    return (await (await fetch(`/bff/inventory/balances?variantId=${p.variants[0].id}`, { cache: 'no-store' })).json()).items[0]?.onHand;
+  });
+  await page.getByTestId('pos-next').click();
+  await page.getByTestId('pos-ready').waitFor();
+  check('V07', 'Finalize issues B1-<year>-000001 and the stock goes down by one (SAL-007, BR-056)', /^B1-14\d\d-000001$/.test(invoice ?? '') && card === '16'
+    && (await page.getByTestId('pos-total').count()) === 0, `${invoice} ${card}`);
   await shot(page, 'pos');
   await page.goto(`${BFF}/terminals`);
   await page.getByTestId('revoke-صندوق-فروش').click();

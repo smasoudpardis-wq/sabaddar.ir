@@ -2003,6 +2003,24 @@ v1.MapIdempotentPost<TenderInput>("/pos/sales/{saleId:guid}/tenders", "pos.recor
         if (errors.Count > 0) return CommandResult.Fail(Problems.Validation(http, errors));
 
         ISales sales = http.RequestServices.GetRequiredService<ISales>();
+        // SAL-005.1: the first payment fixes the bill, so it is priced again first; a change is saved (in its own unit of
+        // work: this command is refused) and the cashier confirms the new total
+        IResult? changed = await http.RequestServices.GetRequiredService<IUnitOfWork>().ExecuteAsync(ctx, async (s, c) =>
+        {
+            SaleResult cart = await sales.LockDraftAsync(s, saleId, null, c);
+            if (cart.Outcome != SaleOutcome.Done || cart.Sale!.Tenders is { Count: > 0 } || cart.Sale.CashierId != ctx.User!.Value.Value) return (IResult?)null;
+            var (lines, problem) = await Reprice(http, s, cart.Sale, c);
+            if (problem is not null) return problem;
+            var moved = lines!.Where(x => !SaleMath.SameAmounts(x.Shown, x.Now)).ToList();
+            foreach ((SaleLineView shown, SaleLineSpec repriced) in moved)
+            {
+                await sales.WriteLineAsync(s, saleId, shown.LineNo, repriced, c);
+            }
+
+            return moved.Count == 0 ? null : PriceChanged(http, lines!);
+        }, ct);
+        if (changed is not null) return CommandResult.Fail(changed);
+
         SaleResult locked = await sales.LockDraftAsync(scope, saleId, null, ct);
         if (locked.Outcome == SaleOutcome.NotFound) return CommandResult.Fail(Problems.NotFound(http));
         if (await MayWorkOn(http, ctx, scope, locked.Sale!, ct) is { } denied) return CommandResult.Fail(denied);
@@ -2065,6 +2083,159 @@ v1.MapIdempotentPost<TenderInput>("/pos/sales/{saleId:guid}/tenders", "pos.recor
                 sale.RegisterId, sale.ShiftId,
             }), ct);
         return CommandResult.Ok(SaleJson(after, payments: await payments.ForSaleAsync(scope, sale.Id, ct)));
+    })
+    .RequirePermission(Permissions.PosSell);
+
+// SAL-005.1: every line of a cart priced again now, as addSaleLine would (a scale label keeps what it states). A problem
+// when a product can no longer be sold (switched off, or no price).
+async Task<(List<(SaleLineView Shown, SaleLineSpec Now)>? Lines, IResult? Problem)> Reprice(HttpContext http, IUnitOfWorkScope scope, SaleView sale,
+    CancellationToken ct)
+{
+    IProductCatalog catalog = http.RequestServices.GetRequiredService<IProductCatalog>();
+    IReadOnlyList<WeightedBarcodeProfile>? profiles = null;
+    var result = new List<(SaleLineView, SaleLineSpec)>();
+    foreach (SaleLineView l in sale.Lines)
+    {
+        if (await catalog.SellableAsync(scope, l.VariantId, ct) is not { } v) return (null, Problems.NotFound(http));
+        long? labelAmount = null;
+        if (l.WeightedCode is not null)
+        {
+            profiles ??= (await http.RequestServices.GetRequiredService<IWeightedBarcodeProfiles>().GetAsync(scope, ct)).Profiles;
+            var (status, label) = WeightedBarcodes.Decode(profiles, l.WeightedCode);
+            if (status == WeightedDecodeStatus.Decoded && label!.Profile.ValueType == WeightedValueType.Price) labelAmount = (long)label.Value;
+        }
+
+        var (now, problem) = await PriceLine(http, scope, sale, v, l.Qty, l.Unit, l.UnitFactor, l.WeightedCode, labelAmount, ct);
+        if (problem is not null) return (null, problem);
+        result.Add((l, now!));
+    }
+
+    return (result, null);
+}
+
+IResult PriceChanged(HttpContext http, IEnumerable<(SaleLineView Shown, SaleLineSpec Now)> lines) =>
+    Problems.WithContext(http, StatusCodes.Status409Conflict, "price-changed", "Prices changed since the cart was shown; confirm the new total", new
+    {
+        lines = lines.Where(x => !SaleMath.SameAmounts(x.Shown, x.Now)).Select(x => new
+        {
+            x.Shown.LineNo, x.Shown.Sku, was = Money(x.Shown.LineTotal), now = Money(x.Now.Amounts.LineTotal), unitPrice = Money(x.Now.UnitPrice),
+        }),
+        total = Money(lines.Sum(x => x.Now.Amounts.LineTotal)),
+    });
+
+// ---------------- US-091: Finalize (SAL-007, UC-02 step 8): one transaction takes the bill from paid to invoiced — prices
+// recomputed (SAL-005.1), payments complete (SAL-006), stock issued at WAC under the balances' locks (INV-004/006, AT-211),
+// a gapless invoice number (BR-056), each line's snapshot and cost (SAL-005), the sale and cost entries (ACC-006, D-04) and
+// SaleFinalized in the outbox. Idempotent: a retry with the same key gets the same invoice (AT-210); business errors are
+// not stored and may be retried with the same key (D-34).
+v1.MapIdempotentPost<FinalizeInput>("/sales/{saleId:guid}/finalize", "sales.finalize", async (body, scope, http, ct) =>
+    {
+        RequestContext ctx = http.RequestServices.GetRequiredService<RequestContext>();
+        Guid saleId = Guid.Parse((string)http.GetRouteValue("saleId")!, System.Globalization.CultureInfo.InvariantCulture);
+        var errors = new Dictionary<string, string[]>();
+        if (body.ExpectedVersion is null) errors["expectedVersion"] = ["required"];
+        if (!TryMoney(body.ExpectedTotal, positive: false, out long expectedTotal)) errors["expectedTotal"] = ["the total the cashier saw, in rials"];
+        if (errors.Count > 0) return CommandResult.Fail(Problems.Validation(http, errors));
+
+        ISales sales = http.RequestServices.GetRequiredService<ISales>();
+        SaleResult locked = await sales.LockDraftAsync(scope, saleId, body.ExpectedVersion, ct);
+        if (locked.Outcome == SaleOutcome.NotFound) return CommandResult.Fail(Problems.NotFound(http));
+        if (await MayWorkOn(http, ctx, scope, locked.Sale!, ct) is { } denied) return CommandResult.Fail(denied);   // BR-050
+        if (locked.Outcome != SaleOutcome.Done) return CommandResult.Fail(SaleProblem(http, locked.Outcome));
+        SaleView sale = locked.Sale!;
+        if (sale.Lines.Count == 0) return CommandResult.Fail(Problems.Create(http, StatusCodes.Status409Conflict, "sale-empty", "The cart has no items"));
+
+        // SAL-005.1 / BR-018: the server's price now, compared with what the cashier confirmed
+        var (repriced, problem) = await Reprice(http, scope, sale, ct);
+        if (problem is not null) return CommandResult.Fail(problem);
+        List<(SaleLineView Shown, SaleLineSpec Now)> priced = repriced!;
+        if (priced.Any(x => !SaleMath.SameAmounts(x.Shown, x.Now)) || sale.Total != expectedTotal)
+        {
+            return CommandResult.Fail(PriceChanged(http, priced));
+        }
+
+        // SAL-006: what the confirmed payments bring equals the bill
+        if (sale.Paid != sale.Total)
+        {
+            return CommandResult.Fail(Problems.WithContext(http, StatusCodes.Status409Conflict, "payment-incomplete", "The payments do not cover the bill yet",
+                new { remaining = Money(sale.Remaining) }));
+        }
+
+        // INV-004 / AT-211: issued from the branch's sellable warehouse, under the balances' locks; a shortage refuses the sale
+        Guid? warehouse = null;
+        string branchCode = "";
+        await using (NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
+            "SELECT (SELECT id FROM inv.warehouse WHERE branch_id = $1 AND kind = 'Sellable' ORDER BY code LIMIT 1), (SELECT code FROM platform.branch WHERE id = $1)"))
+        {
+            cmd.Parameters.Add(new NpgsqlParameter { Value = sale.BranchId });
+            await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(ct);
+            await r.ReadAsync(ct);
+            warehouse = r.IsDBNull(0) ? null : r.GetGuid(0);
+            branchCode = r.GetString(1);
+        }
+
+        if (warehouse is not Guid warehouseId)
+        {
+            return CommandResult.Fail(Problems.Create(http, StatusCodes.Status422UnprocessableEntity, "no-sellable-warehouse", "This branch has no sellable warehouse"));
+        }
+
+        DateTimeOffset now = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
+        StockResult issued = await http.RequestServices.GetRequiredService<IStockLedger>().PostAsync(scope, new StockDocument("Sale", sale.Id, now,
+            [.. sale.Lines.Select(l => new StockLine(l.LineNo, warehouseId, l.VariantId, MovementType.SaleIssue, -l.Qty, null,
+                l.UnitFactor == 1 ? null : new EnteredUnit(l.Unit, l.UnitFactor)))]), ct);
+        if (issued.Outcome == StockOutcome.InsufficientStock)
+        {
+            return CommandResult.Fail(Problems.WithContext(http, StatusCodes.Status409Conflict, "insufficient-stock", "Not enough stock", new
+            {
+                shortages = issued.Shortages.Select(x => new { x.WarehouseId, x.VariantId, available = Qty(x.Available), requested = Qty(x.Requested) }),
+            }));
+        }
+
+        if (issued.Outcome != StockOutcome.Done) throw new InvalidOperationException($"sale {sale.Id}: {issued.Outcome}");
+
+        // BR-056: the number of (branch, Jalali fiscal year), in this transaction
+        TenantProfile profile = (await http.RequestServices.GetRequiredService<ITenantProfileQuery>().GetAsync(ctx.ActiveTenant!.Value, ct))!;
+        int fiscalYear = FiscalCalendar.FiscalYearOf(now, TimeZoneInfo.FindSystemTimeZoneById(profile.TimeZone));
+        string invoiceNo = InvoiceNumbers.Format(branchCode, fiscalYear, await sales.NextInvoiceSequenceAsync(scope, sale.BranchId, fiscalYear, ct));
+
+        // SAL-005: what was sold, as it was, kept with the line
+        var finalized = new List<FinalizedLine>();
+        foreach ((SaleLineView l, SaleLineSpec _) in priced)
+        {
+            long cost = -issued.Movements.Single(m => m.Line == l.LineNo).TotalCost;
+            finalized.Add(new FinalizedLine(l.LineNo, cost, System.Text.Json.JsonSerializer.Serialize(new
+            {
+                productName = l.Name, sku = l.Sku, qty = Qty(l.Qty), unit = l.Unit, unitFactor = Qty(l.UnitFactor), weightedCode = l.WeightedCode,
+                unitPrice = l.UnitPrice, gross = l.Gross,
+                discounts = l.DiscountSource is null ? [] : new[] { new { source = l.DiscountSource, percentBp = l.DiscountBp, amount = l.Discount, ruleId = l.DiscountRuleId } },
+                taxCode = (await http.RequestServices.GetRequiredService<IProductCatalog>().SellableAsync(scope, l.VariantId, ct))?.TaxCode,
+                taxRate = l.TaxRateBp, taxableAmount = l.Net, taxAmount = l.Tax, lineTotal = l.LineTotal, costAtSale = cost,
+            })));
+        }
+
+        // ACC-006 / D-04: the sale and its cost, posted with it
+        var (_, _, net, tax, _) = SaleMath.Totals(sale.Lines);
+        long cash = (sale.Tenders ?? []).Where(t => t.Method == "Cash").Sum(t => t.Amount);
+        long card = (sale.Tenders ?? []).Where(t => t.Method == "ExternalCardTerminal").Sum(t => t.Amount);
+        IJournals journals = http.RequestServices.GetRequiredService<IJournals>();
+        foreach (PostingDraft? draft in new[] { SaleRule.For(sale.Id, invoiceNo, cash, card, net, tax, now), SaleCostRule.For(sale.Id, invoiceNo, finalized.Sum(f => f.CostAtSale), now) })
+        {
+            if (draft is null) continue;
+            AccountingResult<JournalView> entry = await journals.PostAutomaticAsync(scope, draft, ct);
+            if (entry.Outcome != AccountingOutcome.Done) return CommandResult.Fail(AutomaticEntryProblem(http, entry));
+        }
+
+        SaleView after = await sales.FinalizeAsync(scope, sale.Id, invoiceNo, fiscalYear, finalized, ct);
+        await http.RequestServices.GetRequiredService<IOutbox>().AddAsync(scope, "Sales", "sales.sale-finalized", 1, sale.Id, new
+        {
+            saleId = sale.Id, invoiceNo, after.BranchId, after.RegisterId, after.ShiftId, after.CashierId, after.TerminalId, after.Channel,
+            total = after.Total, net, tax, cash, card, finalizedAt = after.FinalizedAt,
+        }, causationId: null, ct);
+        await Audit(http, scope, ActorOf(ctx, http), new AuditEntry("sales.sale.finalized", "Sale", sale.Id.ToString(), null, new
+        {
+            invoiceNo, total = after.Total, cash, card, lines = after.Lines.Count, after.RegisterId, after.ShiftId,
+        }), ct);
+        return CommandResult.Ok(SaleJson(after, issued.Warnings, await http.RequestServices.GetRequiredService<IPayments>().ForSaleAsync(scope, sale.Id, ct)));
     })
     .RequirePermission(Permissions.PosSell);
 
@@ -2882,6 +3053,7 @@ internal sealed record DiscountCapsInput(Dictionary<string, int>? Caps);
 internal sealed record NegativeStockPolicyInput(string? ScopeType, Guid? ScopeId, string? Policy);
 internal sealed record AdjustmentLineInput(Guid? VariantId, string? QtyDelta);
 internal sealed record AdjustmentInput(Guid? WarehouseId, string? Reason, AdjustmentLineInput?[]? Lines, string? Note);
+internal sealed record FinalizeInput(int? ExpectedVersion, string? ExpectedTotal);
 internal sealed record TenderInput(string? Method, string? Amount, string? Tendered, string? ReferenceNo, string? TerminalNo, string? CardLast4,
     Guid? ApprovalId);
 internal sealed record SaleCreateInput(Guid? RegisterId, string? ClientDraftId);

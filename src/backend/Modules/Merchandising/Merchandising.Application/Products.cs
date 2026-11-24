@@ -41,7 +41,8 @@ public sealed record BarcodeMatch(Guid ProductId, Guid VariantId, string Name, s
 /// What the POS needs to price a variant (SAL-001): the name with the matrix values, the tax rate, the default list's price
 /// per base unit now (null: no price), and whether both the product and the variant are active.
 /// </summary>
-public sealed record SellableVariant(Guid ProductId, Guid VariantId, string Name, string Sku, string BaseUnit, int TaxRateBp, long? UnitPrice, bool Active);
+public sealed record SellableVariant(Guid ProductId, Guid VariantId, string Name, string Sku, string BaseUnit, int TaxRateBp, long? UnitPrice, bool Active,
+    string? TaxCode = null);
 
 public sealed record VariantUnits(string BaseUnit, IReadOnlyDictionary<string, decimal> Factors);
 

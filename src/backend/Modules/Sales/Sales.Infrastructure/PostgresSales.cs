@@ -137,6 +137,44 @@ public sealed class PostgresSales : ISales
         return await TouchAsync(s, saleId, cancellationToken);
     }
 
+    public async Task<long> NextInvoiceSequenceAsync(IUnitOfWorkScope scope, Guid branchId, int fiscalYear, CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
+            "INSERT INTO sales.invoice_sequence (tenant_id, branch_id, fiscal_year, next_value) VALUES (core.current_tenant(), $1, $2, 2) " +
+            "ON CONFLICT (tenant_id, branch_id, fiscal_year) DO UPDATE SET next_value = sales.invoice_sequence.next_value + 1 RETURNING next_value - 1");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = branchId });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = fiscalYear });
+        return (long)(await cmd.ExecuteScalarAsync(cancellationToken))!;
+    }
+
+    public async Task<SaleView> FinalizeAsync(IUnitOfWorkScope scope, Guid saleId, string invoiceNo, int fiscalYear, IReadOnlyList<FinalizedLine> lines,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(lines);
+        var s = (PostgresUnitOfWorkScope)scope;
+        foreach (FinalizedLine l in lines)
+        {
+            await using NpgsqlCommand line = s.Command("UPDATE sales.sale_line SET cost_at_sale = $3, snapshot = $4::jsonb WHERE sale_id = $1 AND line_no = $2");
+            line.Parameters.Add(new NpgsqlParameter { Value = saleId });
+            line.Parameters.Add(new NpgsqlParameter { Value = l.LineNo });
+            line.Parameters.Add(new NpgsqlParameter { Value = l.CostAtSale });
+            line.Parameters.Add(new NpgsqlParameter { Value = l.SnapshotJson });
+            await line.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await using (NpgsqlCommand sale = s.Command(
+            "UPDATE sales.sale SET status = 'Finalized', invoice_no = $2, fiscal_year = $3, finalized_at = now(), " +
+            "total = coalesce((SELECT sum(line_total) FROM sales.sale_line WHERE sale_id = $1), 0), version = version + 1, last_activity_at = now() WHERE id = $1"))
+        {
+            sale.Parameters.Add(new NpgsqlParameter { Value = saleId });
+            sale.Parameters.Add(new NpgsqlParameter { Value = invoiceNo });
+            sale.Parameters.Add(new NpgsqlParameter { Value = fiscalYear });
+            await sale.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        return (await GetAsync(s, saleId, cancellationToken))!;
+    }
+
     public async Task<SaleView> AddTenderAsync(IUnitOfWorkScope scope, Guid saleId, string method, long amount, Guid? paymentId, CancellationToken cancellationToken)
     {
         var s = (PostgresUnitOfWorkScope)scope;

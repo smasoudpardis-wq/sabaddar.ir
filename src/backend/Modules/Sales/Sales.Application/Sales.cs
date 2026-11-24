@@ -32,6 +32,9 @@ public sealed record SaleView(Guid Id, string Status, string ReturnStatus, Guid 
 public sealed record SaleLineSpec(Guid VariantId, string Name, string Sku, decimal Qty, string Unit, decimal UnitFactor, string? WeightedCode,
     long UnitPrice, LineAmounts Amounts, string? DiscountSource, int? DiscountBp, Guid? DiscountRuleId, int TaxRateBp);
 
+/// <summary>A line as finalized: its cost (Σ qty × WAC of the moment) and its snapshot (SAL-005), as JSON.</summary>
+public sealed record FinalizedLine(int LineNo, long CostAtSale, string SnapshotJson);
+
 public enum SaleOutcome
 {
     Done,
@@ -64,6 +67,19 @@ public interface ISales
     Task<SaleView> WriteLineAsync(IUnitOfWorkScope scope, Guid saleId, int? replaceLineNo, SaleLineSpec line, CancellationToken cancellationToken);
 
     Task<SaleView> RemoveLineAsync(IUnitOfWorkScope scope, Guid saleId, int lineNo, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// BR-056 / D-16: the next invoice number of (branch, fiscal year), from a row locked until the transaction ends: a
+    /// rolled-back finalize gives its number back, so the sequence has no gaps.
+    /// </summary>
+    Task<long> NextInvoiceSequenceAsync(IUnitOfWorkScope scope, Guid branchId, int fiscalYear, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// SAL-005 / SAL-007: writes each line's snapshot and cost at sale, then makes the sale Finalized with its number
+    /// (immutable from then on, DI-003).
+    /// </summary>
+    Task<SaleView> FinalizeAsync(IUnitOfWorkScope scope, Guid saleId, string invoiceNo, int fiscalYear, IReadOnlyList<FinalizedLine> lines,
+        CancellationToken cancellationToken);
 
     /// <summary>SAL-006: applies a payment to the locked bill (the database refuses more than the total, RC027); bumps the version.</summary>
     Task<SaleView> AddTenderAsync(IUnitOfWorkScope scope, Guid saleId, string method, long amount, Guid? paymentId, CancellationToken cancellationToken);
@@ -121,4 +137,21 @@ public static class SaleMath
 
         return (g, d, n, t, tot);
     }
+
+    /// <summary>SAL-005.1: does a line priced now give exactly what the cart showed? Otherwise the cashier confirms again.</summary>
+    public static bool SameAmounts(SaleLineView shown, SaleLineSpec now)
+    {
+        ArgumentNullException.ThrowIfNull(shown);
+        ArgumentNullException.ThrowIfNull(now);
+        return shown.UnitPrice == now.UnitPrice && shown.Gross == now.Amounts.Gross && shown.Discount == now.Amounts.Discount
+               && shown.Net == now.Amounts.Net && shown.Tax == now.Amounts.Tax && shown.LineTotal == now.Amounts.LineTotal
+               && shown.TaxRateBp == now.TaxRateBp && shown.DiscountRuleId == now.DiscountRuleId;
+    }
+}
+
+/// <summary>BR-056: an invoice number reads branch, Jalali fiscal year and a six-digit sequence, e.g. B1-1405-000124 (D07).</summary>
+public static class InvoiceNumbers
+{
+    public static string Format(string branchCode, int fiscalYear, long sequence) =>
+        string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{branchCode}-{fiscalYear}-{sequence:000000}");
 }

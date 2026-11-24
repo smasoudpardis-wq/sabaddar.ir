@@ -189,7 +189,7 @@ public sealed class PostgresProductCatalog(IOutbox outbox) : IProductCatalog
             "SELECT p.id, v.id, p.name, v.sku, p.base_unit_code, p.tax_rate_bp, " +
             "(SELECT i.unit_price FROM merch.price_list_item i JOIN merch.price_list l ON l.tenant_id = i.tenant_id AND l.id = i.price_list_id " +
             "AND l.is_default WHERE i.variant_id = v.id AND i.valid @> statement_timestamp()), v.status = 'Active' AND p.status = 'Active', " +
-            "(SELECT string_agg(e.value #>> '{}', '، ' ORDER BY e.key) FROM jsonb_each(v.axis_values) e) " +
+            "(SELECT string_agg(e.value #>> '{}', '، ' ORDER BY e.key) FROM jsonb_each(v.axis_values) e), p.tax_code " +
             "FROM merch.tenant_variant v JOIN merch.tenant_product p ON p.tenant_id = v.tenant_id AND p.id = v.product_id WHERE v.id = $1");
         cmd.Parameters.Add(new NpgsqlParameter { Value = variantId });
         await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(cancellationToken);
@@ -200,7 +200,7 @@ public sealed class PostgresProductCatalog(IOutbox outbox) : IProductCatalog
 
         string name = r.IsDBNull(8) ? r.GetString(2) : $"{r.GetString(2)} ({r.GetString(8)})";
         return new SellableVariant(r.GetGuid(0), r.GetGuid(1), name, r.GetString(3), r.GetString(4), r.GetInt32(5), r.IsDBNull(6) ? null : r.GetInt64(6),
-            r.GetBoolean(7));
+            r.GetBoolean(7), r.IsDBNull(9) ? null : r.GetString(9));
     }
 
     public async Task<IReadOnlySet<Guid>> ExistingVariantsAsync(IUnitOfWorkScope scope, IReadOnlyCollection<Guid> variantIds,
