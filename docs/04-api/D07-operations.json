@@ -1022,7 +1022,9 @@
   ],
   "bodyProps": [
    "amount",
+   "confirmedWarnings",
    "method",
+   "note",
    "reference",
    "registerShiftId"
   ],
@@ -1038,12 +1040,24 @@
   "pathParams": [],
   "bodyProps": [
    "agreedAmount",
+   "confirmedWarnings",
    "lines",
    "note",
    "supplierId",
    "warehouseId"
   ],
   "idempotent": true
+ },
+ {
+  "operationId": "listPurchaseReturns",
+  "method": "GET",
+  "path": "/purchase-returns",
+  "permission": "reports.view",
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "openShift",

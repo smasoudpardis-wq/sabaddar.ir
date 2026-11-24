@@ -18,6 +18,20 @@ public sealed record ReceiptLine(int LineNo, Guid VariantId, decimal Qty, string
 public sealed record ReceiptRecord(Guid Id, Guid SupplierId, Guid WarehouseId, string? SupplierInvoiceNo, DateTimeOffset EffectiveAt,
     IReadOnlyList<ReceiptLine> Lines, long NetTotal, long InputVat, long Total, Guid? JournalEntryId, Guid CreatedBy, DateTimeOffset PostedAt);
 
+/// <summary>PRC-003: a payment to a supplier; the amount lives in the ledger, this is the document.</summary>
+public sealed record SupplierPaymentRecord(Guid Id, Guid SupplierId, long Amount, string Method, string? Reference, string? Note, Guid JournalEntryId,
+    Guid CreatedBy, DateTimeOffset PaidAt);
+
+/// <summary>One returned line in the base unit, at the WAC in force when it left (PRC-004).</summary>
+public sealed record PurchaseReturnLine(int LineNo, Guid VariantId, decimal Qty, long UnitCost, long LineCost);
+
+public sealed record PurchaseReturnRecord(Guid Id, Guid SupplierId, Guid WarehouseId, IReadOnlyList<PurchaseReturnLine> Lines, long Cost, long AgreedAmount,
+    string? Note, Guid? JournalEntryId, Guid CreatedBy, DateTimeOffset PostedAt)
+{
+    /// <summary>What goes to PurchaseReturnVariance: positive when the supplier takes the goods back for more than their cost.</summary>
+    public long Variance => AgreedAmount - Cost;
+}
+
 public enum SupplierOutcome
 {
     Done,
@@ -38,6 +52,13 @@ public interface IProcurement
     Task<bool> InvoiceSeenAsync(IUnitOfWorkScope scope, Guid supplierId, string invoiceNo, CancellationToken cancellationToken);
 
     Task<ReceiptRecord> RecordReceiptAsync(IUnitOfWorkScope scope, ReceiptRecord receipt, CancellationToken cancellationToken);
+
+    Task<SupplierPaymentRecord> RecordPaymentAsync(IUnitOfWorkScope scope, SupplierPaymentRecord payment, CancellationToken cancellationToken);
+
+    Task<PurchaseReturnRecord> RecordReturnAsync(IUnitOfWorkScope scope, PurchaseReturnRecord purchaseReturn, CancellationToken cancellationToken);
+
+    /// <summary>Newest first, up to 100: of these warehouses (all, when null).</summary>
+    Task<IReadOnlyList<PurchaseReturnRecord>> ReturnsAsync(IUnitOfWorkScope scope, IReadOnlyCollection<Guid>? warehouseIds, CancellationToken cancellationToken);
 
     /// <summary>Newest first, up to 100: of these warehouses (all, when null).</summary>
     Task<IReadOnlyList<ReceiptRecord>> ReceiptsAsync(IUnitOfWorkScope scope, IReadOnlyCollection<Guid>? warehouseIds, CancellationToken cancellationToken);
@@ -77,6 +98,12 @@ public static partial class ReceiptRules
 
         return w;
     }
+
+    /// <summary>
+    /// PRC-003 / PRC-004: paying more than the store owes, or taking goods back for more than it owes, leaves the supplier
+    /// owing the store: allowed (an advance, a refund to come) once confirmed.
+    /// </summary>
+    public static IReadOnlyList<string> SettlementWarnings(long owed, long settled) => settled > owed ? ["exceeds-balance"] : [];
 
     [GeneratedRegex("^[0-9]{10,11}$")]
     private static partial Regex NationalId();

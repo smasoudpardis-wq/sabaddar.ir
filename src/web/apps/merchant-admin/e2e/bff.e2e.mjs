@@ -399,6 +399,37 @@ try {
   await page.getByTestId('receipt-done').waitFor();
   check('G03', 'a zero-cost line is posted only after the user confirms it (UC-05)', asked.includes('بهای صفر'), asked);
   await shot(page, 'receipts');
+  // Y01–Y03 US-072: the owner pays part of the bill in cash, sends one can back for a little more than its average cost,
+  // and paying more than is owed is confirmed first (PRC-003, PRC-004)
+  await page.goto(`${BFF}/settlements`);
+  await page.locator('[data-testid="pay-supplier"] option', { hasText: 'پخش آزمایشی' }).waitFor({ state: 'attached' });
+  await page.getByTestId('pay-supplier').selectOption({ label: 'پخش آزمایشی (بدهی ما: ۶۵۴٬۰۰۰)' });
+  await page.getByTestId('pay-amount').fill('۱۵۴,۰۰۰');
+  await page.getByTestId('pay-submit').click();
+  await page.getByTestId('settlement-done').waitFor();
+  const afterPay = (await page.getByTestId('settlement-done').textContent()) ?? '';
+  check('Y01', 'a cash payment lowers what the store owes the supplier (PRC-003, AT-051)', afterPay.includes('۵۰۰٬۰۰۰'), afterPay);
+  await page.locator('[data-testid="return-supplier"] option', { hasText: 'پخش آزمایشی' }).waitFor({ state: 'attached' });
+  await page.getByTestId('return-supplier').selectOption({ label: 'پخش آزمایشی (بدهی ما: ۵۰۰٬۰۰۰)' });
+  await page.getByTestId('return-sku-0').fill('E2E-COLA');
+  await page.getByTestId('return-qty-0').fill('1');
+  await page.getByTestId('return-agreed').fill('40000');
+  await page.getByTestId('return-submit').click();
+  await page.locator('[data-testid="return-list"] [data-agreed="40000"]').waitFor();
+  const afterReturn = (await page.getByTestId('settlement-done').textContent()) ?? '';
+  // 17 cans worth 600,000 → WAC 35,294; taken back for 40,000: a gain of 4,706 and 460,000 still owed (AT-052)
+  check('Y02', 'a return leaves at the average cost and the agreed amount comes off the bill (PRC-004, AT-052)',
+    afterReturn.includes('۳۵٬۲۹۴') && afterReturn.includes('۴٬۷۰۶') && afterReturn.includes('۴۶۰٬۰۰۰'), afterReturn);
+  await page.getByTestId('pay-supplier').selectOption({ label: 'پخش آزمایشی (بدهی ما: ۴۶۰٬۰۰۰)' });
+  await page.getByTestId('pay-amount').fill('500000');
+  await page.getByTestId('pay-method').selectOption('Bank');
+  await page.getByTestId('pay-reference').fill('E2E-TR-1');
+  await page.getByTestId('pay-submit').click();
+  await page.getByTestId('settlement-confirm').waitFor();
+  await page.getByTestId('settlement-confirm-submit').click();
+  await page.locator('[data-testid="settlement-suppliers"] [data-supplier="پخش آزمایشی"][data-balance="-40000"]').waitFor();
+  check('Y03', 'paying more than is owed is confirmed first and leaves the supplier owing the store', true);
+  await shot(page, 'settlements');
   // V01–V04 US-082: on a paired device the owner opens a shift; a barcode reader is read without focus (keyboard wedge),
   // a double read within 1.5 s is ignored, a later scan adds to the line, and a line can be removed
   await page.goto(`${BFF}/terminals`);
@@ -470,7 +501,8 @@ try {
   });
   await page.getByTestId('pos-next').click();
   await page.getByTestId('pos-ready').waitFor();
-  check('V07', 'Finalize issues B1-<year>-000001 and the stock goes down by one (SAL-007, BR-056)', /^B1-14\d\d-000001$/.test(invoice ?? '') && card === '16'
+  // 17 received, 1 sent back (Y02), 1 sold
+  check('V07', 'Finalize issues B1-<year>-000001 and the stock goes down by one (SAL-007, BR-056)', /^B1-14\d\d-000001$/.test(invoice ?? '') && card === '15'
     && (await page.getByTestId('pos-total').count()) === 0, `${invoice} ${card}`);
   // V09–V10 US-083: a cart is put aside with a note and resumed; another is cancelled with a reason
   await page.waitForTimeout(1600);

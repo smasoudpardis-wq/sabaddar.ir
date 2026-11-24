@@ -1694,6 +1694,169 @@ v1.MapGet("/inventory/receipts", async (RequestContext ctx, IUnitOfWork uow, IPr
     })
     .RequirePermission(Permissions.ReportsView);
 
+// ---------------- US-072: paying a supplier (PRC-003) and sending goods back (PRC-004). The payable is the ledger's
+// (TradePayables with the supplier as detail); settling more than the store owes is allowed once confirmed.
+object PaymentJson(SupplierPaymentRecord p, long balanceAfter, IReadOnlyList<string>? warnings = null) => new
+{
+    p.Id, p.SupplierId, amount = Rial(p.Amount), p.Method, p.Reference, p.Note, p.JournalEntryId, balanceAfter = Rial(balanceAfter),
+    p.CreatedBy, p.PaidAt, warnings = warnings ?? [],
+};
+
+object ReturnJson(PurchaseReturnRecord r, long? balanceAfter = null, IReadOnlyList<string>? warnings = null) => new
+{
+    r.Id, r.SupplierId, r.WarehouseId,
+    lines = r.Lines.Select(l => new { l.LineNo, l.VariantId, qty = Qty(l.Qty), unitCost = Rial(l.UnitCost), lineCost = Rial(l.LineCost) }),
+    cost = Rial(r.Cost), agreedAmount = Rial(r.AgreedAmount), variance = Rial(r.Variance), r.Note, r.JournalEntryId,
+    balanceAfter = balanceAfter is long b ? Rial(b) : null, r.CreatedBy, r.PostedAt, warnings = warnings ?? [],
+};
+
+v1.MapIdempotentPost<SupplierPaymentInput>("/suppliers/{supplierId:guid}/payments", "procurement.pay-supplier", async (body, scope, http, ct) =>
+    {
+        RequestContext ctx = http.RequestServices.GetRequiredService<RequestContext>();
+        Guid supplierId = Guid.Parse((string)http.GetRouteValue("supplierId")!, System.Globalization.CultureInfo.InvariantCulture);
+        var errors = new Dictionary<string, string[]>();
+        if (!TryMoney(body.Amount, positive: true, out long amount)) errors["amount"] = ["positive rial amount as a string"];
+        if (body.Method is not ("Cash" or "Bank")) errors["method"] = ["Cash|Bank"];
+        string? reference = string.IsNullOrWhiteSpace(body.Reference) ? null : body.Reference.Trim();
+        if (reference is { Length: > 60 }) errors["reference"] = ["up to 60 characters"];
+        else if (body.Method == "Bank" && reference is null) errors["reference"] = ["required for a bank payment (transfer or cheque number)"];
+        string? note = string.IsNullOrWhiteSpace(body.Note) ? null : body.Note.Trim();
+        if (note is { Length: > 500 }) errors["note"] = ["up to 500 characters"];
+        // cash out of a register drawer belongs to the shift's cash count (SAL-020): not yet (follow-up with US-084)
+        if (body.RegisterShiftId is not null) errors["registerShiftId"] = ["not-yet-supported"];
+        if (errors.Count > 0) return CommandResult.Fail(Problems.Validation(http, errors));
+
+        IProcurement procurement = http.RequestServices.GetRequiredService<IProcurement>();
+        if (await procurement.SupplierAsync(scope, supplierId, ct) is not { } supplier) return CommandResult.Fail(Problems.NotFound(http));
+        IJournals journals = http.RequestServices.GetRequiredService<IJournals>();
+        long owed = (await journals.DetailBalancesAsync(scope, "TradePayables", "Supplier", [supplierId], ct)).GetValueOrDefault(supplierId);
+        IReadOnlyList<string> warnings = ReceiptRules.SettlementWarnings(owed, amount);
+        if (warnings.Except(body.ConfirmedWarnings ?? []).Any())
+        {
+            return CommandResult.Fail(Problems.WithContext(http, StatusCodes.Status422UnprocessableEntity, "confirmation-required",
+                "Confirm the warnings and send the payment again", new { warnings, owed = Rial(owed) }));
+        }
+
+        Guid id = Guid.CreateVersion7();
+        DateTimeOffset now = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
+        AccountingResult<JournalView> entry = await journals.PostAutomaticAsync(scope, SupplierPaymentRule.For(id, supplierId, amount, body.Method == "Bank", now,
+            $"پرداخت به {supplier.Name}{(reference is null ? "" : $" ({reference})")}"), ct);
+        if (entry.Outcome != AccountingOutcome.Done) return CommandResult.Fail(AutomaticEntryProblem(http, entry));
+
+        SupplierPaymentRecord payment = await procurement.RecordPaymentAsync(scope, new SupplierPaymentRecord(id, supplierId, amount, body.Method!, reference, note,
+            entry.Value!.Id, ctx.User!.Value.Value, now), ct);
+        await Audit(http, scope, ActorOf(ctx, http), new AuditEntry("procurement.supplier.paid", "Supplier", supplierId.ToString(), note, new
+        {
+            paymentId = id, amount, body.Method, reference, journalId = entry.Value.Id, owedBefore = owed, confirmed = warnings,
+        }), ct);
+        return CommandResult.Created(PaymentJson(payment, owed - amount, warnings));
+    })
+    .RequirePermission(Permissions.AccountingJournalPost);
+
+v1.MapIdempotentPost<PurchaseReturnInput>("/purchase-returns", "procurement.post-purchase-return", async (body, scope, http, ct) =>
+    {
+        RequestContext ctx = http.RequestServices.GetRequiredService<RequestContext>();
+        var errors = new Dictionary<string, string[]>();
+        if (body.SupplierId is null) errors["supplierId"] = ["required"];
+        if (body.WarehouseId is null) errors["warehouseId"] = ["required"];
+        if (!TryMoney(body.AgreedAmount, positive: false, out long agreed)) errors["agreedAmount"] = ["rial amount as a whole-number string"];
+        string? note = string.IsNullOrWhiteSpace(body.Note) ? null : body.Note.Trim();
+        if (note is { Length: > 500 }) errors["note"] = ["up to 500 characters"];
+        var inputs = new List<(Guid Variant, decimal Qty)>();
+        if (body.Lines is not { Length: >= 1 and <= ReceiptRules.MaxLines }) errors["lines"] = [$"1-{ReceiptRules.MaxLines} lines"];
+        for (int i = 0; i < (body.Lines?.Length ?? 0) && body.Lines!.Length <= ReceiptRules.MaxLines; i++)
+        {
+            PurchaseReturnLineInput? l = body.Lines[i];
+            if (l?.VariantId is null) errors[$"lines[{i}].variantId"] = ["required"];
+            if (l?.Qty is null || !ProductRules.TryFactor(l.Qty, out decimal qty)) errors[$"lines[{i}].qty"] = ["positive decimal in the base unit, up to 6 places"];
+            else if (l.VariantId is { } v) inputs.Add((v, qty));
+        }
+
+        if (inputs.Select(x => x.Variant).Distinct().Count() != inputs.Count) errors["lines"] = ["one line per variant"];
+        if (errors.Count > 0) return CommandResult.Fail(Problems.Validation(http, errors));
+
+        Guid warehouseId = body.WarehouseId!.Value, supplierId = body.SupplierId!.Value;
+        if (await ResolveScope(scope, http.RequestServices.GetServices<IScopeLookup>(), ScopeType.Warehouse, warehouseId, ct) is not { } warehouse)
+        {
+            return CommandResult.Fail(Problems.Validation(http, new Dictionary<string, string[]> { ["warehouseId"] = ["not a warehouse of this store"] }));
+        }
+
+        if (!AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.InventoryReceiptCreate, warehouse)) return CommandResult.Fail(Forbidden(http));
+        IProcurement procurement = http.RequestServices.GetRequiredService<IProcurement>();
+        if (await procurement.SupplierAsync(scope, supplierId, ct) is not { } supplier)
+        {
+            return CommandResult.Fail(Problems.Validation(http, new Dictionary<string, string[]> { ["supplierId"] = ["not a supplier of this store"] }));
+        }
+
+        IReadOnlySet<Guid> known = await http.RequestServices.GetRequiredService<IProductCatalog>().ExistingVariantsAsync(scope, [.. inputs.Select(x => x.Variant)], ct);
+        if (inputs.FindIndex(x => !known.Contains(x.Variant)) is var unknown and >= 0)
+        {
+            return CommandResult.Fail(Problems.Validation(http, new Dictionary<string, string[]> { [$"lines[{unknown}].variantId"] = ["not a variant of this store"] }));
+        }
+
+        IJournals journals = http.RequestServices.GetRequiredService<IJournals>();
+        long owed = (await journals.DetailBalancesAsync(scope, "TradePayables", "Supplier", [supplierId], ct)).GetValueOrDefault(supplierId);
+        IReadOnlyList<string> warnings = ReceiptRules.SettlementWarnings(owed, agreed);
+        if (warnings.Except(body.ConfirmedWarnings ?? []).Any())
+        {
+            return CommandResult.Fail(Problems.WithContext(http, StatusCodes.Status422UnprocessableEntity, "confirmation-required",
+                "Confirm the warnings and send the return again", new { warnings, owed = Rial(owed) }));
+        }
+
+        // the goods leave at the WAC in force, under the balances' locks (INV-004/006); a shortage refuses the whole return
+        Guid id = Guid.CreateVersion7();
+        DateTimeOffset now = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
+        StockResult posted = await http.RequestServices.GetRequiredService<IStockLedger>().PostAsync(scope, new StockDocument("PurchaseReturn", id, now,
+            [.. inputs.Select((x, i) => new StockLine(i + 1, warehouseId, x.Variant, MovementType.PurchaseReturn, -x.Qty))]), ct);
+        if (posted.Outcome == StockOutcome.InsufficientStock)
+        {
+            return CommandResult.Fail(Problems.WithContext(http, StatusCodes.Status409Conflict, "insufficient-stock", "Not enough stock", new
+            {
+                shortages = posted.Shortages.Select(x => new { x.WarehouseId, x.VariantId, available = Qty(x.Available), requested = Qty(x.Requested) }),
+            }));
+        }
+
+        if (posted.Outcome != StockOutcome.Done) throw new InvalidOperationException($"purchase return {id}: {posted.Outcome}");
+        var lines = posted.Movements.OrderBy(m => m.Line)
+            .Select(m => new PurchaseReturnLine(m.Line, m.VariantId, -m.QtyBase, m.UnitCost, -m.TotalCost)).ToList();
+        long cost = lines.Sum(l => l.LineCost);
+
+        Guid? journalId = null;
+        if (PurchaseReturnRule.For(id, supplierId, cost, agreed, now, $"برگشت از خرید به {supplier.Name}") is { } draft)
+        {
+            AccountingResult<JournalView> entry = await journals.PostAutomaticAsync(scope, draft, ct);
+            if (entry.Outcome != AccountingOutcome.Done) return CommandResult.Fail(AutomaticEntryProblem(http, entry));
+            journalId = entry.Value!.Id;
+        }
+
+        PurchaseReturnRecord record = await procurement.RecordReturnAsync(scope, new PurchaseReturnRecord(id, supplierId, warehouseId, lines, cost, agreed, note,
+            journalId, ctx.User!.Value.Value, now), ct);
+        await Audit(http, scope, ActorOf(ctx, http), new AuditEntry("procurement.purchase-return.posted", "PurchaseReturn", id.ToString(), note, new
+        {
+            supplierId, warehouseId, cost, agreed, variance = agreed - cost, journalId, lines = lines.Count, owedBefore = owed, confirmed = warnings,
+        }), ct);
+        return CommandResult.Created(ReturnJson(record, owed - agreed, [.. warnings, .. posted.Warnings]));
+    })
+    .RequirePermission(Permissions.InventoryReceiptCreate);
+
+v1.MapGet("/purchase-returns", async (RequestContext ctx, IUnitOfWork uow, IProcurement procurement, HttpContext http, CancellationToken ct) =>
+    {
+        var lookups = http.RequestServices.GetServices<IScopeLookup>();
+        return Results.Ok(await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            var rows = await procurement.ReturnsAsync(s, null, c);
+            var canSee = new Dictionary<Guid, bool>();
+            foreach (Guid w in rows.Select(r => r.WarehouseId).Distinct())
+            {
+                canSee[w] = await ResolveScope(s, lookups, ScopeType.Warehouse, w, c) is { } scope
+                            && AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.ReportsView, scope);
+            }
+
+            return new { items = rows.Where(r => canSee[r.WarehouseId]).Select(r => ReturnJson(r)) };
+        }, ct));
+    })
+    .RequirePermission(Permissions.ReportsView);
+
 // ---------------- US-082: the POS cart (SAL-001, SAL-002, SAL-010). A cart is the cashier's own, on their open shift,
 // worked on a registered device of the branch (ABAC-04, BR-050); every amount is the server's (BR-013..BR-018).
 string Money(long v) => v.ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -3596,6 +3759,10 @@ internal sealed record SaleCreateInput(Guid? RegisterId, string? ClientDraftId);
 internal sealed record SaleLineInput(Guid? VariantId, string? Barcode, string? Unit, string? Qty);
 internal sealed record SaleLinePatchInput(int? ExpectedVersion, string? Qty, string? Unit);
 internal sealed record SupplierInput(string? Name, string? NationalId, string? EconomicCode, string? Phone);
+internal sealed record SupplierPaymentInput(string? Amount, string? Method, string? Reference, string? Note, Guid? RegisterShiftId, string[]? ConfirmedWarnings);
+internal sealed record PurchaseReturnLineInput(Guid? VariantId, string? Qty);
+internal sealed record PurchaseReturnInput(Guid? SupplierId, Guid? WarehouseId, PurchaseReturnLineInput?[]? Lines, string? AgreedAmount, string? Note,
+    string[]? ConfirmedWarnings);
 internal sealed record ReceiptLineInput(Guid? VariantId, string? Qty, string? Unit, string? UnitCost, string? Discount, string? InputVat);
 internal sealed record ReceiptInput(Guid? SupplierId, Guid? WarehouseId, ReceiptLineInput?[]? Lines, string? SupplierInvoiceNo, string? EffectiveDate,
     string[]? ConfirmedWarnings);

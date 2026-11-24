@@ -55,6 +55,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
         ["cancelSale"] = _ => new { expectedVersion = 1, reason = "آزمون" },
         ["voidTender"] = _ => new { expectedVersion = 1, reason = "آزمون" },
         ["addCountEntries"] = f => new { clientBatchId = "gen-batch-0001", entries = new[] { new { variantId = f.Variant, qty = "1" } } },
+        ["paySupplier"] = _ => new { amount = "1", method = "Cash", confirmedWarnings = new[] { "exceeds-balance" } },
         ["closeCount"] = _ => new { expectedVersion = 1 },
         ["confirmCount"] = _ => new { expectedVersion = 1 },
         ["finalizeSale"] = _ => new { expectedVersion = 1, expectedTotal = "1000" },
@@ -63,7 +64,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
 
     private sealed record Fixture(Guid Tenant, Guid Branch, Guid Branch2, Guid Terminal, Guid Terminal2, Guid User, Guid Assignment,
         Guid Approval, Guid Export, Guid SupportRequest, Guid Product, Guid Variant, Guid Barcode, Guid Shift, Guid Journal,
-        Guid PriceList, Guid DiscountRule, Guid Sale, Guid Count)
+        Guid PriceList, Guid DiscountRule, Guid Sale, Guid Count, Guid Supplier)
     {
         /// <summary>A path value: ids from the fixture; a line number is a position inside the sale (line 1 exists).</summary>
         public string Path(string param) => param is "lineNo" or "seq" ? "1" : Id(param).ToString();
@@ -86,6 +87,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
             "ruleId" => DiscountRule,
             "saleId" => Sale,
             "countId" => Count,
+            "supplierId" => Supplier,
             _ => throw new InvalidOperationException($"No fixture for path parameter '{param}': add one to GeneratedSecurityTests (US-010)"),
         };
     }
@@ -152,7 +154,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
         Guid t = Guid.CreateVersion7(), b1 = Guid.CreateVersion7(), b2 = Guid.CreateVersion7(), term = Guid.CreateVersion7(), term2 = Guid.CreateVersion7(),
             owner = Guid.CreateVersion7(), member = Guid.CreateVersion7(), assignment = Guid.CreateVersion7(), approval = Guid.CreateVersion7(),
             export = Guid.CreateVersion7(), support = Guid.CreateVersion7(), product = Guid.CreateVersion7(), variant = Guid.CreateVersion7(),
-            barcode = Guid.CreateVersion7(), register = Guid.CreateVersion7(), shift = Guid.CreateVersion7(), journal = Guid.CreateVersion7(), priceList = Guid.CreateVersion7(), rule = Guid.CreateVersion7(), sale = Guid.CreateVersion7(), warehouse = Guid.CreateVersion7(), count = Guid.CreateVersion7(),
+            barcode = Guid.CreateVersion7(), register = Guid.CreateVersion7(), shift = Guid.CreateVersion7(), journal = Guid.CreateVersion7(), priceList = Guid.CreateVersion7(), rule = Guid.CreateVersion7(), sale = Guid.CreateVersion7(), warehouse = Guid.CreateVersion7(), count = Guid.CreateVersion7(), supplier = Guid.CreateVersion7(),
             cash = Guid.CreateVersion7(), sales = Guid.CreateVersion7(), period = Guid.CreateVersion7();
         await using var ds = NpgsqlDataSource.Create(Cs);
         var uow = new PostgresUnitOfWork(ds);
@@ -185,6 +187,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
             await Exec(s, ct, "INSERT INTO sales.shift (tenant_id, id, register_id, branch_id, cashier_id, opening_cash) VALUES ($1, $2, $3, $4, $5, 0)",
                 t, shift, register, b1, member);
             await Exec(s, ct, "INSERT INTO inv.warehouse (tenant_id, id, branch_id, code) VALUES ($1, $2, $3, 'W-GEN')", t, warehouse, b1);
+            await Exec(s, ct, "INSERT INTO inv.supplier (tenant_id, id, name, created_by) VALUES ($1, $2, 'تأمین‌کننده', $3)", t, supplier, member);
             await Exec(s, ct, "INSERT INTO inv.inventory_count (tenant_id, id, warehouse_id, snapshot_at, created_by) VALUES ($1, $2, $3, now(), $4)", t, count, warehouse, member);
             await Exec(s, ct, "INSERT INTO sales.sale (tenant_id, id, branch_id, register_id, shift_id, cashier_id, terminal_id, client_draft_id, pricing_mode) " +
                               "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'TaxExclusive')", t, sale, b1, register, shift, member, term, "gen-" + sale.ToString("N"));
@@ -207,7 +210,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
             return await Exec(s, ct, "INSERT INTO platform.export_job (tenant_id, id, requested_by, categories) VALUES ($1, $2, $3, '{Products}')", t, export, owner);
         });
         _roleSubjects[$"owner-{t}"] = $"gen-{_run}-owner-{t}";
-        return new Fixture(t, b1, b2, term, term2, member, assignment, approval, export, support, product, variant, barcode, shift, journal, priceList, rule, sale, count);
+        return new Fixture(t, b1, b2, term, term2, member, assignment, approval, export, support, product, variant, barcode, shift, journal, priceList, rule, sale, count, supplier);
     }
 
     private static async Task<int> Exec(IUnitOfWorkScope s, CancellationToken ct, string sql, params object[] args)

@@ -50,4 +50,38 @@ public sealed class ReceiptRulesTests
             OpeningStockRule.For(V, 14_000_000, DateTimeOffset.UtcNow, "شکر")!.Lines);
         Assert.Null(OpeningStockRule.For(V, 0, DateTimeOffset.UtcNow, "شکر"));
     }
+
+    [Fact]
+    public void PRC003_a_payment_debits_the_suppliers_payable_and_credits_cash_or_bank()
+    {
+        PostingDraft cash = SupplierPaymentRule.For(V, S, 400, bank: false, DateTimeOffset.UtcNow, "پرداخت");
+        Assert.Equal([new RoleLine("TradePayables", 400, 0, "Supplier", S), new RoleLine("CashOnHand", 0, 400)], cash.Lines);
+        Assert.Equal(("SupplierPayment", "supplier-payment"), (cash.SourceType, cash.Purpose));
+        Assert.Equal("Bank", SupplierPaymentRule.For(V, S, 1, bank: true, DateTimeOffset.UtcNow, "پرداخت").Lines[1].Role);
+        Assert.Throws<ArgumentOutOfRangeException>(() => SupplierPaymentRule.For(V, S, 0, bank: false, DateTimeOffset.UtcNow, "پرداخت"));
+    }
+
+    [Theory]
+    [InlineData(600, 700, 100, 0)]   // taken back for more than its cost: a gain
+    [InlineData(300, 250, 0, 50)]    // for less: a loss
+    [InlineData(600, 600, 0, 0)]     // at cost: no variance line
+    public void PRC004_the_gap_between_the_agreed_amount_and_WAC_goes_to_the_variance_account(long cost, long agreed, long credit, long debit)
+    {
+        PostingDraft d = PurchaseReturnRule.For(V, S, cost, agreed, DateTimeOffset.UtcNow, "برگشت")!;
+        Assert.Equal(new RoleLine("TradePayables", agreed, 0, "Supplier", S), d.Lines[0]);
+        Assert.Equal(new RoleLine("Inventory", 0, cost), d.Lines[1]);
+        RoleLine? variance = d.Lines.SingleOrDefault(l => l.Role == "PurchaseReturnVariance");
+        Assert.Equal(credit + debit == 0 ? null : new RoleLine("PurchaseReturnVariance", debit, credit), variance);
+        Assert.Equal(d.Lines.Sum(l => l.Debit), d.Lines.Sum(l => l.Credit));
+    }
+
+    [Fact]
+    public void PRC004_a_worthless_return_posts_nothing_and_a_free_one_only_loses_its_cost()
+    {
+        Assert.Null(PurchaseReturnRule.For(V, S, 0, 0, DateTimeOffset.UtcNow, "برگشت"));
+        Assert.Equal([new RoleLine("Inventory", 0, 300), new RoleLine("PurchaseReturnVariance", 300, 0)],
+            PurchaseReturnRule.For(V, S, 300, 0, DateTimeOffset.UtcNow, "برگشت")!.Lines);
+        Assert.Equal(["exceeds-balance"], ReceiptRules.SettlementWarnings(100, 101));
+        Assert.Empty(ReceiptRules.SettlementWarnings(100, 100));
+    }
 }

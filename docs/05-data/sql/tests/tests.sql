@@ -286,6 +286,22 @@ SELECT t.expect_error('T231 nothing more is counted once the count is closed (RC
     VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000060', 'batch-0002', 'a0000000-0000-0000-0000-000000000011', 1, gen_random_uuid())$$);
 SELECT t.expect_error('T232 a closed count is not reopened (RC032)', 'RC032',
   $$UPDATE inv.inventory_count SET status = 'Open', closed_at = NULL, closed_by = NULL WHERE id = 'a0000000-0000-0000-0000-000000000060'$$);
+-- US-072 supplier payments and purchase returns (PRC-003/004)
+SELECT t.expect_error('T233 a supplier payment is a positive amount, in cash or by bank', '23514',
+  $$INSERT INTO inv.supplier_payment (tenant_id, id, supplier_id, amount, method, journal_entry_id, created_by)
+    VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000096', 0, 'Cash', gen_random_uuid(), gen_random_uuid())$$);
+INSERT INTO inv.supplier_payment (tenant_id, id, supplier_id, amount, method, reference, journal_entry_id, created_by)
+  VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000061', 'a0000000-0000-0000-0000-000000000096', 1000, 'Bank', 'TR-1', gen_random_uuid(), gen_random_uuid());
+SELECT t.expect_error('T234 a supplier payment is never changed by the app', '42501',
+  $$UPDATE inv.supplier_payment SET amount = 1 WHERE id = 'a0000000-0000-0000-0000-000000000061'$$);
+SELECT t.expect_error('T235 a valued purchase return always has its journal entry (PRC-004)', '23514',
+  $$INSERT INTO inv.purchase_return (tenant_id, id, supplier_id, warehouse_id, cost, agreed_amount, created_by)
+    VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000096', 'a0000000-0000-0000-0000-000000000003', 900, 1000, gen_random_uuid())$$);
+INSERT INTO inv.purchase_return (tenant_id, id, supplier_id, warehouse_id, cost, agreed_amount, journal_entry_id, created_by)
+  VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000062', 'a0000000-0000-0000-0000-000000000096', 'a0000000-0000-0000-0000-000000000003',
+          900, 1000, gen_random_uuid(), gen_random_uuid());
+SELECT t.expect_error('T236 a posted purchase return is never changed by the app', '42501',
+  $$UPDATE inv.purchase_return SET agreed_amount = 1 WHERE id = 'a0000000-0000-0000-0000-000000000062'$$);
 SELECT t.expect_error('T14 stock movement is append-only for the app role', '42501',
   $$UPDATE inv.stock_movement SET qty_base = -2$$);
 SELECT t.expect_error('T15 movement for another tenant via parent rejected', '42501',

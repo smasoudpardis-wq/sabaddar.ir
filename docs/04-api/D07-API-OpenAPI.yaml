@@ -3474,7 +3474,11 @@ paths:
               $ref: '#/components/schemas/SupplierPaymentCreate'
       responses:
         '201':
-          description: OK
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupplierPayment'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -3506,7 +3510,7 @@ paths:
       operationId: postPurchaseReturn
       tags:
       - Procurement
-      summary: برگشت از خرید
+      summary: برگشت از خرید (خروج با WAC + سند در یک تراکنش)
       security: *id001
       parameters:
       - $ref: '#/components/parameters/IdempotencyKey'
@@ -3518,7 +3522,11 @@ paths:
               $ref: '#/components/schemas/PurchaseReturnCreate'
       responses:
         '201':
-          description: OK
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseReturn'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -3542,7 +3550,45 @@ paths:
       x-idempotent: true
       x-requirements:
       - PRC-004
+      - INV-006
       x-audited: true
+    get:
+      operationId: listPurchaseReturns
+      tags:
+      - Procurement
+      summary: برگشت‌های از خرید اخیر
+      security: *id001
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - items
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PurchaseReturn'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: reports.view
+      x-idempotent: false
+      x-requirements:
+      - PRC-004
   /shifts:
     post:
       operationId: openShift
@@ -11898,6 +11944,92 @@ components:
           - Inactive
       required:
       - expectedVersion
+    PurchaseReturn:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        supplierId:
+          type: string
+          format: uuid
+        warehouseId:
+          type: string
+          format: uuid
+        lines:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              lineNo:
+                type: integer
+                format: int32
+              variantId:
+                type: string
+                format: uuid
+              qty:
+                $ref: '#/components/schemas/Quantity'
+              unitCost:
+                $ref: '#/components/schemas/Money'
+                description: WAC when it left
+              lineCost:
+                $ref: '#/components/schemas/Money'
+            required:
+            - lineNo
+            - variantId
+            - qty
+            - unitCost
+            - lineCost
+        cost:
+          $ref: '#/components/schemas/Money'
+          description: 'Σ line cost: the Inventory credit'
+        agreedAmount:
+          $ref: '#/components/schemas/Money'
+          description: The TradePayables debit
+        variance:
+          $ref: '#/components/schemas/Money'
+          description: 'agreedAmount − cost: credited (positive) or debited (negative) to PurchaseReturnVariance'
+        note:
+          type:
+          - string
+          - 'null'
+        journalEntryId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: Null only for a return worth nothing
+        balanceAfter:
+          anyOf:
+          - $ref: '#/components/schemas/Money'
+          - type: 'null'
+          description: Only in the response to postPurchaseReturn
+        createdBy:
+          type: string
+          format: uuid
+        postedAt:
+          type: string
+          format: date-time
+        warnings:
+          type: array
+          items:
+            type: string
+      required:
+      - id
+      - supplierId
+      - warehouseId
+      - lines
+      - cost
+      - agreedAmount
+      - variance
+      - note
+      - journalEntryId
+      - balanceAfter
+      - createdBy
+      - postedAt
+      - warnings
     PurchaseReturnCreate:
       type: object
       additionalProperties: false
@@ -11919,13 +12051,20 @@ components:
                 format: uuid
               qty:
                 $ref: '#/components/schemas/Quantity'
+                description: In the base unit
             required:
             - variantId
             - qty
         agreedAmount:
           $ref: '#/components/schemas/Money'
+          description: What the supplier takes off the store's payable
         note:
           type: string
+        confirmedWarnings:
+          type: array
+          items:
+            type: string
+          description: 'exceeds-balance: the supplier will owe the store'
       required:
       - supplierId
       - warehouseId
@@ -13275,6 +13414,59 @@ components:
           type: string
       required:
       - name
+    SupplierPayment:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        supplierId:
+          type: string
+          format: uuid
+        amount:
+          $ref: '#/components/schemas/Money'
+        method:
+          type: string
+          enum:
+          - Cash
+          - Bank
+        reference:
+          type:
+          - string
+          - 'null'
+        note:
+          type:
+          - string
+          - 'null'
+        journalEntryId:
+          type: string
+          format: uuid
+        balanceAfter:
+          $ref: '#/components/schemas/Money'
+          description: 'What the store owes the supplier after this payment (negative: an advance)'
+        createdBy:
+          type: string
+          format: uuid
+        paidAt:
+          type: string
+          format: date-time
+        warnings:
+          type: array
+          items:
+            type: string
+      required:
+      - id
+      - supplierId
+      - amount
+      - method
+      - reference
+      - note
+      - journalEntryId
+      - balanceAfter
+      - createdBy
+      - paidAt
+      - warnings
     SupplierPaymentCreate:
       type: object
       additionalProperties: false
@@ -13288,9 +13480,18 @@ components:
           - Bank
         reference:
           type: string
+          description: Transfer or cheque number; required for Bank
+        note:
+          type: string
         registerShiftId:
           type: string
           format: uuid
+          description: Not yet supported (cash out of a register drawer, with US-084)
+        confirmedWarnings:
+          type: array
+          items:
+            type: string
+          description: 'exceeds-balance: paying more than the store owes (an advance)'
       required:
       - amount
       - method

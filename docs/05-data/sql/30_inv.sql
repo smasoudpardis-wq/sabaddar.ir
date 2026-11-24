@@ -198,6 +198,65 @@ CREATE TABLE inv.goods_receipt_line (
   CHECK (line_cost = round(qty * unit_cost) - discount)         -- half away from zero, as the application rounds
 );
 CALL core.enable_tenant_rls('inv.goods_receipt_line');
+-- PRC-003 (US-072): a payment to a supplier. The ledger holds the amount (TradePayables debit, CashOnHand or Bank credit);
+-- this row is the document with the method and the bank reference.
+CREATE TABLE inv.supplier_payment (
+  tenant_id        uuid NOT NULL,
+  id               uuid NOT NULL,
+  supplier_id      uuid NOT NULL,
+  amount           bigint NOT NULL CHECK (amount > 0),
+  method           text NOT NULL CHECK (method IN ('Cash','Bank')),
+  reference        text CHECK (char_length(reference) BETWEEN 1 AND 60),
+  note             text CHECK (char_length(note) BETWEEN 1 AND 500),
+  journal_entry_id uuid NOT NULL,                            -- acc.journal_entry (cross-module: no FK)
+  created_by       uuid NOT NULL,
+  paid_at          timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, id),
+  FOREIGN KEY (tenant_id, supplier_id) REFERENCES inv.supplier (tenant_id, id)
+);
+CREATE INDEX ix_supplier_payment_supplier ON inv.supplier_payment (tenant_id, supplier_id, paid_at DESC);
+CALL core.enable_tenant_rls('inv.supplier_payment');
+CREATE TRIGGER tr_supplier_payment_append_only BEFORE UPDATE OR DELETE ON inv.supplier_payment
+  FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
+
+-- PRC-004 (US-072): goods sent back to the supplier. The stock leaves at the WAC in force (PurchaseReturn movements whose
+-- source is the return); the payable falls by the amount agreed with the supplier, and the gap goes to PurchaseReturnVariance.
+CREATE TABLE inv.purchase_return (
+  tenant_id        uuid NOT NULL,
+  id               uuid NOT NULL,
+  supplier_id      uuid NOT NULL,
+  warehouse_id     uuid NOT NULL,
+  cost             bigint NOT NULL CHECK (cost >= 0),          -- what left stock at WAC (Inventory credit)
+  agreed_amount    bigint NOT NULL CHECK (agreed_amount >= 0), -- TradePayables debit
+  note             text CHECK (char_length(note) BETWEEN 1 AND 500),
+  journal_entry_id uuid,                                       -- acc.journal_entry (cross-module: no FK)
+  created_by       uuid NOT NULL,
+  posted_at        timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, id),
+  FOREIGN KEY (tenant_id, supplier_id) REFERENCES inv.supplier (tenant_id, id),
+  FOREIGN KEY (tenant_id, warehouse_id) REFERENCES inv.warehouse (tenant_id, id),
+  CHECK ((cost = 0 AND agreed_amount = 0) = (journal_entry_id IS NULL))
+);
+CREATE INDEX ix_purchase_return_posted ON inv.purchase_return (tenant_id, posted_at DESC);
+CALL core.enable_tenant_rls('inv.purchase_return');
+
+CREATE TABLE inv.purchase_return_line (
+  tenant_id  uuid NOT NULL,
+  return_id  uuid NOT NULL,
+  line_no    int  NOT NULL CHECK (line_no BETWEEN 1 AND 500),
+  variant_id uuid NOT NULL,
+  qty        numeric(18,6) NOT NULL CHECK (qty > 0),           -- base unit
+  unit_cost  bigint NOT NULL CHECK (unit_cost >= 0),           -- WAC at the return
+  line_cost  bigint NOT NULL CHECK (line_cost >= 0),
+  PRIMARY KEY (tenant_id, return_id, line_no),
+  FOREIGN KEY (tenant_id, return_id) REFERENCES inv.purchase_return (tenant_id, id)
+);
+CALL core.enable_tenant_rls('inv.purchase_return_line');
+CREATE TRIGGER tr_purchase_return_append_only BEFORE UPDATE OR DELETE ON inv.purchase_return
+  FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
+CREATE TRIGGER tr_purchase_return_line_append_only BEFORE UPDATE OR DELETE ON inv.purchase_return_line
+  FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
+
 CREATE TRIGGER tr_receipt_append_only BEFORE UPDATE OR DELETE ON inv.goods_receipt
   FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
 CREATE TRIGGER tr_receipt_line_append_only BEFORE UPDATE OR DELETE ON inv.goods_receipt_line
@@ -384,8 +443,10 @@ GRANT UPDATE (status, closed_at) ON inv.stock_reservation TO rc_app, rc_worker;
 GRANT SELECT ON inv.stock_reservation TO rc_worker, rc_reporting;
 GRANT SELECT ON inv.reorder_point TO rc_worker, rc_reporting;
 GRANT SELECT ON inv.stock_transfer TO rc_worker, rc_reporting;
-GRANT SELECT, INSERT ON inv.supplier, inv.goods_receipt, inv.goods_receipt_line TO rc_app;
-GRANT SELECT ON inv.supplier, inv.goods_receipt, inv.goods_receipt_line TO rc_worker, rc_reporting;
+GRANT SELECT, INSERT ON inv.supplier, inv.goods_receipt, inv.goods_receipt_line, inv.supplier_payment, inv.purchase_return,
+  inv.purchase_return_line TO rc_app;
+GRANT SELECT ON inv.supplier, inv.goods_receipt, inv.goods_receipt_line, inv.supplier_payment, inv.purchase_return,
+  inv.purchase_return_line TO rc_worker, rc_reporting;
 GRANT SELECT ON inv.stock_adjustment TO rc_worker, rc_reporting;
 GRANT EXECUTE ON FUNCTION inv.ensure_movement_partitions(int) TO rc_worker;
 -- INV-001 rebuild (operator command run by Workers): balances only, never the ledger

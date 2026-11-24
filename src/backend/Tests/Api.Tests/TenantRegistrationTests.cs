@@ -123,7 +123,7 @@ public sealed class TenantRegistrationTests : IClassFixture<ApiFactory>
         Assert.Equal(1L, await InTenant<long>(tenant, "SELECT count(*) FROM platform.register"));
         Assert.Equal(1L, await InTenant<long>(tenant, "SELECT count(*) FROM inv.warehouse WHERE code = 'W1'"));
         Assert.Equal((long)ChartOfAccountsTemplate.For("supermarket").Count, await InTenant<long>(tenant, "SELECT count(*) FROM acc.account"));
-        Assert.Equal(20L, await InTenant<long>(tenant, "SELECT count(*) FROM acc.account_role"));
+        Assert.Equal((long)ChartOfAccountsTemplate.Roles.Count, await InTenant<long>(tenant, "SELECT count(*) FROM acc.account_role"));
         Assert.Equal(12L, await InTenant<long>(tenant, $"SELECT count(*) FROM acc.fiscal_period WHERE fiscal_year = {year} AND status = 'Open'"));
         Assert.Equal("1101", await InTenant<string>(tenant,
             "SELECT a.code FROM acc.account_role r JOIN acc.account a ON a.tenant_id = r.tenant_id AND a.id = r.account_id WHERE r.role = 'CashOnHand'"));
@@ -131,7 +131,7 @@ public sealed class TenantRegistrationTests : IClassFixture<ApiFactory>
         // re-delivery of the event changes nothing (inbox + ON CONFLICT)
         await InTenant<int>(tenant, "SELECT 1"); // keep the app connection warm
         await Provision(tenant);
-        Assert.Equal(20L, await InTenant<long>(tenant, "SELECT count(*) FROM acc.account_role"));
+        Assert.Equal((long)ChartOfAccountsTemplate.Roles.Count, await InTenant<long>(tenant, "SELECT count(*) FROM acc.account_role"));
     }
 
     [DbFact]

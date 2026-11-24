@@ -161,3 +161,59 @@ public static class SaleCostRule
             [new RoleLine("COGS", cost, 0), new RoleLine("Inventory", 0, cost)]),
     };
 }
+
+/// <summary>PRC-003: a payment to a supplier debits TradePayables (detail Supplier) and credits CashOnHand or Bank. Version 1.</summary>
+public static class SupplierPaymentRule
+{
+    public const int Version = 1;
+
+    public static PostingDraft For(Guid paymentId, Guid supplierId, long amount, bool bank, DateTimeOffset paidAt, string description)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(amount);
+        return new PostingDraft("SupplierPayment", paymentId, "supplier-payment", Version, paidAt, description,
+            [new RoleLine("TradePayables", amount, 0, "Supplier", supplierId), new RoleLine(bank ? "Bank" : "CashOnHand", 0, amount)]);
+    }
+}
+
+/// <summary>
+/// PRC-004: goods sent back to a supplier. TradePayables (detail Supplier) is debited with the amount agreed with the
+/// supplier and Inventory credited with what left stock at WAC; the gap goes to PurchaseReturnVariance (credited when the
+/// supplier takes the goods back for more than their cost, debited when for less). Version 1.
+/// </summary>
+public static class PurchaseReturnRule
+{
+    public const int Version = 1;
+
+    public static PostingDraft? For(Guid returnId, Guid supplierId, long cost, long agreed, DateTimeOffset at, string description)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(cost);
+        ArgumentOutOfRangeException.ThrowIfNegative(agreed);
+        if (cost == 0 && agreed == 0)
+        {
+            return null;
+        }
+
+        var lines = new List<RoleLine>();
+        if (agreed > 0)
+        {
+            lines.Add(new RoleLine("TradePayables", agreed, 0, "Supplier", supplierId));
+        }
+
+        if (cost > 0)
+        {
+            lines.Add(new RoleLine("Inventory", 0, cost));
+        }
+
+        long gap = agreed - cost;
+        if (gap > 0)
+        {
+            lines.Add(new RoleLine("PurchaseReturnVariance", 0, gap));
+        }
+        else if (gap < 0)
+        {
+            lines.Add(new RoleLine("PurchaseReturnVariance", -gap, 0));
+        }
+
+        return new PostingDraft("PurchaseReturn", returnId, "purchase-return", Version, at, description, lines);
+    }
+}

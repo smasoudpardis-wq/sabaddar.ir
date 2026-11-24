@@ -28,6 +28,7 @@ public static class ChartOfAccountsTemplate
         "SalesRevenue", "OutputVat", "Inventory", "COGS", "CashOnHand", "Bank", "GatewayInTransit", "CardInTransit",
         "TradeReceivables", "CustomerAdvances", "TradePayables", "InputVat", "InventoryShrinkage", "InventoryOverage",
         "CashShortage", "CashOverage", "BadDebtExpense", "InventoryCostAdjustment", "OpeningBalanceEquity", "BankFees",
+        "PurchaseReturnVariance",
     ];
 
     private static readonly AccountTemplate[] Retail =
@@ -60,6 +61,7 @@ public static class ChartOfAccountsTemplate
         new("5104", "هزینه مطالبات مشکوک‌الوصول", AccountType.Expense, "5", true, Role: "BadDebtExpense"),
         new("5105", "تعدیل بهای موجودی", AccountType.Expense, "5", true, Role: "InventoryCostAdjustment"),
         new("5106", "کارمزد بانکی", AccountType.Expense, "5", true, Role: "BankFees"),
+        new("5107", "اختلاف بهای برگشت از خرید", AccountType.Expense, "5", true, Role: "PurchaseReturnVariance"),
     ];
 
     /// <summary>MVP: one retail chart for every industry; industry-specific charts plug in here (SQ-03 style).</summary>

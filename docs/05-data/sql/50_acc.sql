@@ -38,7 +38,7 @@ CREATE TABLE acc.account_role (
   role       text NOT NULL CHECK (role IN ('SalesRevenue','OutputVat','Inventory','COGS','CashOnHand','Bank',
                'GatewayInTransit','CardInTransit','TradeReceivables','CustomerAdvances','TradePayables','InputVat',
                'InventoryShrinkage','InventoryOverage','CashShortage','CashOverage','BadDebtExpense',
-               'InventoryCostAdjustment','OpeningBalanceEquity','BankFees')),
+               'InventoryCostAdjustment','OpeningBalanceEquity','BankFees','PurchaseReturnVariance')),
   account_id uuid NOT NULL,
   PRIMARY KEY (tenant_id, role),
   FOREIGN KEY (tenant_id, account_id) REFERENCES acc.account (tenant_id, id)

@@ -299,9 +299,23 @@ schema("NegativeStockPolicySet", scopeType=("enum", ["Tenant", "Branch", "Varian
 schema("SupplierCreate", name="str", **{"nationalId?": "str", "economicCode?": "str", "phone?": "str"})
 schema("Supplier", id="uuid", name="str", nationalId="str?", economicCode="str?", phone="str?",
        balance=("desc", "money", "What the store owes: TradePayables credit − debit with this supplier as detail"))
-schema("SupplierPaymentCreate", amount="money", method=("enum", ["Cash", "Bank"]), **{"reference?": "str", "registerShiftId?": "uuid"})
-schema("PurchaseReturnCreate", supplierId="uuid", warehouseId="uuid", lines=[{"variantId": "uuid", "qty": "qty"}],
-       agreedAmount="money", **{"note?": "str"})
+schema("SupplierPaymentCreate", amount="money", method=("enum", ["Cash", "Bank"]),
+       **{"reference?": ("desc", "str", "Transfer or cheque number; required for Bank"), "note?": "str",
+          "registerShiftId?": ("desc", "uuid", "Not yet supported (cash out of a register drawer, with US-084)"),
+          "confirmedWarnings?": ("desc", ["str"], "exceeds-balance: paying more than the store owes (an advance)")})
+schema("SupplierPayment", id="uuid", supplierId="uuid", amount="money", method=("enum", ["Cash", "Bank"]), reference="str?", note="str?",
+       journalEntryId="uuid", balanceAfter=("desc", "money", "What the store owes the supplier after this payment (negative: an advance)"),
+       createdBy="uuid", paidAt="dt", warnings=["str"])
+schema("PurchaseReturnCreate", supplierId="uuid", warehouseId="uuid",
+       lines=[{"variantId": "uuid", "qty": ("desc", "qty", "In the base unit")}],
+       agreedAmount=("desc", "money", "What the supplier takes off the store's payable"),
+       **{"note?": "str", "confirmedWarnings?": ("desc", ["str"], "exceeds-balance: the supplier will owe the store")})
+schema("PurchaseReturn", id="uuid", supplierId="uuid", warehouseId="uuid",
+       lines=[{"lineNo": "int", "variantId": "uuid", "qty": "qty", "unitCost": ("desc", "money", "WAC when it left"), "lineCost": "money"}],
+       cost=("desc", "money", "Σ line cost: the Inventory credit"), agreedAmount=("desc", "money", "The TradePayables debit"),
+       variance=("desc", "money", "agreedAmount − cost: credited (positive) or debited (negative) to PurchaseReturnVariance"),
+       note="str?", journalEntryId=("desc", "uuid?", "Null only for a return worth nothing"),
+       balanceAfter=("desc", "money?", "Only in the response to postPurchaseReturn"), createdBy="uuid", postedAt="dt", warnings=["str"])
 
 # Sales / Shift
 schema("ShiftOpen", registerId="uuid", openingCash="money")
@@ -985,10 +999,13 @@ op("get", "/suppliers", "listSuppliers", "Procurement", "تأمین‌کنندگ
 op("post", "/suppliers", "createSupplier", "Procurement", "ایجاد تأمین‌کننده", perm="inventory.receipt.create", scope="Tenant",
    body="SupplierCreate", resp="Supplier", resp_code="201", reqs=["PRC-001"], audited=True)
 op("post", "/suppliers/{supplierId}/payments", "paySupplier", "Procurement", "پرداخت به تأمین‌کننده",
-   perm="accounting.journal.post", scope="Tenant", idem=True, body="SupplierPaymentCreate", resp_code="201",
+   perm="accounting.journal.post", scope="Tenant", idem=True, body="SupplierPaymentCreate", resp="SupplierPayment", resp_code="201",
    reqs=["PRC-003"], audited=True)
-op("post", "/purchase-returns", "postPurchaseReturn", "Procurement", "برگشت از خرید", perm="inventory.receipt.create",
-   scope="Warehouse", idem=True, body="PurchaseReturnCreate", resp_code="201", reqs=["PRC-004"], audited=True)
+op("post", "/purchase-returns", "postPurchaseReturn", "Procurement", "برگشت از خرید (خروج با WAC + سند در یک تراکنش)",
+   perm="inventory.receipt.create", scope="Warehouse", idem=True, body="PurchaseReturnCreate", resp="PurchaseReturn", resp_code="201",
+   reqs=["PRC-004", "INV-006"], audited=True)
+op("get", "/purchase-returns", "listPurchaseReturns", "Procurement", "برگشت‌های از خرید اخیر", perm="reports.view", resp="PurchaseReturn",
+   list_of=True, reqs=["PRC-004"])
 
 # ---------------- POS & sales
 tag("POS", "شیفت و سبد فروش (SAL)")

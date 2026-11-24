@@ -6,7 +6,10 @@ using RetailCloud.Inventory.Application;
 
 namespace RetailCloud.Inventory.Infrastructure;
 
-/// <summary>PRC-001 / PRC-002 on inv.supplier and inv.goods_receipt(_line); receipts are append-only (DB checks the totals).</summary>
+/// <summary>
+/// PRC-001..PRC-004 on inv.supplier, inv.goods_receipt(_line), inv.supplier_payment and inv.purchase_return(_line); all
+/// documents are append-only (the DB checks the totals).
+/// </summary>
 public sealed class PostgresProcurement : IProcurement
 {
     private const string SupplierColumns = "id, name, national_id, economic_code, phone, created_at";
@@ -109,6 +112,102 @@ public sealed class PostgresProcurement : IProcurement
         }
 
         return receipt with { PostedAt = postedAt };
+    }
+
+    public async Task<SupplierPaymentRecord> RecordPaymentAsync(IUnitOfWorkScope scope, SupplierPaymentRecord payment, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(payment);
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
+            "INSERT INTO inv.supplier_payment (tenant_id, id, supplier_id, amount, method, reference, note, journal_entry_id, created_by) " +
+            "VALUES (core.current_tenant(), $1, $2, $3, $4, $5, $6, $7, $8) RETURNING paid_at");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = payment.Id });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = payment.SupplierId });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = payment.Amount });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = payment.Method });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)payment.Reference ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)payment.Note ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = payment.JournalEntryId });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = payment.CreatedBy });
+        return payment with { PaidAt = new DateTimeOffset((DateTime)(await cmd.ExecuteScalarAsync(cancellationToken))!, TimeSpan.Zero) };
+    }
+
+    public async Task<PurchaseReturnRecord> RecordReturnAsync(IUnitOfWorkScope scope, PurchaseReturnRecord purchaseReturn, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(purchaseReturn);
+        var s = (PostgresUnitOfWorkScope)scope;
+        DateTimeOffset postedAt;
+        await using (NpgsqlCommand cmd = s.Command(
+            "INSERT INTO inv.purchase_return (tenant_id, id, supplier_id, warehouse_id, cost, agreed_amount, note, journal_entry_id, created_by) " +
+            "VALUES (core.current_tenant(), $1, $2, $3, $4, $5, $6, $7, $8) RETURNING posted_at"))
+        {
+            cmd.Parameters.Add(new NpgsqlParameter { Value = purchaseReturn.Id });
+            cmd.Parameters.Add(new NpgsqlParameter { Value = purchaseReturn.SupplierId });
+            cmd.Parameters.Add(new NpgsqlParameter { Value = purchaseReturn.WarehouseId });
+            cmd.Parameters.Add(new NpgsqlParameter { Value = purchaseReturn.Cost });
+            cmd.Parameters.Add(new NpgsqlParameter { Value = purchaseReturn.AgreedAmount });
+            cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)purchaseReturn.Note ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text });
+            cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)purchaseReturn.JournalEntryId ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Uuid });
+            cmd.Parameters.Add(new NpgsqlParameter { Value = purchaseReturn.CreatedBy });
+            postedAt = new DateTimeOffset((DateTime)(await cmd.ExecuteScalarAsync(cancellationToken))!, TimeSpan.Zero);
+        }
+
+        foreach (PurchaseReturnLine l in purchaseReturn.Lines)
+        {
+            await using NpgsqlCommand line = s.Command(
+                "INSERT INTO inv.purchase_return_line (tenant_id, return_id, line_no, variant_id, qty, unit_cost, line_cost) " +
+                "VALUES (core.current_tenant(), $1, $2, $3, $4, $5, $6)");
+            line.Parameters.Add(new NpgsqlParameter { Value = purchaseReturn.Id });
+            line.Parameters.Add(new NpgsqlParameter { Value = l.LineNo });
+            line.Parameters.Add(new NpgsqlParameter { Value = l.VariantId });
+            line.Parameters.Add(new NpgsqlParameter { Value = l.Qty });
+            line.Parameters.Add(new NpgsqlParameter { Value = l.UnitCost });
+            line.Parameters.Add(new NpgsqlParameter { Value = l.LineCost });
+            await line.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        return purchaseReturn with { PostedAt = postedAt };
+    }
+
+    public async Task<IReadOnlyList<PurchaseReturnRecord>> ReturnsAsync(IUnitOfWorkScope scope, IReadOnlyCollection<Guid>? warehouseIds,
+        CancellationToken cancellationToken)
+    {
+        var s = (PostgresUnitOfWorkScope)scope;
+        var headers = new List<PurchaseReturnRecord>();
+        await using (NpgsqlCommand cmd = s.Command(
+            "SELECT id, supplier_id, warehouse_id, cost, agreed_amount, note, journal_entry_id, created_by, posted_at FROM inv.purchase_return " +
+            "WHERE $1::uuid[] IS NULL OR warehouse_id = ANY($1) ORDER BY posted_at DESC, id DESC LIMIT 100"))
+        {
+            cmd.Parameters.Add(new NpgsqlParameter
+            {
+                Value = (object?)warehouseIds?.ToArray() ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Uuid,
+            });
+            await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(cancellationToken);
+            while (await r.ReadAsync(cancellationToken))
+            {
+                headers.Add(new PurchaseReturnRecord(r.GetGuid(0), r.GetGuid(1), r.GetGuid(2), [], r.GetInt64(3), r.GetInt64(4), r.IsDBNull(5) ? null : r.GetString(5),
+                    r.IsDBNull(6) ? null : r.GetGuid(6), r.GetGuid(7), r.GetFieldValue<DateTimeOffset>(8)));
+            }
+        }
+
+        var lines = new Dictionary<Guid, List<PurchaseReturnLine>>();
+        await using (NpgsqlCommand cmd = s.Command(
+            "SELECT return_id, line_no, variant_id, qty, unit_cost, line_cost FROM inv.purchase_return_line WHERE return_id = ANY($1) ORDER BY return_id, line_no"))
+        {
+            cmd.Parameters.Add(new NpgsqlParameter { Value = headers.Select(h => h.Id).ToArray(), NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Uuid });
+            await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(cancellationToken);
+            while (await r.ReadAsync(cancellationToken))
+            {
+                Guid returnId = r.GetGuid(0);
+                if (!lines.TryGetValue(returnId, out List<PurchaseReturnLine>? list))
+                {
+                    lines[returnId] = list = [];
+                }
+
+                list.Add(new PurchaseReturnLine(r.GetInt32(1), r.GetGuid(2), r.GetDecimal(3), r.GetInt64(4), r.GetInt64(5)));
+            }
+        }
+
+        return [.. headers.Select(h => h with { Lines = lines.GetValueOrDefault(h.Id) ?? [] })];
     }
 
     public async Task<IReadOnlyList<ReceiptRecord>> ReceiptsAsync(IUnitOfWorkScope scope, IReadOnlyCollection<Guid>? warehouseIds,
