@@ -2723,6 +2723,43 @@ paths:
       - BR-033
       - AB-05
   /inventory/transfers:
+    get:
+      operationId: listTransfers
+      tags:
+      - Inventory
+      summary: انتقال‌های اخیر
+      security: *id001
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - items
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Transfer'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: reports.view
+      x-idempotent: false
+      x-requirements:
+      - INV-008
     post:
       operationId: postTransfer
       tags:
@@ -13487,17 +13524,69 @@ components:
         id:
           type: string
           format: uuid
+        fromWarehouseId:
+          type: string
+          format: uuid
+        toWarehouseId:
+          type: string
+          format: uuid
         status:
           type: string
           enum:
           - Completed
+          - InTransit
+        lineCount:
+          type: integer
+          format: int32
+        value:
+          $ref: '#/components/schemas/Money'
+          description: Σ qty × the source's WAC, carried to the destination (INV-008)
+        note:
+          type:
+          - string
+          - 'null'
+        createdBy:
+          type: string
+          format: uuid
         postedAt:
           type: string
           format: date-time
+        lines:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              line:
+                type: integer
+                format: int32
+              variantId:
+                type: string
+                format: uuid
+              qty:
+                $ref: '#/components/schemas/Quantity'
+              unitCost:
+                $ref: '#/components/schemas/Money'
+              value:
+                $ref: '#/components/schemas/Money'
+            required:
+            - line
+            - variantId
+            - qty
+            - unitCost
+            - value
+          description: Only in postTransfer's response
       required:
       - id
+      - fromWarehouseId
+      - toWarehouseId
       - status
+      - lineCount
+      - value
+      - note
+      - createdBy
       - postedAt
+      - lines
     TransferCreate:
       type: object
       additionalProperties: false
@@ -13519,9 +13608,12 @@ components:
                 format: uuid
               qty:
                 $ref: '#/components/schemas/Quantity'
+                description: In the base unit
             required:
             - variantId
             - qty
+        note:
+          type: string
       required:
       - fromWarehouseId
       - toWarehouseId

@@ -470,6 +470,15 @@ try {
   check('V07', 'Finalize issues B1-<year>-000001 and the stock goes down by one (SAL-007, BR-056)', /^B1-14\d\d-000001$/.test(invoice ?? '') && card === '16'
     && (await page.getByTestId('pos-total').count()) === 0, `${invoice} ${card}`);
   await shot(page, 'pos');
+  // F01 US-064: one damaged bottle moves from the shop floor to the returns warehouse at its average cost
+  await page.goto(`${BFF}/transfers`);
+  await page.locator('[data-testid="transfer-to"] option').nth(1).waitFor({ state: 'attached' });
+  await page.getByTestId('transfer-sku').fill('E2E-COLA');
+  await page.getByTestId('transfer-qty').fill('۱');
+  await page.getByTestId('transfer-submit').click();
+  await page.getByTestId('transfer-done').waitFor();
+  await page.locator('[data-testid="transfer-list"] [data-from="B1-MAIN"][data-to="B1-RET"]').waitFor();
+  check('F01', 'a transfer between two warehouses of the branch is posted and listed (INV-008)', true);
   await page.goto(`${BFF}/terminals`);
   await page.getByTestId('revoke-صندوق-فروش').click();
   await page.getByTestId('this-device').filter({ hasText: 'نیست' }).waitFor();

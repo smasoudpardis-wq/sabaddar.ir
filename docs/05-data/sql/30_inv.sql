@@ -203,6 +203,29 @@ CREATE TRIGGER tr_receipt_append_only BEFORE UPDATE OR DELETE ON inv.goods_recei
 CREATE TRIGGER tr_receipt_line_append_only BEFORE UPDATE OR DELETE ON inv.goods_receipt_line
   FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
 
+-- INV-008 (US-064): a transfer between two warehouses; MVP is single-step (TransferOut and TransferIn in one transaction,
+-- status Completed); InTransit is reserved for the two-step transfer of P1. Its lines are the movements it is the source of.
+CREATE TABLE inv.stock_transfer (
+  tenant_id         uuid NOT NULL,
+  id                uuid NOT NULL,
+  from_warehouse_id uuid NOT NULL,
+  to_warehouse_id   uuid NOT NULL,
+  status            text NOT NULL DEFAULT 'Completed' CHECK (status IN ('Completed','InTransit')),
+  line_count        int NOT NULL CHECK (line_count BETWEEN 1 AND 200),
+  value             bigint NOT NULL CHECK (value >= 0),        -- Σ qty × the source's WAC, moved as it was (INV-008)
+  note              text CHECK (char_length(note) <= 500),
+  created_by        uuid NOT NULL,
+  posted_at         timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, id),
+  FOREIGN KEY (tenant_id, from_warehouse_id) REFERENCES inv.warehouse (tenant_id, id),
+  FOREIGN KEY (tenant_id, to_warehouse_id) REFERENCES inv.warehouse (tenant_id, id),
+  CHECK (from_warehouse_id <> to_warehouse_id)
+);
+CALL core.enable_tenant_rls('inv.stock_transfer');
+CREATE INDEX ix_transfer_posted ON inv.stock_transfer (tenant_id, posted_at DESC);
+CREATE TRIGGER tr_transfer_append_only BEFORE UPDATE OR DELETE ON inv.stock_transfer
+  FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
+
 CREATE TRIGGER tr_movement_append_only BEFORE UPDATE OR DELETE ON inv.stock_movement
   FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
 
@@ -211,7 +234,8 @@ GRANT SELECT, INSERT, UPDATE ON inv.warehouse, inv.stock_balance TO rc_app;
 GRANT SELECT, INSERT ON inv.posted_source TO rc_app;
 GRANT SELECT, INSERT, UPDATE ON inv.negative_stock_policy TO rc_app;
 GRANT SELECT ON inv.negative_stock_policy TO rc_worker, rc_reporting;
-GRANT SELECT, INSERT ON inv.stock_adjustment TO rc_app;
+GRANT SELECT, INSERT ON inv.stock_adjustment, inv.stock_transfer TO rc_app;
+GRANT SELECT ON inv.stock_transfer TO rc_worker, rc_reporting;
 GRANT SELECT, INSERT ON inv.supplier, inv.goods_receipt, inv.goods_receipt_line TO rc_app;
 GRANT SELECT ON inv.supplier, inv.goods_receipt, inv.goods_receipt_line TO rc_worker, rc_reporting;
 GRANT SELECT ON inv.stock_adjustment TO rc_worker, rc_reporting;

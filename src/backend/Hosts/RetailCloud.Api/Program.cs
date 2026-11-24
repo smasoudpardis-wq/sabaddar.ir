@@ -35,6 +35,7 @@ builder.Services.AddSingleton<IDiscounts, PostgresDiscounts>();
 builder.Services.AddSingleton<IStockLedger, RetailCloud.Inventory.Infrastructure.PostgresStockLedger>();
 builder.Services.AddSingleton<IStockAdjustments, RetailCloud.Inventory.Infrastructure.PostgresStockAdjustments>();
 builder.Services.AddSingleton<IProcurement, RetailCloud.Inventory.Infrastructure.PostgresProcurement>();
+builder.Services.AddSingleton<IStockTransfers, RetailCloud.Inventory.Infrastructure.PostgresStockTransfers>();
 builder.Services.AddSingleton<ISales, PostgresSales>();
 builder.Services.AddSingleton<RetailCloud.Payments.Application.IPayments, RetailCloud.Payments.Infrastructure.PostgresPayments>();
 builder.Services.AddSingleton<IShifts, PostgresShifts>();
@@ -2277,6 +2278,106 @@ v1.MapIdempotentPost<TenderVoidInput>("/pos/sales/{saleId:guid}/tenders/{seq:int
     })
     .RequirePermission(Permissions.PosSaleCancel);
 
+// ---------------- US-064: transfers between warehouses (INV-008, MVP single-step): TransferOut from the source at its WAC and
+// TransferIn to the destination carrying the same value, in one transaction; both warehouses need inventory.transfer.
+object TransferJson(TransferRecord t, IEnumerable<PostedMovement>? issued = null) => new
+{
+    t.Id, t.FromWarehouseId, t.ToWarehouseId, t.Status, t.LineCount, value = Rial(t.Value), t.Note, t.CreatedBy, t.PostedAt,
+    lines = issued?.Select(m => new { m.Line, m.VariantId, qty = Qty(-m.QtyBase), unitCost = Rial(m.UnitCost), value = Rial(-m.TotalCost) }),
+};
+
+v1.MapIdempotentPost<TransferInput>("/inventory/transfers", "inventory.post-transfer", async (body, scope, http, ct) =>
+    {
+        RequestContext ctx = http.RequestServices.GetRequiredService<RequestContext>();
+        var errors = new Dictionary<string, string[]>();
+        if (body.FromWarehouseId is null) errors["fromWarehouseId"] = ["required"];
+        if (body.ToWarehouseId is null) errors["toWarehouseId"] = ["required"];
+        else if (body.ToWarehouseId == body.FromWarehouseId) errors["toWarehouseId"] = ["another warehouse than the source"];
+        string? note = string.IsNullOrWhiteSpace(body.Note) ? null : body.Note.Trim();
+        if (note is { Length: > 500 }) errors["note"] = ["up to 500 characters"];
+        var lines = new List<(Guid Variant, decimal Qty)>();
+        if (body.Lines is not { Length: >= 1 and <= TransferRules.MaxLines }) errors["lines"] = [$"1-{TransferRules.MaxLines} lines"];
+        for (int i = 0; i < (body.Lines?.Length ?? 0) && body.Lines!.Length <= TransferRules.MaxLines; i++)
+        {
+            TransferLineInput? l = body.Lines[i];
+            if (l?.VariantId is null) errors[$"lines[{i}].variantId"] = ["required"];
+            if (l?.Qty is null || !ProductRules.TryFactor(l.Qty, out decimal qty)) errors[$"lines[{i}].qty"] = ["positive decimal in the base unit, up to 6 places"];
+            else if (l.VariantId is { } v) lines.Add((v, qty));
+        }
+
+        if (lines.Select(l => l.Variant).Distinct().Count() != lines.Count) errors["lines"] = ["one line per variant"];
+        if (errors.Count > 0) return CommandResult.Fail(Problems.Validation(http, errors));
+
+        var lookups = http.RequestServices.GetServices<IScopeLookup>();
+        ScopeRef? from = await ResolveScope(scope, lookups, ScopeType.Warehouse, body.FromWarehouseId, ct);
+        ScopeRef? to = await ResolveScope(scope, lookups, ScopeType.Warehouse, body.ToWarehouseId, ct);
+        if (from is null || to is null)
+        {
+            return CommandResult.Fail(Problems.Validation(http, new Dictionary<string, string[]>
+            {
+                [from is null ? "fromWarehouseId" : "toWarehouseId"] = ["not a warehouse of this store"],
+            }));
+        }
+
+        // stock leaves one place and arrives at another: the person moves it in both
+        if (!AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.InventoryTransfer, from)
+            || !AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.InventoryTransfer, to))
+        {
+            return CommandResult.Fail(Forbidden(http));
+        }
+
+        IReadOnlySet<Guid> known = await http.RequestServices.GetRequiredService<IProductCatalog>().ExistingVariantsAsync(scope, [.. lines.Select(l => l.Variant)], ct);
+        if (lines.FindIndex(l => !known.Contains(l.Variant)) is var unknown and >= 0)
+        {
+            return CommandResult.Fail(Problems.Validation(http, new Dictionary<string, string[]> { [$"lines[{unknown}].variantId"] = ["not a variant of this store"] }));
+        }
+
+        Guid id = Guid.CreateVersion7();
+        DateTimeOffset now = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
+        IStockLedger ledger = http.RequestServices.GetRequiredService<IStockLedger>();
+        List<StockLine> outbound = [.. lines.Select((l, i) => new StockLine(i + 1, body.FromWarehouseId!.Value, l.Variant, MovementType.TransferOut, -l.Qty))];
+        StockResult issued = await ledger.PostAsync(scope, new StockDocument("Transfer", id, now, outbound, "out"), ct);
+        if (issued.Outcome == StockOutcome.InsufficientStock)
+        {
+            return CommandResult.Fail(Problems.WithContext(http, StatusCodes.Status409Conflict, "insufficient-stock", "Not enough stock", new
+            {
+                shortages = issued.Shortages.Select(x => new { x.WarehouseId, x.VariantId, available = Qty(x.Available), requested = Qty(x.Requested) }),
+            }));
+        }
+
+        if (issued.Outcome != StockOutcome.Done) throw new InvalidOperationException($"transfer {id} out: {issued.Outcome}");
+        StockResult received = await ledger.PostAsync(scope, new StockDocument("Transfer", id, now,
+            TransferRules.Inbound(body.ToWarehouseId!.Value, outbound, issued.Movements), "in"), ct);
+        if (received.Outcome != StockOutcome.Done) throw new InvalidOperationException($"transfer {id} in: {received.Outcome}");
+
+        TransferRecord record = await http.RequestServices.GetRequiredService<IStockTransfers>().RecordAsync(scope, new TransferRecord(id, body.FromWarehouseId!.Value,
+            body.ToWarehouseId.Value, "Completed", lines.Count, -issued.Movements.Sum(m => m.TotalCost), note, ctx.User!.Value.Value, now), ct);
+        await Audit(http, scope, ActorOf(ctx, http), new AuditEntry("inventory.transfer.posted", "StockTransfer", id.ToString(), note, new
+        {
+            from = record.FromWarehouseId, to = record.ToWarehouseId, value = record.Value, lines = lines.Take(50).Select(l => new { variantId = l.Variant, qty = Qty(l.Qty) }),
+        }), ct);
+        return CommandResult.Created(TransferJson(record, issued.Movements));
+    })
+    .RequirePermission(Permissions.InventoryTransfer);
+
+v1.MapGet("/inventory/transfers", async (RequestContext ctx, IUnitOfWork uow, IStockTransfers transfers, HttpContext http, CancellationToken ct) =>
+    {
+        var lookups = http.RequestServices.GetServices<IScopeLookup>();
+        return Results.Ok(await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            var rows = await transfers.ListAsync(s, c);
+            var canSee = new Dictionary<Guid, bool>();
+            foreach (Guid w in rows.SelectMany(t => new[] { t.FromWarehouseId, t.ToWarehouseId }).Distinct())
+            {
+                canSee[w] = await ResolveScope(s, lookups, ScopeType.Warehouse, w, c) is { } scope
+                            && AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.ReportsView, scope);
+            }
+
+            return new { items = rows.Where(t => canSee[t.FromWarehouseId] || canSee[t.ToWarehouseId]).Select(t => TransferJson(t)) };
+        }, ct));
+    })
+    .RequirePermission(Permissions.ReportsView);
+
 // ---------------- US-053: automatic discount rules (CAT-010, D-18) and manual discount caps (BR-021)
 object RuleJson(DiscountRuleView r) => new
 {
@@ -3091,6 +3192,8 @@ internal sealed record DiscountCapsInput(Dictionary<string, int>? Caps);
 internal sealed record NegativeStockPolicyInput(string? ScopeType, Guid? ScopeId, string? Policy);
 internal sealed record AdjustmentLineInput(Guid? VariantId, string? QtyDelta);
 internal sealed record AdjustmentInput(Guid? WarehouseId, string? Reason, AdjustmentLineInput?[]? Lines, string? Note);
+internal sealed record TransferLineInput(Guid? VariantId, string? Qty);
+internal sealed record TransferInput(Guid? FromWarehouseId, Guid? ToWarehouseId, TransferLineInput?[]? Lines, string? Note);
 internal sealed record TenderVoidInput(int? ExpectedVersion, string? Reason);
 internal sealed record FinalizeInput(int? ExpectedVersion, string? ExpectedTotal);
 internal sealed record TenderInput(string? Method, string? Amount, string? Tendered, string? ReferenceNo, string? TerminalNo, string? CardLast4,

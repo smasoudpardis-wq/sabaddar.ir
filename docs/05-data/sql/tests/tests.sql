@@ -244,6 +244,12 @@ INSERT INTO inv.goods_receipt_line (tenant_id, receipt_id, line_no, variant_id, 
   VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000097', 1, 'a0000000-0000-0000-0000-000000000011', 2.5, 'EA', 1, 1001, 3, 2500);
 SELECT t.expect_error('T201 a posted receipt is never changed by the app', '42501',
   $$UPDATE inv.goods_receipt_line SET unit_cost = 0 WHERE receipt_id = 'a0000000-0000-0000-0000-000000000097'$$);
+-- US-064 transfers (INV-008)
+SELECT t.expect_error('T219 a transfer goes from one warehouse to another', '23514',
+  $$INSERT INTO inv.stock_transfer (tenant_id, id, from_warehouse_id, to_warehouse_id, line_count, value, created_by)
+    VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000003', 'a0000000-0000-0000-0000-000000000003', 1, 0, gen_random_uuid())$$);
+SELECT t.expect_error('T220 a transfer is never changed by the app', '42501',
+  $$UPDATE inv.stock_transfer SET value = 0$$);
 SELECT t.expect_error('T14 stock movement is append-only for the app role', '42501',
   $$UPDATE inv.stock_movement SET qty_base = -2$$);
 SELECT t.expect_error('T15 movement for another tenant via parent rejected', '42501',

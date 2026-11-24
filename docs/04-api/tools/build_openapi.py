@@ -269,8 +269,11 @@ schema("Adjustment", id="uuid", warehouseId="uuid", reason="str", note="str?", l
        value=("desc", "money", "Σ |Δqty| × WAC of the moment (BR-033) = shrinkage + overage"), shrinkage="money", overage="money",
        journalEntryId=("desc", "uuid?", "Null only when the adjustment moved no value (WAC 0)"), approvalId="uuid?", createdBy="uuid",
        postedAt="dt", warnings=["str"])
-schema("TransferCreate", fromWarehouseId="uuid", toWarehouseId="uuid", lines=[{"variantId": "uuid", "qty": "qty"}])
-schema("Transfer", id="uuid", status=("enum", ["Completed"]), postedAt="dt")
+schema("TransferCreate", fromWarehouseId="uuid", toWarehouseId="uuid", lines=[{"variantId": "uuid", "qty": ("desc", "qty", "In the base unit")}],
+       **{"note?": "str"})
+schema("Transfer", id="uuid", fromWarehouseId="uuid", toWarehouseId="uuid", status=("enum", ["Completed", "InTransit"]), lineCount="int",
+       value=("desc", "money", "Σ qty × the source's WAC, carried to the destination (INV-008)"), note="str?", createdBy="uuid", postedAt="dt",
+       lines=("desc", [{"line": "int", "variantId": "uuid", "qty": "qty", "unitCost": "money", "value": "money"}], "Only in postTransfer's response"))
 schema("CountCreate", warehouseId="uuid", scope=("enum", ["All", "Categories"]), **{"categoryIds?": ["uuid"]},
        blind="bool")
 schema("Count", id="uuid", warehouseId="uuid", status=("enum", ["Open", "Closed", "Confirmed"]), snapshotAt="dt")
@@ -921,6 +924,7 @@ op("post", "/inventory/adjustments", "postAdjustment", "Inventory", "تعدیل 
    params=[{"name": "X-Approval-Id", "in": "header", "required": False, "schema": {"type": "string", "format": "uuid"}}])
 op("get", "/inventory/receipts", "listGoodsReceipts", "Inventory", "رسیدهای خرید اخیر", perm="reports.view", resp="GoodsReceipt",
    list_of=True, reqs=["PRC-002"])
+op("get", "/inventory/transfers", "listTransfers", "Inventory", "انتقال‌های اخیر", perm="reports.view", resp="Transfer", list_of=True, reqs=["INV-008"])
 op("get", "/inventory/adjustments", "listAdjustments", "Inventory", "تعدیل‌ها و ارزش آن‌ها (کشف AB-05)", perm="reports.view",
    resp="Adjustment", list_of=True, reqs=["INV-002", "BR-033", "AB-05"])
 op("post", "/inventory/transfers", "postTransfer", "Inventory", "انتقال بین انبارها (تک‌مرحله‌ای MVP)", perm="inventory.transfer",

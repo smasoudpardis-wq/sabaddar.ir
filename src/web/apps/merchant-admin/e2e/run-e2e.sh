@@ -58,6 +58,7 @@ DELETE FROM acc.account_role WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM acc.account WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM acc.fiscal_period WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM inv.stock_adjustment WHERE tenant_id IN ('$T1','$T2','$TF');
+DELETE FROM inv.stock_transfer WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM inv.stock_movement WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM inv.posted_source WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM inv.stock_balance WHERE tenant_id IN ('$T1','$T2','$TF');
@@ -81,6 +82,7 @@ UPDATE platform.tenant SET status = 'Suspended' WHERE id = '$T2';   -- US-015: s
 INSERT INTO platform.branch (tenant_id, id, code, name) VALUES ('$T1', gen_random_uuid(), 'B1', 'مرکزی');
 INSERT INTO inv.warehouse (tenant_id, id, branch_id, code) SELECT '$T1', gen_random_uuid(), id, 'B1-MAIN' FROM platform.branch WHERE tenant_id = '$T1';
 INSERT INTO platform.register (tenant_id, id, branch_id, code) SELECT '$T1', gen_random_uuid(), id, 'R1' FROM platform.branch WHERE tenant_id = '$T1';
+INSERT INTO inv.warehouse (tenant_id, id, branch_id, code, kind) SELECT '$T1', gen_random_uuid(), id, 'B1-RET', 'ReturnsDamaged' FROM platform.branch WHERE tenant_id = '$T1';
 INSERT INTO iam.approval_request (tenant_id, id, action, resource_type, resource_id, scope_type, condition, value, limit_value, reason, binding_hash, requested_by, expires_at)
   VALUES ('$T1', '$APPROVAL', 'pos.discount.apply', 'SaleLine', 'sale-e2e/1', 'Tenant', 'amount-limit', '20', '0', 'مشتری ثابت', sha256('e2e'), gen_random_uuid(), now() + interval '30 minutes');
 INSERT INTO iam.support_access_request (tenant_id, id, requested_by, reason, duration_minutes)

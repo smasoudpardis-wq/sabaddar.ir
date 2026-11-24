@@ -806,6 +806,17 @@
   "idempotent": false
  },
  {
+  "operationId": "listTransfers",
+  "method": "GET",
+  "path": "/inventory/transfers",
+  "permission": "reports.view",
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
+ },
+ {
   "operationId": "postTransfer",
   "method": "POST",
   "path": "/inventory/transfers",
@@ -816,6 +827,7 @@
   "bodyProps": [
    "fromWarehouseId",
    "lines",
+   "note",
    "toWarehouseId"
   ],
   "idempotent": true
