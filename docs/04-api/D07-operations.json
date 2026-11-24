@@ -849,6 +849,45 @@
   "idempotent": true
  },
  {
+  "operationId": "listCounts",
+  "method": "GET",
+  "path": "/inventory/counts",
+  "permission": "inventory.count",
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
+ },
+ {
+  "operationId": "getCount",
+  "method": "GET",
+  "path": "/inventory/counts/{countId}",
+  "permission": "inventory.count",
+  "allowedWhenReadOnly": false,
+  "scope": "Warehouse",
+  "pathParams": [
+   "countId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
+ },
+ {
+  "operationId": "closeCount",
+  "method": "POST",
+  "path": "/inventory/counts/{countId}/close",
+  "permission": "inventory.count",
+  "allowedWhenReadOnly": false,
+  "scope": "Warehouse",
+  "pathParams": [
+   "countId"
+  ],
+  "bodyProps": [
+   "expectedVersion"
+  ],
+  "idempotent": false
+ },
+ {
   "operationId": "addCountEntries",
   "method": "POST",
   "path": "/inventory/counts/{countId}/entries",

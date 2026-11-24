@@ -274,6 +274,97 @@ BEGIN
 END $$;
 CREATE TRIGGER tr_reservation_guard BEFORE UPDATE OR DELETE ON inv.stock_reservation FOR EACH ROW EXECUTE FUNCTION inv.reservation_guard();
 
+-- INV-009 / UC-09 (US-065): a stock count. At its start every balance of the warehouse is photographed (count_line); people
+-- count at the same time (count_entry, summed; a batch synced twice from an offline device counts once); at close the
+-- movement window ends; the difference = counted − (snapshot + movements in the window), so sales made while counting are
+-- compensated (AT-280). Confirmation posts a CountAdjustment (inv.stock_adjustment) with its entry.
+CREATE TABLE inv.inventory_count (
+  tenant_id     uuid NOT NULL,
+  id            uuid NOT NULL,
+  warehouse_id  uuid NOT NULL,
+  scope         text NOT NULL DEFAULT 'All' CHECK (scope IN ('All','Categories')),
+  blind         boolean NOT NULL DEFAULT true,                   -- counters do not see the system quantity
+  status        text NOT NULL DEFAULT 'Open' CHECK (status IN ('Open','Closed','Confirmed')),
+  snapshot_at   timestamptz NOT NULL,
+  closed_at     timestamptz,
+  closed_by     uuid,
+  confirmed_at  timestamptz,
+  confirmed_by  uuid,
+  adjustment_id uuid,                                            -- inv.stock_adjustment, when anything differed
+  created_by    uuid NOT NULL,
+  version       int NOT NULL DEFAULT 1,
+  PRIMARY KEY (tenant_id, id),
+  FOREIGN KEY (tenant_id, warehouse_id) REFERENCES inv.warehouse (tenant_id, id),
+  CHECK ((status = 'Open') = (closed_at IS NULL) AND (closed_at IS NULL) = (closed_by IS NULL)),
+  CHECK ((status = 'Confirmed') = (confirmed_at IS NOT NULL) AND (confirmed_at IS NULL) = (confirmed_by IS NULL)),
+  CHECK (adjustment_id IS NULL OR status = 'Confirmed')
+);
+-- one count at a time per warehouse: two open windows over the same stock would double its corrections
+CREATE UNIQUE INDEX ux_count_open ON inv.inventory_count (tenant_id, warehouse_id) WHERE status <> 'Confirmed';
+CALL core.enable_tenant_rls('inv.inventory_count');
+
+CREATE TABLE inv.count_line (
+  tenant_id          uuid NOT NULL,
+  count_id           uuid NOT NULL,
+  variant_id         uuid NOT NULL,
+  system_at_snapshot numeric(18,6) NOT NULL,                     -- 0 for an item that had no stock yet
+  system_at_close    numeric(18,6),                              -- read under the balances' locks when the count closes
+  PRIMARY KEY (tenant_id, count_id, variant_id),
+  FOREIGN KEY (tenant_id, count_id) REFERENCES inv.inventory_count (tenant_id, id)
+);
+CALL core.enable_tenant_rls('inv.count_line');
+
+CREATE TABLE inv.count_entry (
+  tenant_id       uuid NOT NULL,
+  count_id        uuid NOT NULL,
+  client_batch_id text NOT NULL CHECK (client_batch_id ~ '^[A-Za-z0-9_-]{8,64}$'),
+  variant_id      uuid NOT NULL,
+  qty             numeric(18,6) NOT NULL CHECK (qty <> 0),       -- base unit; a negative entry corrects a wrong scan
+  counted_by      uuid NOT NULL,
+  entered_at      timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, count_id, client_batch_id, variant_id),
+  FOREIGN KEY (tenant_id, count_id) REFERENCES inv.inventory_count (tenant_id, id)
+);
+CALL core.enable_tenant_rls('inv.count_entry');
+
+-- the count's facts: a status only moves forward (Open → Closed → Confirmed); the snapshot and entries are written while
+-- Open and never changed after (RC032, global)
+CREATE OR REPLACE FUNCTION inv.count_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE v_status text;
+BEGIN
+  IF TG_TABLE_NAME = 'inventory_count' THEN
+    IF TG_OP = 'DELETE'
+       OR NOT ((OLD.status, NEW.status) IN (('Open','Open'), ('Open','Closed'), ('Closed','Confirmed')))
+       OR (NEW.warehouse_id, NEW.snapshot_at, NEW.created_by, NEW.scope, NEW.blind) IS DISTINCT FROM (OLD.warehouse_id, OLD.snapshot_at, OLD.created_by, OLD.scope, OLD.blind) THEN
+      RAISE EXCEPTION 'a count moves Open → Closed → Confirmed and keeps its snapshot' USING ERRCODE = 'RC032';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'a count''s snapshot and entries are never removed' USING ERRCODE = 'RC032';
+  END IF;
+  IF TG_OP = 'UPDATE' THEN
+    IF TG_TABLE_NAME <> 'count_line' OR to_jsonb(OLD) ->> 'system_at_close' IS NOT NULL
+       OR (to_jsonb(NEW) - 'system_at_close') IS DISTINCT FROM (to_jsonb(OLD) - 'system_at_close') THEN
+      RAISE EXCEPTION 'a count''s snapshot and entries are never changed (only the quantity at close is set, once)' USING ERRCODE = 'RC032';
+    END IF;
+  END IF;
+  SELECT status INTO v_status FROM inv.inventory_count WHERE tenant_id = NEW.tenant_id AND id = NEW.count_id;
+  IF TG_OP = 'UPDATE' THEN
+    IF v_status <> 'Open' THEN
+      RAISE EXCEPTION 'the quantity at close is set while closing' USING ERRCODE = 'RC032';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF v_status <> 'Open' THEN
+    RAISE EXCEPTION 'the count is % : nothing more is counted', v_status USING ERRCODE = 'RC032';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tr_count_guard BEFORE UPDATE OR DELETE ON inv.inventory_count FOR EACH ROW EXECUTE FUNCTION inv.count_guard();
+CREATE TRIGGER tr_count_line_guard BEFORE INSERT OR UPDATE OR DELETE ON inv.count_line FOR EACH ROW EXECUTE FUNCTION inv.count_guard();
+CREATE TRIGGER tr_count_entry_guard BEFORE INSERT OR UPDATE OR DELETE ON inv.count_entry FOR EACH ROW EXECUTE FUNCTION inv.count_guard();
+
 CREATE TRIGGER tr_movement_append_only BEFORE UPDATE OR DELETE ON inv.stock_movement
   FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
 
@@ -285,6 +376,10 @@ GRANT SELECT ON inv.negative_stock_policy TO rc_worker, rc_reporting;
 GRANT SELECT, INSERT ON inv.stock_adjustment, inv.stock_transfer TO rc_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON inv.reorder_point TO rc_app;
 GRANT SELECT, INSERT ON inv.stock_reservation TO rc_app;
+GRANT SELECT, INSERT, UPDATE ON inv.inventory_count TO rc_app;
+GRANT SELECT, INSERT ON inv.count_line, inv.count_entry TO rc_app;
+GRANT UPDATE (system_at_close) ON inv.count_line TO rc_app;
+GRANT SELECT ON inv.inventory_count, inv.count_line, inv.count_entry TO rc_worker, rc_reporting;
 GRANT UPDATE (status, closed_at) ON inv.stock_reservation TO rc_app, rc_worker;
 GRANT SELECT ON inv.stock_reservation TO rc_worker, rc_reporting;
 GRANT SELECT ON inv.reorder_point TO rc_worker, rc_reporting;

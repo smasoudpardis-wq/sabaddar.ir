@@ -36,6 +36,7 @@ builder.Services.AddSingleton<IStockLedger, RetailCloud.Inventory.Infrastructure
 builder.Services.AddSingleton<IStockAdjustments, RetailCloud.Inventory.Infrastructure.PostgresStockAdjustments>();
 builder.Services.AddSingleton<IProcurement, RetailCloud.Inventory.Infrastructure.PostgresProcurement>();
 builder.Services.AddSingleton<IStockTransfers, RetailCloud.Inventory.Infrastructure.PostgresStockTransfers>();
+builder.Services.AddSingleton<ICounts, RetailCloud.Inventory.Infrastructure.PostgresCounts>();
 builder.Services.AddSingleton<ISales, PostgresSales>();
 builder.Services.AddSingleton<RetailCloud.Payments.Application.IPayments, RetailCloud.Payments.Infrastructure.PostgresPayments>();
 builder.Services.AddSingleton<IShifts, PostgresShifts>();
@@ -1394,6 +1395,69 @@ object AdjustmentJson(AdjustmentRecord a, IReadOnlyList<string>? warnings = null
     a.JournalEntryId, a.ApprovalId, a.CreatedBy, a.PostedAt, warnings = warnings ?? [],
 };
 
+// INV-002 / BR-033 / D02 §5.8.1 (US-063, US-065): one adjustment in the caller's transaction: the movements first (valued at the
+// WAC of the moment under the balances' locks, INV-004/006), then an approval when <needsApproval> says so for that value (D-61:
+// bound to this exact adjustment and value; a refusal rolls the movements back), then the entry and the audited header.
+async Task<(CommandResult? Failed, AdjustmentRecord? Record, IReadOnlyList<string> Warnings)> PostAdjustment(HttpContext http, IUnitOfWorkScope scope,
+    RequestContext ctx, Guid id, Guid warehouseId, ScopeRef warehouse, string reason, string? note, IReadOnlyList<AdjustmentLine> lines, MovementType? type,
+    Func<long, (string Condition, string? Limit, string Binding)?> needsApproval, CancellationToken ct)
+{
+    DateTimeOffset now = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
+    StockResult posted = await http.RequestServices.GetRequiredService<IStockLedger>().PostAsync(scope, new StockDocument("StockAdjustment", id, now,
+        [.. lines.Select((l, i) => new StockLine(i + 1, warehouseId, l.VariantId, type ?? AdjustmentRules.TypeOf(l.QtyDelta), l.QtyDelta))]), ct);
+    if (posted.Outcome == StockOutcome.InsufficientStock)
+    {
+        return (CommandResult.Fail(Problems.WithContext(http, StatusCodes.Status409Conflict, "insufficient-stock", "Not enough stock", new
+        {
+            shortages = posted.Shortages.Select(s => new { s.WarehouseId, s.VariantId, available = Qty(s.Available), requested = Qty(s.Requested) }),
+        })), null, []);
+    }
+
+    if (posted.Outcome != StockOutcome.Done) throw new InvalidOperationException($"adjustment {id}: {posted.Outcome}");
+    (long value, long shrinkage, long overage) = AdjustmentRules.ValueOf(posted.Movements);
+
+    Guid? approvalId = null;
+    if (needsApproval(value) is { } need)
+    {
+        var ask = new ApprovalAsk(Permissions.InventoryAdjust, "StockAdjustment", need.Binding, warehouse, need.Condition, Rial(value), need.Limit,
+            $"{ReasonFa(reason)}{(note is null ? "" : ": " + note)}");
+        IApprovals approvals = http.RequestServices.GetRequiredService<IApprovals>();
+        bool approved = Guid.TryParse(http.Request.Headers["X-Approval-Id"], out Guid given)
+            && await approvals.ConsumeAsync(scope, given, ask, ctx.User!.Value, ct);
+        if (!approved)
+        {
+            if (given != Guid.Empty && await approvals.GetAsync(scope, given, ct) is { Status: "Pending" } open
+                && open.RequestedBy == ctx.User!.Value.Value && open.ResourceId == ask.ResourceId && open.Value == ask.Value)
+            {
+                return (CommandResult.Fail(Problems.ApprovalRequired(http, given, ask.Condition, ask.Value, ask.Limit)), null, []);
+            }
+
+            Guid requested = await http.RequestServices.GetRequiredService<IUnitOfWork>()
+                .ExecuteAsync(ctx, (s, c) => approvals.RequestAsync(s, ask, ctx.User!.Value, c), ct);
+            return (CommandResult.Fail(Problems.ApprovalRequired(http, requested, ask.Condition, ask.Value, ask.Limit)), null, []);
+        }
+
+        approvalId = given;
+    }
+
+    Guid? journalId = null;
+    if (InventoryAdjustmentRule.For(id, shrinkage, overage, now, ReasonFa(reason)) is { } draft)
+    {
+        AccountingResult<JournalView> entry = await http.RequestServices.GetRequiredService<IJournals>().PostAutomaticAsync(scope, draft, ct);
+        if (entry.Outcome != AccountingOutcome.Done) return (CommandResult.Fail(AutomaticEntryProblem(http, entry)), null, []);
+        journalId = entry.Value!.Id;
+    }
+
+    AdjustmentRecord record = await http.RequestServices.GetRequiredService<IStockAdjustments>().RecordAsync(scope, new AdjustmentRecord(id, warehouseId,
+        reason, note, lines.Count, value, shrinkage, overage, journalId, approvalId, ctx.User!.Value.Value, now), ct);
+    await Audit(http, scope, ActorOf(ctx, http), new AuditEntry("inventory.adjustment.posted", "StockAdjustment", id.ToString(), note, new
+    {
+        warehouseId, reason, value, shrinkage, overage, journalId, approvalId, type = type?.ToString(),
+        lines = lines.Take(50).Select(l => new { l.VariantId, qtyDelta = Qty(l.QtyDelta) }),
+    }), ct);
+    return (null, record, posted.Warnings);
+}
+
 v1.MapIdempotentPost<AdjustmentInput>("/inventory/adjustments", "inventory.post-adjustment", async (body, scope, http, ct) =>
     {
         RequestContext ctx = http.RequestServices.GetRequiredService<RequestContext>();
@@ -1429,63 +1493,12 @@ v1.MapIdempotentPost<AdjustmentInput>("/inventory/adjustments", "inventory.post-
             return CommandResult.Fail(Problems.Validation(http, new Dictionary<string, string[]> { [$"lines[{unknown}].variantId"] = ["not a variant of this store"] }));
         }
 
-        // the movements are posted first: their value is the WAC of this moment, under the balances' locks (INV-004, INV-006)
-        Guid id = Guid.CreateVersion7();
-        DateTimeOffset now = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
-        StockResult posted = await http.RequestServices.GetRequiredService<IStockLedger>().PostAsync(scope, new StockDocument("StockAdjustment", id, now,
-            [.. lines.Select((l, i) => new StockLine(i + 1, warehouseId, l.VariantId, AdjustmentRules.TypeOf(l.QtyDelta), l.QtyDelta))]), ct);
-        if (posted.Outcome == StockOutcome.InsufficientStock)
-        {
-            return CommandResult.Fail(Problems.WithContext(http, StatusCodes.Status409Conflict, "insufficient-stock", "Not enough stock", new
-            {
-                shortages = posted.Shortages.Select(s => new { s.WarehouseId, s.VariantId, available = Qty(s.Available), requested = Qty(s.Requested) }),
-            }));
-        }
-
-        if (posted.Outcome != StockOutcome.Done) throw new InvalidOperationException($"adjustment {id}: {posted.Outcome}");
-        (long value, long shrinkage, long overage) = AdjustmentRules.ValueOf(posted.Movements);
-
-        Guid? approvalId = null;
-        if (AdjustmentRules.NeedsApproval(value, adjustmentThreshold))
-        {
-            // D-61: bound to this exact adjustment and its value; failing here rolls the movements back
-            var ask = new ApprovalAsk(Permissions.InventoryAdjust, "StockAdjustment", AdjustmentRules.Binding(warehouseId, body.Reason!, lines), warehouse,
-                "value-threshold", Rial(value), Rial(adjustmentThreshold), $"{ReasonFa(body.Reason!)}{(note is null ? "" : ": " + note)}");
-            IApprovals approvals = http.RequestServices.GetRequiredService<IApprovals>();
-            bool approved = Guid.TryParse(http.Request.Headers["X-Approval-Id"], out Guid given)
-                && await approvals.ConsumeAsync(scope, given, ask, ctx.User!.Value, ct);
-            if (!approved)
-            {
-                if (given != Guid.Empty && await approvals.GetAsync(scope, given, ct) is { Status: "Pending" } open
-                    && open.RequestedBy == ctx.User!.Value.Value && open.ResourceId == ask.ResourceId && open.Value == ask.Value)
-                {
-                    return CommandResult.Fail(Problems.ApprovalRequired(http, given, ask.Condition, ask.Value, ask.Limit));
-                }
-
-                Guid requested = await http.RequestServices.GetRequiredService<IUnitOfWork>()
-                    .ExecuteAsync(ctx, (s, c) => approvals.RequestAsync(s, ask, ctx.User!.Value, c), ct);
-                return CommandResult.Fail(Problems.ApprovalRequired(http, requested, ask.Condition, ask.Value, ask.Limit));
-            }
-
-            approvalId = given;
-        }
-
-        Guid? journalId = null;
-        if (InventoryAdjustmentRule.For(id, shrinkage, overage, now, ReasonFa(body.Reason!)) is { } draft)
-        {
-            AccountingResult<JournalView> entry = await http.RequestServices.GetRequiredService<IJournals>().PostAutomaticAsync(scope, draft, ct);
-            if (entry.Outcome != AccountingOutcome.Done) return CommandResult.Fail(AutomaticEntryProblem(http, entry));
-            journalId = entry.Value!.Id;
-        }
-
-        AdjustmentRecord record = await http.RequestServices.GetRequiredService<IStockAdjustments>().RecordAsync(scope, new AdjustmentRecord(id, warehouseId,
-            body.Reason!, note, lines.Count, value, shrinkage, overage, journalId, approvalId, ctx.User!.Value.Value, now), ct);
-        await Audit(http, scope, ActorOf(ctx, http), new AuditEntry("inventory.adjustment.posted", "StockAdjustment", id.ToString(), note, new
-        {
-            warehouseId, reason = body.Reason, value, shrinkage, overage, journalId, approvalId,
-            lines = lines.Take(50).Select(l => new { l.VariantId, qtyDelta = Qty(l.QtyDelta) }),
-        }), ct);
-        return CommandResult.Created(AdjustmentJson(record, posted.Warnings));
+        string reason = body.Reason!;
+        var (failed, record, warnings) = await PostAdjustment(http, scope, ctx, Guid.CreateVersion7(), warehouseId, warehouse, reason, note, lines, null,
+            v => AdjustmentRules.NeedsApproval(v, adjustmentThreshold)
+                ? ("value-threshold", Rial(adjustmentThreshold), AdjustmentRules.Binding(warehouseId, reason, lines))
+                : null, ct);
+        return failed ?? CommandResult.Created(AdjustmentJson(record!, warnings));
     })
     .RequirePermission(Permissions.InventoryAdjust);
 
@@ -2547,6 +2560,210 @@ v1.MapPost("/pos/sales/{saleId:guid}/cancel", async (Guid saleId, CancelInput bo
     })
     .RequirePermission(Permissions.PosSaleCancel);
 
+// ---------------- US-065: stock counts (INV-009, UC-09, AT-280). Counting needs inventory.count in the warehouse; confirming
+// (which corrects the stock) needs inventory.adjust, and an approval when the confirmer counted too (SoD-03) or the
+// correction is worth more than the threshold (BR-033).
+object CountJson(CountView c) => new
+{
+    c.Id, c.WarehouseId, c.Scope, c.Blind, c.Status, c.SnapshotAt, c.ClosedAt, c.ConfirmedAt, c.AdjustmentId, c.CreatedBy, c.Version, counters = c.Counters.Count,
+};
+
+IResult CountProblem(HttpContext http, CountOutcome outcome) => outcome switch
+{
+    CountOutcome.NotFound => Problems.NotFound(http),
+    CountOutcome.AlreadyOpen => Problems.Create(http, StatusCodes.Status409Conflict, "count-open", "This warehouse already has a count in progress"),
+    CountOutcome.NotOpen => Problems.Create(http, StatusCodes.Status409Conflict, "count-not-open", "The count is closed: nothing more is counted"),
+    CountOutcome.NotClosed => Problems.Create(http, StatusCodes.Status409Conflict, "count-not-closed", "Close the count before confirming it"),
+    _ => Problems.Create(http, StatusCodes.Status409Conflict, "version-conflict", "The count changed; reload and retry"),
+};
+
+// the count's warehouse, if the caller holds <permission> there; otherwise not found / forbidden
+async Task<(ScopeRef? Warehouse, IResult? Problem)> CountScope(HttpContext http, RequestContext ctx, IUnitOfWorkScope s, CountView? count, string permission,
+    CancellationToken ct)
+{
+    if (count is null || await ResolveScope(s, http.RequestServices.GetServices<IScopeLookup>(), ScopeType.Warehouse, count.WarehouseId, ct) is not { } warehouse)
+    {
+        return (null, Problems.NotFound(http));
+    }
+
+    if (!AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.InventoryCount, warehouse)) return (null, Problems.NotFound(http));
+    return AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, permission, warehouse) ? (warehouse, null) : (null, Forbidden(http));
+}
+
+v1.MapIdempotentPost<CountCreateInput>("/inventory/counts", "inventory.create-count", async (body, scope, http, ct) =>
+    {
+        RequestContext ctx = http.RequestServices.GetRequiredService<RequestContext>();
+        var errors = new Dictionary<string, string[]>();
+        if (body.WarehouseId is null) errors["warehouseId"] = ["required"];
+        if (body.Scope is not (null or "All")) errors["scope"] = [body.Scope == "Categories" ? "not-yet-supported" : "All|Categories"];   // categories: with the category tree
+        if (errors.Count > 0) return CommandResult.Fail(Problems.Validation(http, errors));
+        if (await ResolveScope(scope, http.RequestServices.GetServices<IScopeLookup>(), ScopeType.Warehouse, body.WarehouseId, ct) is not { } warehouse)
+        {
+            return CommandResult.Fail(Problems.Validation(http, new Dictionary<string, string[]> { ["warehouseId"] = ["not a warehouse of this store"] }));
+        }
+
+        if (!AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.InventoryCount, warehouse)) return CommandResult.Fail(Forbidden(http));
+        CountResult created = await http.RequestServices.GetRequiredService<ICounts>().CreateAsync(scope, body.WarehouseId!.Value, body.Blind ?? true,
+            ctx.User!.Value.Value, ct);
+        if (created.Outcome != CountOutcome.Done) return CommandResult.Fail(CountProblem(http, created.Outcome));
+        await Audit(http, scope, ActorOf(ctx, http), new AuditEntry("inventory.count.opened", "InventoryCount", created.Count!.Id.ToString(),
+            Details: new { body.WarehouseId, created.Count.Blind }), ct);
+        return CommandResult.Created(CountJson(created.Count));
+    })
+    .RequirePermission(Permissions.InventoryCount);
+
+v1.MapGet("/inventory/counts", async (RequestContext ctx, IUnitOfWork uow, ICounts counts, HttpContext http, Guid? warehouseId, CancellationToken ct) =>
+    {
+        var lookups = http.RequestServices.GetServices<IScopeLookup>();
+        return Results.Ok(await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            var visible = new List<object>();
+            foreach (CountView count in await counts.ListAsync(s, warehouseId, c))
+            {
+                if (await ResolveScope(s, lookups, ScopeType.Warehouse, count.WarehouseId, c) is { } w
+                    && AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.InventoryCount, w))
+                {
+                    visible.Add(CountJson(count));
+                }
+            }
+
+            return new { items = visible };
+        }, ct));
+    })
+    .RequirePermission(Permissions.InventoryCount);
+
+v1.MapGet("/inventory/counts/{countId:guid}", async (Guid countId, RequestContext ctx, IUnitOfWork uow, ICounts counts, HttpContext http, CancellationToken ct) =>
+        await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            CountView? count = await counts.GetAsync(s, countId, c);
+            var (_, problem) = await CountScope(http, ctx, s, count, Permissions.InventoryCount, c);
+            return problem ?? Results.Ok(CountJson(count!));
+        }, ct))
+    .RequirePermission(Permissions.InventoryCount);
+
+// several people count at once, each batch adding up; a batch synced again (offline device) adds nothing (UC-09)
+v1.MapPost("/inventory/counts/{countId:guid}/entries", async (Guid countId, CountEntriesInput body, RequestContext ctx, IUnitOfWork uow, ICounts counts,
+        IProductCatalog catalog, HttpContext http, CancellationToken ct) =>
+    {
+        var errors = new Dictionary<string, string[]>();
+        if (body.ClientBatchId is not { Length: >= 8 and <= 64 } || !body.ClientBatchId.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_'))
+        {
+            errors["clientBatchId"] = ["8-64 of A-Z a-z 0-9 _ -"];
+        }
+
+        var entries = new List<(Guid, decimal)>();
+        if (body.Entries is not { Length: >= 1 and <= CountRules.MaxEntries }) errors["entries"] = [$"1-{CountRules.MaxEntries} entries"];
+        for (int i = 0; i < (body.Entries?.Length ?? 0) && body.Entries!.Length <= CountRules.MaxEntries; i++)
+        {
+            CountEntryInput? e = body.Entries[i];
+            if (e?.VariantId is null) errors[$"entries[{i}].variantId"] = ["required"];
+            if (!AdjustmentRules.TryDelta(e?.Qty, out decimal qty)) errors[$"entries[{i}].qty"] = ["non-zero decimal in the base unit (negative corrects a wrong scan)"];
+            else if (e?.VariantId is { } v) entries.Add((v, qty));
+        }
+
+        if (errors.Count > 0) return Problems.Validation(http, errors);
+        return await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            var (_, problem) = await CountScope(http, ctx, s, await counts.GetAsync(s, countId, c), Permissions.InventoryCount, c);
+            if (problem is not null) return problem;
+            IReadOnlySet<Guid> known = await catalog.ExistingVariantsAsync(s, [.. entries.Select(x => x.Item1)], c);
+            if (entries.FindIndex(x => !known.Contains(x.Item1)) is var unknown and >= 0)
+            {
+                return Problems.Validation(http, new Dictionary<string, string[]> { [$"entries[{unknown}].variantId"] = ["not a variant of this store"] });
+            }
+
+            CountOutcome added = await counts.AddEntriesAsync(s, countId, body.ClientBatchId!, entries, ctx.User!.Value.Value, c);
+            return added == CountOutcome.Done ? Results.NoContent() : CountProblem(http, added);
+        }, ct);
+    })
+    .RequirePermission(Permissions.InventoryCount);
+
+v1.MapPost("/inventory/counts/{countId:guid}/close", async (Guid countId, VersionInput body, RequestContext ctx, IUnitOfWork uow, ICounts counts,
+        HttpContext http, CancellationToken ct) =>
+    {
+        if (body.ExpectedVersion is null) return Problems.Validation(http, new Dictionary<string, string[]> { ["expectedVersion"] = ["required"] });
+        return await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            var (_, problem) = await CountScope(http, ctx, s, await counts.GetAsync(s, countId, c), Permissions.InventoryCount, c);
+            if (problem is not null) return problem;
+            CountResult closed = await counts.CloseAsync(s, countId, body.ExpectedVersion.Value, ctx.User!.Value.Value, c);
+            if (closed.Outcome != CountOutcome.Done) return CountProblem(http, closed.Outcome);
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry("inventory.count.closed", "InventoryCount", countId.ToString(),
+                Details: new { closed.Count!.WarehouseId, counters = closed.Count.Counters.Count }), c);
+            return Results.Ok(CountJson(closed.Count));
+        }, ct);
+    })
+    .RequirePermission(Permissions.InventoryCount);
+
+// AT-280: difference = counted − (snapshot + movements since); valued at the WAC of now. A blind count shows the system
+// quantities, while it is open, only to who may correct the stock.
+v1.MapGet("/inventory/counts/{countId:guid}/result", async (Guid countId, RequestContext ctx, IUnitOfWork uow, ICounts counts, IStockLedger ledger,
+        HttpContext http, CancellationToken ct) =>
+        await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            CountView? count = await counts.GetAsync(s, countId, c);
+            var (warehouse, problem) = await CountScope(http, ctx, s, count, Permissions.InventoryCount, c);
+            if (problem is not null) return problem;
+            bool mayAdjust = AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.InventoryAdjust, warehouse!);
+            if (count!.Blind && count.Status == "Open" && !mayAdjust)
+            {
+                return Problems.Create(http, StatusCodes.Status403Forbidden, "count-blind", "A blind count shows the system quantities to who confirms it, once closed");
+            }
+            var wac = (await ledger.BalancesAsync(s, count.WarehouseId, null, c)).ToDictionary(b => b.VariantId, b => b.Wac);
+            var lines = (await counts.LinesAsync(s, countId, c)).Select(l => new
+            {
+                l, value = SaleMath.Round(l.Difference * wac.GetValueOrDefault(l.VariantId)),
+            }).ToList();
+            long total = lines.Sum(x => x.value);
+            long magnitude = lines.Sum(x => Math.Abs(x.value));
+            return Results.Ok(new
+            {
+                lines = lines.Select(x => new
+                {
+                    x.l.VariantId, systemAtSnapshot = Qty(x.l.SystemAtSnapshot), movementsSince = Qty(x.l.MovementsSince), counted = Qty(x.l.Counted),
+                    wasCounted = x.l.WasCounted, difference = Qty(x.l.Difference), value = Rial(x.value),
+                }),
+                totalValueDifference = Rial(total),
+                approvalRequired = CountRules.IsCounter(count, ctx.User!.Value.Value) || AdjustmentRules.NeedsApproval(magnitude, adjustmentThreshold),
+            });
+        }, ct))
+    .RequirePermission(Permissions.InventoryCount);
+
+v1.MapIdempotentPost<VersionInput>("/inventory/counts/{countId:guid}/confirm", "inventory.confirm-count", async (body, scope, http, ct) =>
+    {
+        RequestContext ctx = http.RequestServices.GetRequiredService<RequestContext>();
+        Guid countId = Guid.Parse((string)http.GetRouteValue("countId")!, System.Globalization.CultureInfo.InvariantCulture);
+        if (body.ExpectedVersion is null) return CommandResult.Fail(Problems.Validation(http, new Dictionary<string, string[]> { ["expectedVersion"] = ["required"] }));
+        ICounts counts = http.RequestServices.GetRequiredService<ICounts>();
+        var (warehouse, problem) = await CountScope(http, ctx, scope, await counts.GetAsync(scope, countId, ct), Permissions.InventoryAdjust, ct);
+        if (problem is not null) return CommandResult.Fail(problem);
+        CountResult locked = await counts.LockClosedAsync(scope, countId, body.ExpectedVersion.Value, ct);
+        if (locked.Outcome != CountOutcome.Done) return CommandResult.Fail(CountProblem(http, locked.Outcome));
+        CountView count = locked.Count!;
+
+        // the corrections: every line whose count differs from the system at close
+        List<AdjustmentLine> corrections = [.. (await counts.LinesAsync(scope, countId, ct)).Where(l => l.Difference != 0)
+            .Select(l => new AdjustmentLine(l.VariantId, l.Difference))];
+        Guid? adjustmentId = null;
+        if (corrections.Count > 0)
+        {
+            bool counted = CountRules.IsCounter(count, ctx.User!.Value.Value);
+            string binding = CountRules.Binding(countId, corrections);
+            var (failed, record, _) = await PostAdjustment(http, scope, ctx, Guid.CreateVersion7(), count.WarehouseId, warehouse!, "CountError",
+                $"انبارگردانی {count.SnapshotAt:yyyy-MM-dd}", corrections, MovementType.CountAdjustment,
+                v => counted ? ("sod-03", null, binding)
+                    : AdjustmentRules.NeedsApproval(v, adjustmentThreshold) ? ("value-threshold", Rial(adjustmentThreshold), binding) : null, ct);
+            if (failed is not null) return failed;
+            adjustmentId = record!.Id;
+        }
+
+        CountView confirmed = await counts.ConfirmAsync(scope, countId, adjustmentId, ctx.User!.Value.Value, ct);
+        await Audit(http, scope, ActorOf(ctx, http), new AuditEntry("inventory.count.confirmed", "InventoryCount", countId.ToString(),
+            Details: new { confirmed.WarehouseId, adjustmentId, corrections = corrections.Count }), ct);
+        return CommandResult.Ok(new { count = CountJson(confirmed), adjustmentId });
+    })
+    .RequirePermission(Permissions.InventoryAdjust);
+
 // ---------------- US-053: automatic discount rules (CAT-010, D-18) and manual discount caps (BR-021)
 object RuleJson(DiscountRuleView r) => new
 {
@@ -3364,6 +3581,10 @@ internal sealed record AdjustmentInput(Guid? WarehouseId, string? Reason, Adjust
 internal sealed record ReorderPointInput(Guid? WarehouseId, Guid? VariantId, string? ReorderPoint);
 internal sealed record TransferLineInput(Guid? VariantId, string? Qty);
 internal sealed record TransferInput(Guid? FromWarehouseId, Guid? ToWarehouseId, TransferLineInput?[]? Lines, string? Note);
+internal sealed record CountCreateInput(Guid? WarehouseId, string? Scope, Guid[]? CategoryIds, bool? Blind);
+internal sealed record CountEntryInput(Guid? VariantId, string? Qty);
+internal sealed record CountEntriesInput(CountEntryInput?[]? Entries, string? ClientBatchId);
+internal sealed record VersionInput(int? ExpectedVersion);
 internal sealed record HoldInput(int? ExpectedVersion, string? Note);
 internal sealed record ResumeInput(int? ExpectedVersion, Guid? RegisterId);
 internal sealed record CancelInput(int? ExpectedVersion, string? Reason);

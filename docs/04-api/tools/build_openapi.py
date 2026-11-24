@@ -276,10 +276,14 @@ schema("Transfer", id="uuid", fromWarehouseId="uuid", toWarehouseId="uuid", stat
        lines=("desc", [{"line": "int", "variantId": "uuid", "qty": "qty", "unitCost": "money", "value": "money"}], "Only in postTransfer's response"))
 schema("CountCreate", warehouseId="uuid", scope=("enum", ["All", "Categories"]), **{"categoryIds?": ["uuid"]},
        blind="bool")
-schema("Count", id="uuid", warehouseId="uuid", status=("enum", ["Open", "Closed", "Confirmed"]), snapshotAt="dt")
-schema("CountEntryInput", entries=[{"variantId": "uuid", "qty": "qty"}], clientBatchId="str")
+schema("Count", id="uuid", warehouseId="uuid", scope=("enum", ["All", "Categories"]), blind="bool", status=("enum", ["Open", "Closed", "Confirmed"]),
+       snapshotAt="dt", closedAt="dt?", confirmedAt="dt?", adjustmentId="uuid?", createdBy="uuid", version="int",
+       counters=("desc", "int", "How many people counted (SoD-03)"))
+schema("CountConfirmation", count="#Count", adjustmentId=("desc", "uuid?", "The CountAdjustment posted; null when nothing differed"))
+schema("CountEntryInput", entries=[{"variantId": "uuid", "qty": ("desc", "str", "Signed base-unit quantity; negative corrects a wrong scan")}],
+       clientBatchId=("desc", "str", "8-64 of A-Z a-z 0-9 _ -: the same batch again (an offline device syncing twice) adds nothing"))
 schema("CountResult", lines=[{"variantId": "uuid", "systemAtSnapshot": "qty", "movementsSince": ("desc", "str", "signed decimal"),
-                             "counted": "qty", "difference": ("desc", "str", "signed decimal"), "value": "money"}],
+                             "counted": "qty", "wasCounted": "bool", "difference": ("desc", "str", "signed decimal"), "value": "money"}],
        totalValueDifference="money", approvalRequired="bool")
 schema("StockBalance", warehouseId="uuid", variantId="uuid", onHand="qty", reserved="qty", available="qty",
        **{"wac?": "money", "value?": "money"}, reorderPoint=("desc", "qty?", "INV-010: the point at or below which the item is low; null if none"),
@@ -559,6 +563,10 @@ ERROR_CATALOG = {
     "payment-incomplete": (409, "Confirmed payments do not cover the bill; context.remaining (SAL-006)"),
     "sale-empty": (409, "A sale without items is not finalized or held"),
     "sale-not-held": (409, "Only a held cart is resumed (SAL-011)"),
+    "count-open": (409, "The warehouse already has a count in progress (INV-009)"),
+    "count-not-open": (409, "The count is closed: nothing more is counted"),
+    "count-not-closed": (409, "A count is closed before it is confirmed"),
+    "count-blind": (403, "While a blind count is open its system quantities are shown only to who may confirm it (UC-09)"),
     "no-sellable-warehouse": (422, "The branch has no sellable warehouse to issue the stock from (INV-001)"),
     "amount-exceeds-remaining": (409, "A payment larger than what is left on the bill; context.remaining (SAL-006)"),
     "sale-has-payments": (409, "Payments were taken; the bill's lines no longer change (RC026)"),
@@ -938,12 +946,17 @@ op("post", "/inventory/transfers", "postTransfer", "Inventory", "انتقال ب
    scope="Warehouse", idem=True, body="TransferCreate", resp="Transfer", resp_code="201", reqs=["INV-008"], audited=True)
 op("post", "/inventory/counts", "createCount", "Inventory", "شروع انبارگردانی (Snapshot)", perm="inventory.count",
    scope="Warehouse", idem=True, body="CountCreate", resp="Count", resp_code="201", reqs=["INV-009", "UC-09"], audited=True)
+op("get", "/inventory/counts", "listCounts", "Inventory", "انبارگردانی‌ها", perm="inventory.count", resp="Count", list_of=True, reqs=["INV-009"],
+   params=[{"name": "warehouseId", "in": "query", "required": False, "schema": {"type": "string", "format": "uuid"}}])
+op("get", "/inventory/counts/{countId}", "getCount", "Inventory", "یک انبارگردانی", perm="inventory.count", scope="Warehouse", resp="Count", reqs=["INV-009"])
+op("post", "/inventory/counts/{countId}/close", "closeCount", "Inventory", "پایان شمارش (موجودی سیستمی زیر قفل خوانده می‌شود)",
+   perm="inventory.count", scope="Warehouse", body="VersionOnly", resp="Count", reqs=["INV-009", "UC-09"], audited=True, conflict=True)
 op("post", "/inventory/counts/{countId}/entries", "addCountEntries", "Inventory", "ثبت شمارش (چند شمارنده هم‌زمان)",
    perm="inventory.count", scope="Warehouse", body="CountEntryInput", no_content=True, reqs=["INV-009"], conflict=True)
 op("get", "/inventory/counts/{countId}/result", "getCountResult", "Inventory", "اختلاف شمارش با جبران فروش حین شمارش",
    perm="inventory.count", scope="Warehouse", resp="CountResult", reqs=["INV-009", "AT-280"])
 op("post", "/inventory/counts/{countId}/confirm", "confirmCount", "Inventory", "تأیید و ثبت تعدیل انبارگردانی",
-   perm="inventory.adjust", scope="Warehouse", idem=True, body="VersionOnly", resp="Adjustment",
+   perm="inventory.adjust", scope="Warehouse", idem=True, body="VersionOnly", resp="CountConfirmation",
    reqs=["INV-009", "SoD-03", "BR-033"], audited=True, approval="value > threshold or counter == confirmer (SoD-03)")
 op("get", "/inventory/balances", "listStockBalances", "Inventory", "موجودی (ارزش فقط با مجوز گزارش)",
    params=[{"name": "warehouseId", "in": "query", "required": False, "schema": {"type": "string", "format": "uuid"}},

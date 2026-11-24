@@ -2852,6 +2852,151 @@ paths:
       - INV-009
       - UC-09
       x-audited: true
+    get:
+      operationId: listCounts
+      tags:
+      - Inventory
+      summary: انبارگردانی‌ها
+      security: *id001
+      parameters:
+      - name: warehouseId
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - items
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Count'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: inventory.count
+      x-idempotent: false
+      x-requirements:
+      - INV-009
+  /inventory/counts/{countId}:
+    get:
+      operationId: getCount
+      tags:
+      - Inventory
+      summary: یک انبارگردانی
+      security: *id001
+      parameters:
+      - name: countId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Count'
+          headers:
+            ETag:
+              schema:
+                type: string
+              description: Weak ETag of version
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: inventory.count
+      x-scope: Warehouse
+      x-idempotent: false
+      x-requirements:
+      - INV-009
+  /inventory/counts/{countId}/close:
+    post:
+      operationId: closeCount
+      tags:
+      - Inventory
+      summary: پایان شمارش (موجودی سیستمی زیر قفل خوانده می‌شود)
+      security: *id001
+      parameters:
+      - name: countId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VersionOnly'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Count'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: inventory.count
+      x-scope: Warehouse
+      x-idempotent: false
+      x-requirements:
+      - INV-009
+      - UC-09
+      x-audited: true
   /inventory/counts/{countId}/entries:
     post:
       operationId: addCountEntries
@@ -2973,7 +3118,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Adjustment'
+                $ref: '#/components/schemas/CountConfirmation'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -9568,6 +9713,13 @@ components:
         warehouseId:
           type: string
           format: uuid
+        scope:
+          type: string
+          enum:
+          - All
+          - Categories
+        blind:
+          type: boolean
         status:
           type: string
           enum:
@@ -9577,11 +9729,59 @@ components:
         snapshotAt:
           type: string
           format: date-time
+        closedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        confirmedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        adjustmentId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        createdBy:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          format: int32
+        counters:
+          type: integer
+          format: int32
+          description: How many people counted (SoD-03)
       required:
       - id
       - warehouseId
+      - scope
+      - blind
       - status
       - snapshotAt
+      - closedAt
+      - confirmedAt
+      - adjustmentId
+      - createdBy
+      - version
+      - counters
+    CountConfirmation:
+      type: object
+      additionalProperties: false
+      properties:
+        count:
+          $ref: '#/components/schemas/Count'
+        adjustmentId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: The CountAdjustment posted; null when nothing differed
+      required:
+      - count
+      - adjustmentId
     CountCreate:
       type: object
       additionalProperties: false
@@ -9619,12 +9819,14 @@ components:
                 type: string
                 format: uuid
               qty:
-                $ref: '#/components/schemas/Quantity'
+                type: string
+                description: Signed base-unit quantity; negative corrects a wrong scan
             required:
             - variantId
             - qty
         clientBatchId:
           type: string
+          description: '8-64 of A-Z a-z 0-9 _ -: the same batch again (an offline device syncing twice) adds nothing'
       required:
       - entries
       - clientBatchId
@@ -9648,6 +9850,8 @@ components:
                 description: signed decimal
               counted:
                 $ref: '#/components/schemas/Quantity'
+              wasCounted:
+                type: boolean
               difference:
                 type: string
                 description: signed decimal
@@ -9658,6 +9862,7 @@ components:
             - systemAtSnapshot
             - movementsSince
             - counted
+            - wasCounted
             - difference
             - value
         totalValueDifference:
@@ -14129,6 +14334,18 @@ x-error-catalog:
   sale-not-held:
     status: 409
     meaning: Only a held cart is resumed (SAL-011)
+  count-open:
+    status: 409
+    meaning: The warehouse already has a count in progress (INV-009)
+  count-not-open:
+    status: 409
+    meaning: 'The count is closed: nothing more is counted'
+  count-not-closed:
+    status: 409
+    meaning: A count is closed before it is confirmed
+  count-blind:
+    status: 403
+    meaning: While a blind count is open its system quantities are shown only to who may confirm it (UC-09)
   no-sellable-warehouse:
     status: 422
     meaning: The branch has no sellable warehouse to issue the stock from (INV-001)

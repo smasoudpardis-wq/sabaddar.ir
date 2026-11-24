@@ -511,6 +511,25 @@ try {
   await page.getByTestId('reorder-saved').waitFor();
   await page.locator('[data-testid="low-list"] [data-sku="E2E-COLA"]').waitFor();
   check('H01', 'an item at or below its reorder point is listed as low stock (INV-010, AT-048)', true);
+  // O01 US-065: the owner counts the returns warehouse (one more than the system holds), closes, and as a counter may not
+  // confirm the correction alone (SoD-03)
+  await page.goto(`${BFF}/counts`);
+  await page.locator('[data-testid="count-warehouse"] option', { hasText: 'B1-RET' }).waitFor({ state: 'attached' });
+  await page.getByTestId('count-warehouse').selectOption({ label: 'B1-RET' });
+  await page.getByTestId('count-start').click();
+  await page.locator('[data-testid="count-list"] [data-warehouse="B1-RET"][data-status="Open"]').waitFor();
+  await page.getByTestId('count-sku').fill('E2E-COLA');
+  await page.getByTestId('count-qty').fill('۲');
+  await page.getByTestId('count-add').click();
+  await page.locator('[data-testid="count-list"] [data-warehouse="B1-RET"]', { hasText: '۱ شمارنده' }).waitFor();
+  await page.getByTestId('count-close').click();
+  await page.getByTestId('count-result').waitFor();
+  const overage = Number(await page.getByTestId('count-result').getAttribute('data-total'));
+  await page.getByTestId('count-confirm').click();
+  await page.getByTestId('count-error').waitFor();
+  const sod = (await page.getByTestId('count-error').textContent()) ?? '';
+  check('O01', 'a count finds one more than the system holds; the counter needs another manager to confirm the correction (INV-009, SoD-03)',
+    overage > 0 && sod.includes('مدیر دیگری'), `${overage} ${sod}`);
   await page.goto(`${BFF}/terminals`);
   await page.getByTestId('revoke-صندوق-فروش').click();
   await page.getByTestId('this-device').filter({ hasText: 'نیست' }).waitFor();

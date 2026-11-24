@@ -270,6 +270,22 @@ SELECT t.expect_error('T224 a reservation''s quantity never changes (RC029)', 'R
 UPDATE inv.stock_reservation SET status = 'Released', closed_at = now() WHERE id = 'a0000000-0000-0000-0000-000000000098';
 SELECT t.expect_error('T225 a closed reservation stays closed (RC029)', 'RC029',
   $$UPDATE inv.stock_reservation SET status = 'Consumed' WHERE id = 'a0000000-0000-0000-0000-000000000098'$$);
+-- US-065 stock counts (INV-009)
+INSERT INTO inv.inventory_count (tenant_id, id, warehouse_id, snapshot_at, created_by)
+  VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000060', 'a0000000-0000-0000-0000-000000000003', now(), gen_random_uuid());
+INSERT INTO inv.count_entry (tenant_id, count_id, client_batch_id, variant_id, qty, counted_by)
+  VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000060', 'batch-0001', 'a0000000-0000-0000-0000-000000000011', 3, gen_random_uuid());
+SELECT t.expect_error('T229 one count at a time per warehouse', '23505',
+  $$INSERT INTO inv.inventory_count (tenant_id, id, warehouse_id, snapshot_at, created_by)
+    VALUES (core.current_tenant(), gen_random_uuid(), 'a0000000-0000-0000-0000-000000000003', now(), gen_random_uuid())$$);
+SELECT t.expect_error('T230 a counted batch is not changed (no grant; the trigger refuses it too)', '42501',
+  $$UPDATE inv.count_entry SET qty = 30 WHERE count_id = 'a0000000-0000-0000-0000-000000000060'$$);
+UPDATE inv.inventory_count SET status = 'Closed', closed_at = now(), closed_by = gen_random_uuid() WHERE id = 'a0000000-0000-0000-0000-000000000060';
+SELECT t.expect_error('T231 nothing more is counted once the count is closed (RC032)', 'RC032',
+  $$INSERT INTO inv.count_entry (tenant_id, count_id, client_batch_id, variant_id, qty, counted_by)
+    VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-000000000060', 'batch-0002', 'a0000000-0000-0000-0000-000000000011', 1, gen_random_uuid())$$);
+SELECT t.expect_error('T232 a closed count is not reopened (RC032)', 'RC032',
+  $$UPDATE inv.inventory_count SET status = 'Open', closed_at = NULL, closed_by = NULL WHERE id = 'a0000000-0000-0000-0000-000000000060'$$);
 SELECT t.expect_error('T14 stock movement is append-only for the app role', '42501',
   $$UPDATE inv.stock_movement SET qty_base = -2$$);
 SELECT t.expect_error('T15 movement for another tenant via parent rejected', '42501',
