@@ -32,10 +32,10 @@ public sealed class PostgresProductCatalog(IOutbox outbox) : IProductCatalog
         }
 
         Guid id = Guid.CreateVersion7();
-        await Exec(s, "INSERT INTO merch.tenant_product (tenant_id, id, name, brand, base_unit_code, tax_code, tax_rate_bp, axes) " +
-                      "VALUES (core.current_tenant(), $1, $2, $3, $4, $5, $6, $7)", cancellationToken,
+        await Exec(s, "INSERT INTO merch.tenant_product (tenant_id, id, name, brand, base_unit_code, tax_code, tax_rate_bp, axes, catalog_product_id) " +
+                      "VALUES (core.current_tenant(), $1, $2, $3, $4, $5, $6, $7, $8)", cancellationToken,
             id, spec.Name.Trim(), (object?)spec.Brand?.Trim() ?? DBNull.Value, spec.BaseUnit, (object?)spec.TaxCode ?? DBNull.Value, spec.TaxRate,
-            (spec.Axes ?? []).ToArray());
+            (spec.Axes ?? []).ToArray(), (object?)spec.CatalogProductId ?? DBNull.Value);
         foreach (VariantSpec v in spec.Variants)
         {
             await InsertVariantAsync(s, id, v, cancellationToken);

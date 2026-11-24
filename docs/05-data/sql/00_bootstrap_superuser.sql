@@ -28,7 +28,7 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;     -- product name search (CAT-011, D05
 DO $$
 DECLARE s text;
 BEGIN
-  FOREACH s IN ARRAY ARRAY['core','platform','iam','merch','inv','sales','pay','acc','ar','cid','tax','notif','audit'] LOOP
+  FOREACH s IN ARRAY ARRAY['core','platform','iam','merch','catalog','inv','sales','pay','acc','ar','cid','tax','notif','audit'] LOOP
     EXECUTE format('CREATE SCHEMA IF NOT EXISTS %I AUTHORIZATION rc_migrator', s);
     EXECUTE format('REVOKE ALL ON SCHEMA %I FROM PUBLIC', s);
   END LOOP;

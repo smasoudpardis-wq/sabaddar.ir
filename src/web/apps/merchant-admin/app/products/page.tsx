@@ -3,6 +3,10 @@ import { useEffect, useState } from 'react';
 import { codeOf, csrf, MESSAGES } from '@/lib/client';
 
 type Barcode = { id: string; code: string; codeNormalized: string; packagingUnit: string; unitFactor: string; active: boolean };
+type Candidate = { source: string; confidence: string; license: string | null; attribution: string | null; catalogProductId: string | null;
+  fields: { name: string | null; brand: string | null; category: string | null; netContent: string | null; imageUrl: string | null };
+  conflictsWith: number[]; preselect: boolean };
+const SOURCES: Record<string, string> = { global: 'کاتالوگ عمومی (بررسی‌شده)', open_food_facts: 'Open Food Facts' };
 type Product = { id: string; name: string; brand: string | null; baseUnit: string; taxRate: number; status: string; version: number;
   axes: string[];
   variants: { id: string; sku: string; barcodes: Barcode[]; unitPrice: string | null; status: string; axisValues: Record<string, string> }[] };
@@ -131,6 +135,11 @@ export default function ProductsPage() {
   const [items, setItems] = useState<Product[]>([]);
   const [form, setForm] = useState({ name: '', brand: '', sku: '', barcode: '', packagingUnit: 'EA', unitFactor: '1', taxRate: '10' });
   const [internal, setInternal] = useState(false);   // the store's own code, e.g. a scale item code (CAT-003, CAT-007)
+  // US-043 / CAT-004: suggestions for an unknown public barcode; using one fills the form, saving it is the confirmation
+  const [candidates, setCandidates] = useState<Candidate[] | null>(null);
+  const [degraded, setDegraded] = useState(false);
+  const [picked, setPicked] = useState<{ index: number; catalogProductId: string | null } | null>(null);
+  const [checked, setChecked] = useState(false);
   const [key, setKey] = useState(() => crypto.randomUUID());
   const [error, setError] = useState('');
   const [created, setCreated] = useState('');
@@ -161,6 +170,33 @@ export default function ProductsPage() {
     void find(search);
   }
 
+  async function suggest() {
+    setError('');
+    setCandidates(null);
+    setPicked(null);
+    // the resolve is asked in a branch the user may define products in (CAT-003): the first one they see
+    const b = await fetch('/bff/branches', { cache: 'no-store' });
+    const branchId: string | undefined = b.ok ? ((await b.json()) as { id: string }[])[0]?.id : undefined;
+    if (!branchId) return setError('forbidden');
+    const r = await fetch('/bff/barcodes/resolve', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf() },
+      body: JSON.stringify({ barcode: form.barcode.trim(), branchId }),
+    });
+    if (!r.ok) return setError(await codeOf(r));
+    const p = await r.json();
+    if (p.kind === 'known') return setError('barcode-already-assigned');
+    setDegraded(p.degraded);
+    setCandidates(p.candidates);
+    const pre = (p.candidates as Candidate[]).findIndex((c) => c.preselect);
+    if (pre >= 0) use(p.candidates[pre], pre);
+  }
+
+  function use(c: Candidate, index: number) {
+    setPicked({ index, catalogProductId: c.catalogProductId });
+    setChecked(false);
+    setForm((f) => ({ ...f, name: c.fields.name ?? f.name, brand: c.fields.brand ?? f.brand }));
+  }
+
   async function create(e: React.FormEvent) {
     e.preventDefault();
     setError('');
@@ -170,7 +206,9 @@ export default function ProductsPage() {
       headers: { 'content-type': 'application/json', 'x-csrf-token': csrf(), 'idempotency-key': key },
       body: JSON.stringify({
         name: form.name, brand: form.brand || undefined, baseUnit: 'EA', taxRate: Math.round(Number(form.taxRate) * 100),
-        confirmation: { confirmed: true },
+        // CAT-004.1: data taken from a suggestion is saved only once the user ticked that they checked it
+        confirmation: picked ? { confirmed: checked, sourceCandidate: picked.index } : { confirmed: true },
+        catalogProductId: picked?.catalogProductId ?? undefined,
         variants: [{ sku: form.sku, barcodes: form.barcode ? [{ code: form.barcode, packagingUnit: form.packagingUnit, unitFactor: form.unitFactor, isInternal: internal || undefined }] : [] }],
       }),
     });
@@ -179,6 +217,8 @@ export default function ProductsPage() {
     setCreated(p.name);
     setKey(crypto.randomUUID());   // a new product is a new attempt
     setForm({ ...form, name: '', brand: '', sku: '', barcode: '' });
+    setCandidates(null);
+    setPicked(null);
     void find(p.name);
   }
 
@@ -220,7 +260,31 @@ export default function ProductsPage() {
         <label>برند <input value={form.brand} onChange={set('brand')} /></label>{' '}
         <label>SKU <input required value={form.sku} onChange={set('sku')} dir="ltr" data-testid="product-sku" /></label>{' '}
         <label>بارکد <input value={form.barcode} onChange={set('barcode')} dir="ltr" inputMode="numeric" data-testid="product-barcode" /></label>{' '}
+        <button type="button" style={{ minHeight: 44 }} disabled={!form.barcode.trim() || internal} onClick={() => void suggest()} data-testid="product-suggest">
+          پیشنهاد مشخصات</button>{' '}
         <label><input type="checkbox" checked={internal} onChange={(e) => setInternal(e.target.checked)} data-testid="product-internal" /> کد داخلی (مثلاً کد کالا در ترازو)</label>{' '}
+        {candidates && (
+          <div data-testid="product-candidates">
+            {degraded && <p role="status">منبع بیرونی پاسخ نداد؛ فقط پیشنهادهای موجود نمایش داده می‌شوند.</p>}
+            {candidates.length === 0 && <p>پیشنهادی پیدا نشد؛ مشخصات را خودتان وارد کنید.</p>}
+            <ul>
+              {candidates.map((c, i) => (
+                <li key={i} data-source={c.source} data-confidence={c.confidence}>
+                  {c.fields.name}{c.fields.brand ? ` — ${c.fields.brand}` : ''}{c.fields.netContent ? ` (${c.fields.netContent})` : ''} ·{' '}
+                  {SOURCES[c.source] ?? c.source} · اطمینان {Math.round(Number(c.confidence) * 100).toLocaleString('fa-IR')}٪
+                  {c.attribution ? ` · ${c.attribution} (${c.license})` : ''}
+                  {c.conflictsWith.length > 0 && ' · با پیشنهاد دیگری متفاوت است'}{' '}
+                  <button type="button" style={{ minHeight: 44 }} onClick={() => use(c, i)} data-testid={`product-use-${i}`}>
+                    {picked?.index === i ? 'انتخاب‌شده' : 'استفاده'}</button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {picked && (
+          <label><input type="checkbox" checked={checked} onChange={(e) => setChecked(e.target.checked)} data-testid="product-confirm-suggestion" />{' '}
+            مشخصات پیشنهادی را بررسی کردم و درست است</label>
+        )}{' '}
         <label>بسته‌بندی <select value={form.packagingUnit} onChange={set('packagingUnit')}>{UNITS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>{' '}
         <label>تعداد در بسته <input value={form.unitFactor} onChange={set('unitFactor')} dir="ltr" size={4} /></label>{' '}
         <label>نرخ مالیات ٪ <input value={form.taxRate} onChange={set('taxRate')} dir="ltr" size={4} /></label>{' '}
@@ -229,7 +293,8 @@ export default function ProductsPage() {
       <h2>کالای چندحالته (رنگ × سایز)</h2>
       <MatrixForm onCreated={(name) => { setCreated(name); setSearch(name); void find(name); }} />
       {created && <p role="status" data-testid="product-created">«{created}» ثبت شد.</p>}
-      {error && <p role="alert" data-testid="product-error">{MESSAGES[error] ?? error}</p>}
+      {error && <p role="alert" data-testid="product-error">{error === 'confirmation-required'
+        ? 'مشخصات پیشنهادی را بررسی و گزینه‌ی «بررسی کردم» را علامت بزنید.' : MESSAGES[error] ?? error}</p>}
       <p><a href="/">بازگشت</a></p>
     </section>
   );

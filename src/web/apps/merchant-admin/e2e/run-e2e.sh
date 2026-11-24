@@ -90,6 +90,9 @@ DELETE FROM iam.role_assignment WHERE user_id IN (SELECT id FROM iam.merchant_us
 DELETE FROM iam.tenant_membership WHERE user_id IN (SELECT id FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$NEW_SUB');
 DELETE FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$NEW_SUB';
 SET session_replication_role = origin;
+-- US-043: one moderated global catalog product for the suggestion check (global reference data, kept between runs)
+INSERT INTO catalog.catalog_product (id, name, brand) VALUES ('0194f000-0000-7000-8000-0000000000c1', 'چای سیاه آزمایشی', 'برند آزمون') ON CONFLICT DO NOTHING;
+INSERT INTO catalog.global_barcode (gtin14, catalog_product_id) VALUES ('06260000000101', '0194f000-0000-7000-8000-0000000000c1') ON CONFLICT DO NOTHING;
 INSERT INTO platform.tenant (id, legal_name, industry_code) VALUES
   ('$T1','فروشگاه الف','supermarket'), ('$T2','فروشگاه ب','supermarket'), ('$TF','فروشگاه غریبه','supermarket');
 UPDATE platform.tenant SET status = 'Suspended' WHERE id = '$T2';   -- US-015: store B is read-only (the E2E user is only a cashier there)

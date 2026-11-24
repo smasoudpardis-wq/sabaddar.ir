@@ -663,6 +663,22 @@ try {
   await page.goto(`${BFF}/terminals`);
   await page.getByTestId('revoke-صندوق-فروش').click();
   await page.getByTestId('this-device').filter({ hasText: 'نیست' }).waitFor();
+  // CG01–CG02 US-043: an unknown public barcode gets the moderated global product as a pre-selected suggestion; saving it needs the
+  // user's explicit "checked" (CAT-004, CAT-004.1)
+  await page.goto(`${BFF}/products`);
+  await page.getByTestId('product-barcode').fill('6260000000101');
+  await page.getByTestId('product-suggest').click();
+  await page.locator('[data-testid="product-candidates"] [data-source="global"]').waitFor();
+  const suggestedName = await page.getByTestId('product-name').inputValue();
+  check('CG01', 'the moderated global product is suggested with its source and confidence and fills the form',
+    suggestedName === 'چای سیاه آزمایشی' && (await page.locator('[data-source="global"][data-confidence="0.95"]').count()) === 1, suggestedName);
+  await page.getByTestId('product-sku').fill('E2E-TEA');
+  await page.getByTestId('product-submit').click();
+  await page.getByTestId('product-error').filter({ hasText: 'بررسی کردم' }).waitFor();
+  await page.getByTestId('product-confirm-suggestion').check();
+  await page.getByTestId('product-submit').click();
+  await page.getByTestId('product-created').filter({ hasText: 'چای سیاه آزمایشی' }).waitFor();
+  check('CG02', 'a suggestion is saved only after the user ticks that they checked it (CAT-004.1)', true);
   // W01–W03 US-045: the owner sets a scale label format; a printed label then decodes to the item and its weight
   await page.goto(`${BFF}/products`);
   await page.getByTestId('product-name').fill('پنیر فله آزمایشی');

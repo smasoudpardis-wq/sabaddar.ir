@@ -199,10 +199,13 @@ schema("SupportAccessRequest", id="uuid", requestedBy="str", reason="str", durat
 schema("BarcodeResolveRequest", barcode="str", branchId="uuid",
        **{"preferredSources?": [("enum", ["tenant", "global", "licensed_providers"])]})
 schema("BarcodeCandidate", source=("enum", ["tenant", "global", "open_food_facts", "manual"]),
-       confidence=("desc", "str", "Decimal string 0..1"),
+       confidence=("desc", "str", "Decimal string 0..1; global (moderated) 0.95, a provider at most 0.7 (CAT-004.1)"),
        lastVerifiedAt="dt?", license="str?", attribution="str?",
-       fields={"name?": "str", "brand?": "str", "category?": "str", "netContent?": "str", "imageUrl?": "str"},
-       conflictsWith=["int"])
+       catalogProductId=("desc", "uuid?", "For a global candidate: send it as createProduct.catalogProductId to adopt it"),
+       fields={"name?": "str", "brand?": "str", "category?": "str", "netContent?": "str",
+               "imageUrl?": ("desc", "str", "https on the provider's image host only; shown by the browser, never fetched by the server")},
+       conflictsWith=("desc", ["int"], "Indexes of candidates with another name or brand: none is pre-selected (UC-01 6a)"),
+       preselect=("desc", "bool", "The one unopposed candidate at or above 0.8; saving still needs confirmation (D-17)"))
 schema("BarcodeResolveResponse", kind=("enum", ["known", "candidates", "not_found"]),
        normalized={"gtin14?": "str", "isInternal": "bool", "isWeighted": "bool",
                    "weighted?": {"variantId": "uuid", "value": "str", "valueType": ("enum", ["Weight", "Price"]),
@@ -876,11 +879,12 @@ op("post", "/catalog/barcodes/resolve", "resolveBarcode", "Catalog", "تشخیص
    resp_example={"candidates": ex("دو پیشنهاد متعارض", {
        "kind": "candidates", "normalized": {"gtin14": "06260000000017", "isInternal": False, "isWeighted": False},
        "candidates": [
-           {"source": "global", "confidence": "0.92", "lastVerifiedAt": "2026-10-01T08:00:00Z", "license": None,
-            "attribution": None, "fields": {"name": "شیر کم‌چرب ۱ لیتری", "brand": "نمونه"}, "conflictsWith": [1]},
-           {"source": "open_food_facts", "confidence": "0.61", "lastVerifiedAt": "2026-09-12T10:00:00Z",
-            "license": "ODbL-1.0", "attribution": "Open Food Facts contributors",
-            "fields": {"name": "Low fat milk 1L"}, "conflictsWith": [0]}],
+           {"source": "global", "confidence": "0.95", "lastVerifiedAt": "2026-10-01T08:00:00Z", "license": None,
+            "attribution": None, "catalogProductId": "c0000000-0000-0000-0000-000000000001",
+            "fields": {"name": "شیر کم‌چرب ۱ لیتری", "brand": "نمونه"}, "conflictsWith": [1], "preselect": False},
+           {"source": "open_food_facts", "confidence": "0.50", "lastVerifiedAt": "2026-09-12T10:00:00Z",
+            "license": "ODbL-1.0", "attribution": "Open Food Facts contributors", "catalogProductId": None,
+            "fields": {"name": "Low fat milk 1L"}, "conflictsWith": [0], "preselect": False}],
        "degraded": False})},
    desc="Sample barcode values are illustrative and not guaranteed real GTINs. Never returns another tenant's "
         "price/stock/ids (P0-8). Providers time out at 2s each, 4s total; degraded=true when skipped. "
@@ -888,7 +892,8 @@ op("post", "/catalog/barcodes/resolve", "resolveBarcode", "Catalog", "تشخیص
         "`normalized.weighted.value` is kilograms (3 decimals) or rials; a wrong value check digit is 422 invalid-barcode. "
         "`unitPrice` is the default list's price now; with it a weighted label also gets `quantity` and `amount` "
         "(a price label's amount is the printed price, CAT-007.1). "
-        "Implemented so far: the tenant source only (global catalog and providers: US-043).")
+        "A public code the store does not know gets candidates from the global catalog (0.95) and licensed providers (at most "
+        "0.7; Open Food Facts is off until its licence review, X-06); provider answers are cached 30 days.")
 op("get", "/products", "listProducts", "Catalog", "جستجوی کالا (بارکد، SKU، نام نرمال‌شده فارسی)",
    params=[{"name": "q", "in": "query", "required": False, "schema": {"type": "string"}},
            {"name": "barcode", "in": "query", "required": False, "schema": {"type": "string"}},

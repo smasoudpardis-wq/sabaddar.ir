@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
   if (!isIdempotencyKey(key)) return problem(400, 'idempotency-key-required', 'Idempotency-Key is required');
   const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
   if (!body) return problem(400, 'validation', 'JSON body required');
-  const { name, baseUnit, brand, taxCode, taxRate, variants, confirmation, axes } = body; // allow-list
-  return relay(await callApi(session, 'POST', '/api/v1/products', { name, baseUnit, brand, taxCode, taxRate, variants, confirmation, axes },
+  const { name, baseUnit, brand, taxCode, taxRate, variants, confirmation, axes, catalogProductId } = body; // allow-list
+  return relay(await callApi(session, 'POST', '/api/v1/products', { name, baseUnit, brand, taxCode, taxRate, variants, confirmation, axes, catalogProductId },
     { 'idempotency-key': key }));
 }

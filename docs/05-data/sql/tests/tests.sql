@@ -313,6 +313,16 @@ SELECT t.expect_error('T242 only known receipt fields can be locked', '23514',
 SELECT t.expect_error('T243 the app cannot add an industry (reference data)', '42501',
   $$INSERT INTO platform.industry_profile (code, name) VALUES ('bakery', 'نانوایی')$$);
 INSERT INTO merch.receipt_template_override (tenant_id, footer_text, updated_by) VALUES (core.current_tenant(), 'با سپاس از خرید شما', gen_random_uuid());
+-- US-043 global catalog (CAT-004/005)
+SELECT t.expect_error('T244 the app does not write the global catalog (moderation does)', '42501',
+  $$INSERT INTO catalog.catalog_product (id, name) VALUES (gen_random_uuid(), 'کالای فروشگاه')$$);
+SELECT t.expect_error('T245 a provider cache keeps only descriptive fields', '23514',
+  $$INSERT INTO catalog.catalog_source_record (source, gtin14, found, fields, confidence, license, attribution)
+    VALUES ('open_food_facts', '06260000000013', true, '{"name":"x","price":"1000"}', 0.5, 'ODbL', 'Open Food Facts')$$);
+INSERT INTO catalog.catalog_source_record (source, gtin14, found, fields, confidence, license, attribution)
+  VALUES ('open_food_facts', '06260000000013', true, '{"name":"شیر"}', 0.6, 'ODbL', 'Open Food Facts');
+SELECT t.ok('T246 every store reads the global catalog (global reference data, no RLS)',
+  (SELECT count(*) FROM catalog.catalog_source_record WHERE gtin14 = '06260000000013') = 1);
 SELECT t.expect_error('T14 stock movement is append-only for the app role', '42501',
   $$UPDATE inv.stock_movement SET qty_base = -2$$);
 SELECT t.expect_error('T15 movement for another tenant via parent rejected', '42501',

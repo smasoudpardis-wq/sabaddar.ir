@@ -32,6 +32,16 @@ builder.Services.AddSingleton<IProductCatalog, PostgresProductCatalog>();
 builder.Services.AddSingleton<IWeightedBarcodeProfiles, PostgresWeightedBarcodeProfiles>();
 builder.Services.AddSingleton<IPriceLists, PostgresPriceLists>();
 builder.Services.AddSingleton<IDiscounts, PostgresDiscounts>();
+builder.Services.AddSingleton<IGlobalCatalog, PostgresGlobalCatalog>();
+// ADR-007: licensed providers; Open Food Facts stays off until the ODbL review (X-06). No request can choose its host (SEC-T-040).
+OpenFoodFactsOptions offOptions = builder.Configuration.GetSection("Catalog:OpenFoodFacts").Get<OpenFoodFactsOptions>() ?? new OpenFoodFactsOptions();
+builder.Services.AddSingleton(offOptions);
+builder.Services.AddSingleton<ICatalogProvider>(_ =>
+{
+    var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };   // each lookup has its own deadline
+    http.DefaultRequestHeaders.UserAgent.ParseAdd("RetailCloud/1.0 (catalog lookup)");
+    return new OpenFoodFactsProvider(http, offOptions);
+});
 builder.Services.AddSingleton<IIndustryTemplates, RetailCloud.Platform.Infrastructure.PostgresIndustryTemplates>();
 builder.Services.AddSingleton<IReceiptTemplateOverrides, PostgresReceiptTemplateOverrides>();
 builder.Services.AddSingleton<IStockLedger, RetailCloud.Inventory.Infrastructure.PostgresStockLedger>();
@@ -1072,7 +1082,6 @@ v1.MapIdempotentPost<ProductCreate>("/products", "catalog.create-product", async
         if (body.TaxRate is < 0 or > 10000) errors["taxRate"] = ["0-10000 basis points"];
         if (body.TaxCode is { Length: > 32 }) errors["taxCode"] = ["up to 32 characters"];
         if (body.CategoryId is not null) errors["categoryId"] = ["not-yet-supported"];
-        if (body.CatalogProductId is not null) errors["catalogProductId"] = ["not-yet-supported"];   // global catalog (US-044)
         decimal openingQty = 0;
         long openingCost = 0;
         if (body.OpeningStock is { } os)
@@ -1101,7 +1110,7 @@ v1.MapIdempotentPost<ProductCreate>("/products", "catalog.create-product", async
                 }
             }
         }
-        if (body.Confirmation?.Confirmed != true) errors["confirmation.confirmed"] = ["required: true (CAT-004.1)"];
+        if (body.Confirmation?.Confirmed is null) errors["confirmation.confirmed"] = ["required: true (CAT-004.1)"];
         var variants = new List<VariantSpec>();
         if (body.Variants is not { Length: >= 1 and <= 100 }) errors["variants"] = ["1-100 variants"];
         for (int i = 0; i < (body.Variants?.Length ?? 0); i++)
@@ -1124,8 +1133,21 @@ v1.MapIdempotentPost<ProductCreate>("/products", "catalog.create-product", async
         }
 
         if (errors.Count > 0) return CommandResult.Fail(InputProblem(http, errors, invalidBarcode && errors.Values.All(v => v[0] != "required: true (CAT-004.1)")));
+        // CAT-004.1 / D-17 / AT-201: suggested data is saved only by the user's explicit confirmation, whatever its confidence
+        if (body.Confirmation!.Confirmed == false)
+        {
+            return CommandResult.Fail(Problems.WithContext(http, StatusCodes.Status422UnprocessableEntity, "confirmation-required",
+                "Confirm the suggested product data before saving", new { catalogProductId = body.CatalogProductId, sourceCandidate = body.Confirmation.SourceCandidate }));
+        }
+
+        if (body.CatalogProductId is { } adopted
+            && !await http.RequestServices.GetRequiredService<IGlobalCatalog>().PublishedAsync(scope, adopted, ct))
+        {
+            return CommandResult.Fail(Problems.Validation(http, new Dictionary<string, string[]> { ["catalogProductId"] = ["not a published catalog product"] }));
+        }
+
         var result = await http.RequestServices.GetRequiredService<IProductCatalog>().CreateAsync(scope,
-            new ProductSpec(body.Name!, body.Brand, body.BaseUnit!, body.TaxCode, body.TaxRate ?? 0, variants, axesWanted), ct);
+            new ProductSpec(body.Name!, body.Brand, body.BaseUnit!, body.TaxCode, body.TaxRate ?? 0, variants, axesWanted, body.CatalogProductId), ct);
         if (result.Outcome != CatalogOutcome.Done) return CommandResult.Fail(CatalogProblem(http, result.Outcome, result.ConflictProductId));
         // CAT-008/009: first prices of a new product go to the default list from now. Not a price change, so no BR-041 approval.
         PriceItem[] firstPrices = [.. body.Variants!.Where(v => v.UnitPrice is not null)
@@ -1335,8 +1357,9 @@ v1.MapPut("/weighted-barcode-profiles", async (WeightedProfilesInput body, Reque
     .RequirePermission(Permissions.TenantSettingsManage);
 
 // CAT-003/CAT-007: what a scanned code is in this store. Weighted labels are decoded first (their item code is the
-// variant's internal code); then the code is looked up as GTIN-14 or internal code. Global catalog and licensed
-// providers (CAT-004/005) are US-043: until then candidates is empty.
+// variant's internal code); then the code is looked up as GTIN-14 or internal code. CAT-004 (US-043): a public code the
+// store does not know gets candidates from the global catalog and licensed providers, each with its source, confidence
+// and licence; providers are asked outside the transaction, within a 4-second budget, and a failure answers degraded.
 v1.MapPost("/catalog/barcodes/resolve", async (BarcodeResolveInput body, RequestContext ctx, IUnitOfWork uow, IProductCatalog catalog,
         IWeightedBarcodeProfiles weighted, HttpContext http, CancellationToken ct) =>
     {
@@ -1410,12 +1433,61 @@ v1.MapPost("/catalog/barcodes/resolve", async (BarcodeResolveInput body, Request
             normalized["weighted"] = weightedJson;
         }
 
+        var candidates = new List<CatalogCandidate>();
+        bool degraded = false;
+        string[] sources = body.PreferredSources is { Length: > 0 } ? body.PreferredSources : ["tenant", "global", "licensed_providers"];
+        if (result.match is null && gs1 && !gtin.IsRestrictedCirculation && !isWeighted)
+        {
+            IGlobalCatalog global = http.RequestServices.GetRequiredService<IGlobalCatalog>();
+            List<ICatalogProvider> providers = [.. http.RequestServices.GetServices<ICatalogProvider>().Where(p => p.Enabled)];
+            bool askProviders = sources.Contains("licensed_providers") && providers.Count > 0;
+            var (fromGlobal, cached) = await uow.ExecuteAsync(ctx, async (s, c) => (
+                sources.Contains("global") ? await global.ByGtinAsync(s, gtin.Normalized14, c) : [],
+                askProviders ? await global.CachedAsync(s, gtin.Normalized14, DateTimeOffset.UtcNow.AddDays(-30), c) : []), ct);
+            candidates.AddRange(fromGlobal);
+            var records = cached.ToList();
+            List<ICatalogProvider> toAsk = askProviders ? [.. providers.Where(p => records.All(r => r.Source != p.Source))] : [];
+            if (toAsk.Count > 0)
+            {
+                using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                budget.CancelAfter(TimeSpan.FromSeconds(4));   // AT-203: the answer comes within 5 seconds whatever the providers do
+                var answers = await Task.WhenAll(toAsk.Select(async p =>
+                {
+                    try { return (Provider: p, Lookup: await p.LookupAsync(gtin.Normalized14, budget.Token)); }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return (Provider: p, Lookup: ProviderLookup.Failure); }
+                }));
+                degraded = answers.Any(a => a.Lookup.Failed);
+                List<ProviderRecord> fresh = [.. answers.Where(a => !a.Lookup.Failed).Select(a => new ProviderRecord(a.Provider.Source, gtin.Normalized14,
+                    a.Lookup.Found, a.Lookup.Fields ?? new CandidateFields(null, null, null, null, null),
+                    a.Lookup.Fields is { } f ? CandidateRules.ProviderConfidence(f) : 0m, a.Provider.License, a.Provider.Attribution, DateTimeOffset.UtcNow))];
+                if (fresh.Count > 0)
+                {
+                    await uow.ExecuteAsync(ctx, async (s, c) => { foreach (ProviderRecord r in fresh) await global.SaveAsync(s, r, c); return 0; }, ct);
+                }
+
+                records.AddRange(fresh);
+            }
+
+            candidates.AddRange(records.Where(r => r.Found && r.Fields.Name is not null)
+                .Select(r => new CatalogCandidate(r.Source, r.Confidence, r.FetchedAt, r.License, r.Attribution, r.Fields, null)));
+        }
+
+        IReadOnlyList<IReadOnlyList<int>> conflicts = CandidateRules.Conflicts(candidates);
         var response = new Dictionary<string, object?>
         {
-            ["kind"] = result.match is null ? "not_found" : "known",
+            ["kind"] = result.match is not null ? "known" : candidates.Count > 0 ? "candidates" : "not_found",
             ["normalized"] = normalized,
-            ["candidates"] = Array.Empty<object>(),
-            ["degraded"] = false,
+            // AT-202: a candidate is global reference data or a provider's: never another store's product, price or stock
+            ["candidates"] = candidates.Select((c, i) => new
+            {
+                c.Source, confidence = c.Confidence.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture), c.LastVerifiedAt, c.License,
+                c.Attribution, c.CatalogProductId,
+                fields = new { name = c.Fields.Name, brand = c.Fields.Brand, category = c.Fields.Category, netContent = c.Fields.NetContent, imageUrl = c.Fields.ImageUrl },
+                conflictsWith = conflicts[i],
+                // CAT-004.1: one unopposed candidate at or above 0.8 may be pre-selected; the save is still the user's confirmation
+                preselect = c.Confidence >= CandidateRules.Threshold && conflicts[i].Count == 0 && candidates.Count(x => x.Confidence >= CandidateRules.Threshold) == 1,
+            }),
+            ["degraded"] = degraded,
         };
         if (result.match is { } m)
         {

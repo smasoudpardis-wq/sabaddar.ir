@@ -50,7 +50,7 @@ public sealed record VariantSpec(string Sku, IReadOnlyDictionary<string, string>
 
 /// <summary><paramref name="Axes"/>: CAT-008 matrix axes; when present every variant names exactly these axes.</summary>
 public sealed record ProductSpec(string Name, string? Brand, string BaseUnit, string? TaxCode, int TaxRate, IReadOnlyList<VariantSpec> Variants,
-    IReadOnlyList<string>? Axes = null);
+    IReadOnlyList<string>? Axes = null, Guid? CatalogProductId = null);
 
 public sealed record ProductChange(int ExpectedVersion, string? Name, string? Brand, string? TaxCode, int? TaxRate, string? Status);
 

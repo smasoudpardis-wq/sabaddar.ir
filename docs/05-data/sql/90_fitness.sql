@@ -61,4 +61,11 @@ SELECT 'tenant-directory-can-create', n.nspname
 FROM pg_namespace n
 WHERE EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rc_tenant_directory')
   AND n.nspname NOT LIKE 'pg\_%' AND n.nspname <> 'information_schema'
-  AND has_schema_privilege('rc_tenant_directory', n.oid, 'CREATE');
+  AND has_schema_privilege('rc_tenant_directory', n.oid, 'CREATE')
+UNION ALL
+-- (8) CAT-005 / AT-026: the global catalog holds no store data — no tenant_id and no price, cost, supplier, stock or margin.
+SELECT 'global-catalog-private-field', c.relname || '.' || a.attname
+FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'catalog' AND c.relkind IN ('r','p') AND a.attnum > 0 AND NOT a.attisdropped
+  AND a.attname ~* '(tenant|price|cost|supplier|stock|margin|profit|wac)'
+;

@@ -7,6 +7,7 @@
     { "module": "platform", "id": "0001_baseline", "file": "10_platform.sql" },
     { "module": "iam",      "id": "0001_baseline", "file": "15_iam.sql" },
     { "module": "merch",    "id": "0001_baseline", "file": "20_merch.sql" },
+    { "module": "catalog",  "id": "0001_baseline", "file": "25_catalog.sql" },
     { "module": "inv",      "id": "0001_baseline", "file": "30_inv.sql" },
     { "module": "sales",    "id": "0001_baseline", "file": "40_sales.sql" },
     { "module": "pay",      "id": "0001_baseline", "file": "45_pay.sql" },
