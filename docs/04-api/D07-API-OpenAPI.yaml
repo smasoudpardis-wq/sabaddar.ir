@@ -12751,6 +12751,15 @@ components:
         version:
           type: integer
           format: int32
+        warnings:
+          type: array
+          items:
+            type: string
+            enum:
+            - missing-tax-code
+            - price-preview-only
+            - negative-stock-allowed
+            - offline-lines-rejected
         rejectedLines:
           type: array
           items:
@@ -12768,15 +12777,6 @@ components:
             - index
             - code
           description: 'Only in the response to createSale with offline lines: lines the store could not add (e.g. barcode-not-found)'
-        warnings:
-          type: array
-          items:
-            type: string
-            enum:
-            - missing-tax-code
-            - price-preview-only
-            - negative-stock-allowed
-            - offline-lines-rejected
       required:
       - id
       - status
@@ -12793,7 +12793,6 @@ components:
       - finalizedAt
       - receiptUrl
       - version
-      - rejectedLines
       - warnings
     SaleCreate:
       type: object

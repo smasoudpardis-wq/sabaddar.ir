@@ -355,9 +355,9 @@ schema("Sale", id="uuid", status=("enum", ["Draft", "Held", "PendingPayment", "F
        totals={"gross": "money", "discount": "money", "net": "money", "tax": "money", "total": "money",
                "paid": "money", "remaining": "money", "change": "money"},
        finalizedAt="dt?", receiptUrl="str?", version="int",
-       rejectedLines=("desc", [{"index": "int", "code": "str?"}],
-                      "Only in the response to createSale with offline lines: lines the store could not add (e.g. barcode-not-found)"),
-       warnings=[("enum", ["missing-tax-code", "price-preview-only", "negative-stock-allowed", "offline-lines-rejected"])])
+       warnings=[("enum", ["missing-tax-code", "price-preview-only", "negative-stock-allowed", "offline-lines-rejected"])],
+       **{"rejectedLines?": ("desc", [{"index": "int", "code": "str?"}],
+                             "Only in the response to createSale with offline lines: lines the store could not add (e.g. barcode-not-found)")})
 schema("SaleCustomer", tenantCustomerId="uuid", maskedName="str", hasCreditAccount="bool",
        **{"availableCredit?": ("desc", "money", "Shown only with sales.credit.sell (D-25)")})
 schema("SaleDiscountInput", expectedVersion="int", kind=("enum", ["Percent", "Amount"]), value="str",
