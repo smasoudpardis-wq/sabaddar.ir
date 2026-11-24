@@ -467,14 +467,17 @@ try {
   await dropped.getByTestId('journal-delete').click();
   await dropped.waitFor({ state: 'detached' });
   check('Z04', 'a draft that will not be posted is deleted (D02 §6.3)', true);
-  // Z05–Z06 US-113: the first month of the year has ended and is closed; the current month cannot be closed yet (ACC-009)
+  // Z05–Z06 US-113: the first month of this year has ended and is closed; the current month cannot be closed yet (ACC-009).
+  // The Workers keep next year's periods too, so a period is named by year and number.
   const current = await page.evaluate(async () => {
     const now = Date.now();
     const list = await (await fetch('/bff/accounting/periods', { cache: 'no-store' })).json();
-    return list.find((p) => Date.parse(p.start) <= now && now < Date.parse(p.end))?.periodNo;
+    const p = list.find((x) => Date.parse(x.start) <= now && now < Date.parse(x.end));
+    return p ? `${p.fiscalYear}-${p.periodNo}` : undefined;
   });
-  await page.getByTestId('period-close-1').click();
-  await page.locator('[data-testid="period-list"] [data-period="1"][data-status="Closed"]').waitFor();
+  const first = `${current?.split('-')[0]}-1`;
+  await page.getByTestId(`period-close-${first}`).click();
+  await page.locator(`[data-testid="period-list"] [data-period="${first}"][data-status="Closed"]`).waitFor();
   check('Z05', 'a month that has ended is closed and shows as closed (ACC-009)', true);
   await page.getByTestId(`period-close-${current}`).click();
   await page.getByTestId('journal-error').filter({ hasText: 'تمام نشده' }).waitFor();

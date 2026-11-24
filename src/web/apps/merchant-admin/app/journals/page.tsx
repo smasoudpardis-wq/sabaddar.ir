@@ -160,12 +160,12 @@ export default function JournalsPage() {
       <h2>دوره‌های مالی</h2>
       <ul data-testid="period-list">
         {periods.map((p) => (
-          <li key={p.id} data-period={p.periodNo} data-status={p.status}>
+          <li key={p.id} data-period={`${p.fiscalYear}-${p.periodNo}`} data-status={p.status}>
             {p.fiscalYear.toLocaleString('fa-IR', { useGrouping: false })}/{p.periodNo.toLocaleString('fa-IR')} ·{' '}
             {new Date(p.start).toLocaleDateString('fa-IR')} تا {new Date(new Date(p.end).getTime() - 1).toLocaleDateString('fa-IR')} ·{' '}
             {p.status === 'Open' ? 'باز' : `بسته${p.closedAt ? ` (${new Date(p.closedAt).toLocaleDateString('fa-IR')})` : ''}`}
             {p.status === 'Open' && (
-              <>{' '}<button type="button" style={{ minHeight: 44 }} data-testid={`period-close-${p.periodNo}`}
+              <>{' '}<button type="button" style={{ minHeight: 44 }} data-testid={`period-close-${p.fiscalYear}-${p.periodNo}`}
                 onClick={() => void call(`/bff/accounting/periods/${p.id}/close`, 'POST', { expectedVersion: p.version })}>بستن دوره</button></>
             )}
           </li>
