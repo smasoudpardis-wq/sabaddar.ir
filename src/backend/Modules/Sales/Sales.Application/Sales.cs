@@ -105,6 +105,24 @@ public interface ISales
     /// <summary>The branch's held carts, most recently active first, up to 100.</summary>
     Task<IReadOnlyList<SaleView>> HeldAsync(IUnitOfWorkScope scope, Guid branchId, CancellationToken cancellationToken);
 
+    /// <summary>BR-086 (US-092): the template version and the store's own parts in force at Finalize, written once.</summary>
+    Task SnapshotReceiptAsync(IUnitOfWorkScope scope, Guid saleId, string templateRef, string? footer, string? signature, CancellationToken cancellationToken);
+
+    /// <summary>The receipt snapshot of a sale and how many times it was printed before.</summary>
+    Task<ReceiptSnapshot?> ReceiptSnapshotAsync(IUnitOfWorkScope scope, Guid saleId, CancellationToken cancellationToken);
+
+    /// <summary>Counts one more print and returns its number (1 = the original, then copies).</summary>
+    Task<int> CountPrintAsync(IUnitOfWorkScope scope, Guid saleId, CancellationToken cancellationToken);
+
+    /// <summary>CUS-009: a new receipt link for the SHA-256 of its token (90 days).</summary>
+    Task<DateTimeOffset> CreateReceiptLinkAsync(IUnitOfWorkScope scope, Guid saleId, byte[] tokenHash, Guid createdBy, CancellationToken cancellationToken);
+
+    /// <summary>CUS-009: the store revokes every link of a sale; returns how many were in force.</summary>
+    Task<int> RevokeReceiptLinksAsync(IUnitOfWorkScope scope, Guid saleId, CancellationToken cancellationToken);
+
+    /// <summary>Without a store context: the store and sale of a link in force (sales.receipt_link_target).</summary>
+    Task<(Guid TenantId, Guid SaleId)?> ReceiptLinkTargetAsync(IUnitOfWorkScope scope, byte[] tokenHash, CancellationToken cancellationToken);
+
     /// <summary>The store's most recently active sales, newest first (IAM-008: what a support session may look at).</summary>
     Task<IReadOnlyList<SaleView>> RecentAsync(IUnitOfWorkScope scope, int limit, CancellationToken cancellationToken);
 
@@ -182,3 +200,6 @@ public static class InvoiceNumbers
     public static string Format(string branchCode, int fiscalYear, long sequence) =>
         string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{branchCode}-{fiscalYear}-{sequence:000000}");
 }
+
+/// <summary>BR-086: what a receipt prints besides the sale itself.</summary>
+public sealed record ReceiptSnapshot(string? TemplateRef, string? Footer, string? Signature, int PrintCount);

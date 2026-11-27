@@ -4900,6 +4900,104 @@ paths:
       x-idempotent: false
       x-requirements:
       - SAL-008
+  /sales/{saleId}/print:
+    post:
+      operationId: printReceipt
+      tags:
+      - Sales
+      summary: چاپ فاکتور (۸۰mm یا A4) با QR فاکتور دیجیتال
+      description: Only a Finalized sale (409 sale-not-finalized). Each call counts a print (the first is the original) and
+        issues a fresh receipt link for the QR; the template version and the store's parts are those snapshotted at Finalize.
+      security: *id001
+      parameters:
+      - name: saleId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PrintRequest'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrintedReceipt'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: pos.sell
+      x-scope: Register
+      x-idempotent: false
+      x-requirements:
+      - SAL-012
+      - BR-086
+      - CUS-009
+      x-audited: true
+  /sales/{saleId}/receipt-links:
+    delete:
+      operationId: revokeReceiptLinks
+      tags:
+      - Sales
+      summary: ابطال همه لینک‌های فاکتور
+      security: *id001
+      parameters:
+      - name: saleId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevokedCount'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: pos.sell
+      x-scope: Register
+      x-idempotent: false
+      x-requirements:
+      - CUS-009
+      x-audited: true
   /sales/{saleId}/receipt-deliveries:
     post:
       operationId: deliverReceipt
@@ -7241,6 +7339,8 @@ paths:
       tags:
       - Public
       summary: نمایش فاکتور با Receipt Link (بدون PII مشتری)
+      description: No customer data. Unknown, expired and revoked links are the same 404; each view is audited in the store;
+        30 a minute per address.
       security: *id002
       parameters:
       - name: token
@@ -11838,6 +11938,47 @@ components:
       - reason
       - createdBy
       - createdAt
+    PrintRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        format:
+          type: string
+          enum:
+          - 80mm
+          - A4
+      required:
+      - format
+    PrintedReceipt:
+      type: object
+      additionalProperties: false
+      properties:
+        receipt:
+          $ref: '#/components/schemas/ReceiptPublic'
+        format:
+          type: string
+          enum:
+          - 80mm
+          - A4
+        copy:
+          type: integer
+          format: int32
+          description: 1 for the original; every reprint is numbered and printed as a copy
+        isCopy:
+          type: boolean
+        receiptUrl:
+          type: string
+          description: 'For the QR: a new 128-bit receipt link (90 days, revocable; CUS-009), shown only now'
+        linkExpiresAt:
+          type: string
+          format: date-time
+      required:
+      - receipt
+      - format
+      - copy
+      - isCopy
+      - receiptUrl
+      - linkExpiresAt
     Problem:
       type: object
       description: RFC 9457 problem details. `code` is a stable machine-readable identifier (see x-error-catalog).
@@ -12265,9 +12406,13 @@ components:
       additionalProperties: false
       properties:
         storeName:
-          type: string
+          type:
+          - string
+          - 'null'
         branchName:
-          type: string
+          type:
+          - string
+          - 'null'
         invoiceNo:
           type: string
         finalizedAt:
@@ -12283,6 +12428,8 @@ components:
                 type: string
               qty:
                 $ref: '#/components/schemas/Quantity'
+              unit:
+                type: string
               unitPrice:
                 $ref: '#/components/schemas/Money'
               discount:
@@ -12294,6 +12441,7 @@ components:
             required:
             - name
             - qty
+            - unit
             - unitPrice
             - discount
             - tax
@@ -12302,6 +12450,10 @@ components:
           type: object
           additionalProperties: false
           properties:
+            gross:
+              $ref: '#/components/schemas/Money'
+            discount:
+              $ref: '#/components/schemas/Money'
             net:
               $ref: '#/components/schemas/Money'
             tax:
@@ -12309,6 +12461,8 @@ components:
             total:
               $ref: '#/components/schemas/Money'
           required:
+          - gross
+          - discount
           - net
           - tax
           - total
@@ -12330,9 +12484,27 @@ components:
           - $ref: '#/components/schemas/ReceiptCredit'
           - type: 'null'
         legalText:
-          type: string
+          type:
+          - string
+          - 'null'
+          description: 'The industry template version''s legal text (BR-086): never removed by the store'
+        lockedFields:
+          type: array
+          items:
+            type: string
         templateVersion:
-          type: string
+          type:
+          - string
+          - 'null'
+          description: The version in force at Finalize, e.g. supermarket@3
+        footer:
+          type:
+          - string
+          - 'null'
+        signature:
+          type:
+          - string
+          - 'null'
         taxStatus:
           type: string
           enum:
@@ -12349,7 +12521,10 @@ components:
       - tenders
       - credit
       - legalText
+      - lockedFields
       - templateVersion
+      - footer
+      - signature
     ReceiptTemplate:
       type: object
       additionalProperties: false
@@ -12614,6 +12789,15 @@ components:
       - cashierId
       - count
       - amount
+    RevokedCount:
+      type: object
+      additionalProperties: false
+      properties:
+        revoked:
+          type: integer
+          format: int32
+      required:
+      - revoked
     Role:
       type: object
       additionalProperties: false

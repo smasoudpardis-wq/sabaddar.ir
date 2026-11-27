@@ -568,6 +568,30 @@ try {
     const p = (await (await fetch('/bff/products?q=E2E-COLA', { cache: 'no-store' })).json()).items[0];
     return (await (await fetch(`/bff/inventory/balances?variantId=${p.variants[0].id}`, { cache: 'no-store' })).json()).items[0]?.onHand;
   });
+  // PR01–PR02 US-092: the invoice prints on an 80 mm roll with the industry's legal text and its receipt link; a second print says
+  // it is a copy, and the link opens the receipt for someone who is not signed in (SAL-012, BR-086, CUS-009)
+  const printHref = await page.getByTestId('pos-print-80').getAttribute('href');
+  const printer = await ctx.newPage();
+  await printer.goto(`${BFF}${printHref}`);
+  await printer.getByTestId('receipt').waitFor();
+  const legal = (await printer.getByTestId('receipt-legal').textContent()) ?? '';
+  const receiptUrl = ((await printer.getByTestId('receipt-link').textContent()) ?? '').match(/https?:\/\/\S+\/r\/[A-Za-z0-9_-]+/)?.[0] ?? '';
+  check('PR01', 'the printed invoice carries its number, the industry legal text and a receipt link',
+    (await printer.getByTestId('receipt').getAttribute('data-invoice')) === invoice && legal.includes('مالیات') && receiptUrl.includes('/r/')
+    && (await printer.getByTestId('receipt-copy').count()) === 0, `${legal} ${receiptUrl}`);
+  await printer.reload();
+  await printer.getByTestId('receipt-copy').waitFor();
+  const stranger = await browser.newContext();
+  const sp = await stranger.newPage();
+  await sp.goto(receiptUrl);
+  await sp.getByTestId('receipt').waitFor();
+  const publicInvoice = await sp.getByTestId('receipt').getAttribute('data-invoice');
+  await sp.goto(receiptUrl.slice(0, -3) + 'zzz');
+  await sp.getByTestId('public-receipt-missing').waitFor();
+  check('PR02', 'a reprint is marked as a copy and the link opens the receipt without signing in; a wrong link does not',
+    publicInvoice === invoice, publicInvoice);
+  await stranger.close();
+  await printer.close();
   await page.getByTestId('pos-next').click();
   await page.getByTestId('pos-ready').waitFor();
   // 17 received, 1 sent back (Y02), 1 sold

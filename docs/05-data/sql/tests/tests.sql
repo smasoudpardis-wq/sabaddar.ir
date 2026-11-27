@@ -323,6 +323,11 @@ INSERT INTO catalog.catalog_source_record (source, gtin14, found, fields, confid
   VALUES ('open_food_facts', '06260000000013', true, '{"name":"شیر"}', 0.6, 'ODbL', 'Open Food Facts');
 SELECT t.ok('T246 every store reads the global catalog (global reference data, no RLS)',
   (SELECT count(*) FROM catalog.catalog_source_record WHERE gtin14 = '06260000000013') = 1);
+-- US-092 receipt snapshot and links (BR-086, CUS-009)
+SELECT t.ok('T247 the app holds no way to list receipt links of other stores (RLS) and finds one only by its token hash',
+  (SELECT count(*) FROM sales.receipt_link_target(decode(repeat('ab', 32), 'hex'))) = 0);
+SELECT t.expect_error('T248 a receipt link token is a 32-byte hash', '23514',
+  $$INSERT INTO sales.receipt_link (tenant_id, token_hash, sale_id, created_by) VALUES (core.current_tenant(), '\x01', gen_random_uuid(), gen_random_uuid())$$);
 SELECT t.expect_error('T14 stock movement is append-only for the app role', '42501',
   $$UPDATE inv.stock_movement SET qty_base = -2$$);
 SELECT t.expect_error('T15 movement for another tenant via parent rejected', '42501',
@@ -369,6 +374,11 @@ SELECT t.expect_error('T22 finalized sale is immutable (DI-003)', 'RC002',
 UPDATE sales.sale SET return_status = 'Partial', version = version + 1 WHERE id = 'a0000000-0000-0000-0000-000000000040';
 SELECT t.ok('T23 return bookkeeping still allowed on finalized sale',
   (SELECT return_status FROM sales.sale WHERE id = 'a0000000-0000-0000-0000-000000000040') = 'Partial');
+UPDATE sales.sale SET receipt_template = 'general@1', receipt_footer = 'با سپاس', print_count = 1 WHERE id = 'a0000000-0000-0000-0000-000000000040';
+SELECT t.expect_error('T249 a receipt snapshot is written once (BR-086)', 'RC034',
+  $$UPDATE sales.sale SET receipt_footer = 'دیگر' WHERE id = 'a0000000-0000-0000-0000-000000000040'$$);
+SELECT t.expect_error('T250 a print count never goes down', 'RC034',
+  $$UPDATE sales.sale SET print_count = 0 WHERE id = 'a0000000-0000-0000-0000-000000000040'$$);
 SELECT t.expect_error('T24 finalized line price is immutable', 'RC002',
   $$UPDATE sales.sale_line SET unit_price = 1 WHERE sale_id = 'a0000000-0000-0000-0000-000000000040'$$);
 SELECT t.expect_error('T25 cannot add a line to a finalized sale', 'RC002',

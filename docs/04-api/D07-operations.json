@@ -1426,6 +1426,34 @@
   "idempotent": false
  },
  {
+  "operationId": "printReceipt",
+  "method": "POST",
+  "path": "/sales/{saleId}/print",
+  "permission": "pos.sell",
+  "allowedWhenReadOnly": false,
+  "scope": "Register",
+  "pathParams": [
+   "saleId"
+  ],
+  "bodyProps": [
+   "format"
+  ],
+  "idempotent": false
+ },
+ {
+  "operationId": "revokeReceiptLinks",
+  "method": "DELETE",
+  "path": "/sales/{saleId}/receipt-links",
+  "permission": "pos.sell",
+  "allowedWhenReadOnly": false,
+  "scope": "Register",
+  "pathParams": [
+   "saleId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
+ },
+ {
   "operationId": "deliverReceipt",
   "method": "POST",
   "path": "/sales/{saleId}/receipt-deliveries",

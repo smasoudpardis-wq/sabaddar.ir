@@ -46,6 +46,9 @@ public interface IBranchAdministration
     /// <summary>Branch + its first register R1 in one transaction; emits platform.branch-created (warehouse follows).</summary>
     Task<BranchView> CreateBranchAsync(IUnitOfWorkScope scope, string code, string name, CancellationToken cancellationToken);
 
+    /// <summary>The branch of this tenant (what a receipt prints of it, SAL-012), or null.</summary>
+    Task<BranchView?> GetBranchAsync(IUnitOfWorkScope scope, Guid branchId, CancellationToken cancellationToken);
+
     /// <summary>Null when the branch does not exist in this tenant.</summary>
     Task<RegisterView?> CreateRegisterAsync(IUnitOfWorkScope scope, Guid branchId, string code, CancellationToken cancellationToken);
 }

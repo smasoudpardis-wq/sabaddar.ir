@@ -26,8 +26,9 @@ spec.loader.exec_module(bl)
 VELOCITY = int(sys.argv[1]) if len(sys.argv) > 1 else 40
 START = dt.date(2026, 11, 22)
 DONE = {"US-001", "US-002", "SP-07", "SP-01", "US-003", "US-021", "US-022", "US-006", "US-005", "US-011", "US-025", "US-012", "US-013", "US-026", "US-023", "US-031", "US-032", "US-004", "US-014", "US-015", "US-016", "US-010", "US-041", "US-042", "US-081", "US-111", "US-151", "US-046", "US-024", "US-045", "US-052", "US-061", "US-051", "US-053", "US-063", "US-071", "US-082", "US-101", "US-091", "US-064", "US-066", "US-062", "US-083", "US-065", "US-072", "US-112", "US-113", "US-172", "US-084", "US-027", "US-043"}  # D12 §0.1
-AS_OF = "2026-11-24"                           # date of the progress snapshot (update with DONE)
-PARTIAL = {"US-007": "Compose برای Dev هست؛ Staging و Mirrorها منتظر زیرساخت (X-07)"}
+AS_OF = "2026-11-27"                           # date of the progress snapshot (update with DONE)
+PARTIAL = {"US-007": "Compose برای Dev هست؛ Staging و Mirrorها منتظر زیرساخت (X-07)",
+           "US-092": "چاپ، Snapshot و لینک فاکتور کامل؛ تصویر QR منتظر اجازه‌ی افزودن کتابخانه qrcode"}
 OPEN_QUESTIONS = [                             # decisions waiting on the product owner; the default is what is built (D12 §8)
     ("RQ-05", "آستانه‌ی اختلاف صندوق در بستن شیفت (US-081)", "۵۰۰٬۰۰۰ ریال؛ بیشتر از آن تأیید مدیر"),
     ("RQ-06", "زمان طراحی UI نهایی (D09) پیش از پایلوت", "صفحه‌های فعلی کاربردی و ساده؛ طراحی پیش از Gate F"),
@@ -46,7 +47,7 @@ FOLLOW_UPS = [                                 # work deliberately left for a la
     ("US-043", "روشن کردن Open Food Facts و اندازه‌گیری پوشش بارکدهای واقعی (Provider آماده و خاموش)", "SP-02 / X-06"),
     ("US-043", "رویداد CatalogLookupMissed برای KPI-07 و نمایش تصویر کاندید", "US-044"),
     ("US-172", "کنسول پلتفرم و ممیزی سراسری اقدام‌های اپراتور (فعلاً ردیف نسخه و لاگ)", "US-171"),
-    ("US-172", "لوگوی فاکتور و Snapshot نسخه قالب روی هر فاکتور", "US-092"),
+    ("US-092", "تصویر QR روی چاپ (کتابخانه qrcode@1.5.4 منتظر اجازه)، لوگوی فاکتور و نمایش نسیه روی فاکتور", "US-092 / EP-12"),
     ("US-113", "بازگشایی دوره با تأیید دونفره (D-45) و قفل نهایی سال (Locked)", "P1"),
     ("US-027", "اطلاع درخواست پشتیبانی به فروشگاه (DET-09)، نماهای پشتیبانی دیگر، کنسول پلتفرم", "US-171"),
     ("US-101", "پرداخت آنلاین، رزرو موجودی و وضعیت PendingPayment", "US-102"),

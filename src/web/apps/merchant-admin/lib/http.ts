@@ -117,6 +117,20 @@ export async function callApi(session: Session, method: string, path: string, bo
   }
 }
 
+/**
+ * CUS-009: a call without a user (the public receipt link). No token, no tenant, no device: only the client address, so the
+ * API can rate-limit and audit the view.
+ */
+export async function callPublicApi(path: string): Promise<Response> {
+  const incoming = await requestHeaders();
+  const clientIp = incoming.get('x-forwarded-for')?.split(',')[0]?.trim() || incoming.get('x-real-ip') || undefined;
+  try {
+    return await fetch(new URL(path, config.apiUrl()), { headers: clientIp ? { 'x-forwarded-for': clientIp } : {}, cache: 'no-store' });
+  } catch {
+    return problemResponse(502, 'upstream-unavailable', 'Service temporarily unavailable');
+  }
+}
+
 /** Relays an API response to the browser unchanged in status and body (problem+json included). */
 export async function relay(r: Response): Promise<NextResponse> {
   const text = r.status === 204 ? null : await r.text();

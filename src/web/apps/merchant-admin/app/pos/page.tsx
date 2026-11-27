@@ -646,6 +646,8 @@ export default function PosPage() {
               ) : sale.status === 'Finalized' ? (
                 <p role="status" data-testid="pos-finalized" data-invoice={sale.invoiceNo ?? ''}>
                   فاکتور {sale.invoiceNo} صادر شد.{' '}
+                  <a href={`/receipt/${sale.id}?format=80mm`} target="_blank" rel="noopener" data-testid="pos-print-80">چاپ فاکتور (۸۰ میلی‌متری)</a>{' '}
+                  <a href={`/receipt/${sale.id}?format=A4`} target="_blank" rel="noopener" data-testid="pos-print-a4">چاپ A4</a>{' '}
                   <button type="button" style={{ minHeight: 44 }} onClick={nextSale} data-testid="pos-next">فروش بعدی</button>
                 </p>
               ) : (

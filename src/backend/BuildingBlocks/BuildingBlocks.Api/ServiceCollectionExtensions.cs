@@ -121,6 +121,11 @@ public static class ServiceCollectionExtensions
                     _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(10) }));
             }
 
+            // CUS-009 / AB-12: an anonymous receipt link, 30 a minute per client address (no one reads 30 receipts a minute)
+            o.AddPolicy(RateLimits.ReceiptLink, http => System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+                http.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions { PermitLimit = 30, Window = TimeSpan.FromMinutes(1) }));
+
             // D07 README: barcode resolve 120 a minute per user (a scanner is fast, a scraper faster)
             o.AddPolicy(RateLimits.CatalogResolve, http => System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
                 http.User.FindFirst("iss")?.Value + "|" + http.User.FindFirst("sub")?.Value,
@@ -160,5 +165,6 @@ public static class RateLimits
     public const string Pairing = "pairing";
     public const string Invitation = "invitation";
     public const string CatalogResolve = "catalog-resolve";
+    public const string ReceiptLink = "receipt-link";
 }
 

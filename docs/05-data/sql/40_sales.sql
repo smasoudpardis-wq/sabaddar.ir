@@ -118,6 +118,11 @@ CREATE TABLE sales.sale (
   hold_note       text CHECK (char_length(hold_note) BETWEEN 1 AND 100),   -- SAL-011: a name or note to find a held cart by
   cancelled_at    timestamptz,
   cancel_reason   text CHECK (char_length(cancel_reason) BETWEEN 3 AND 200),
+  -- BR-086 / SAL-012 (US-092): the receipt template in force at Finalize, and the store's own parts as they were then
+  receipt_template  text CHECK (receipt_template ~ '^[a-z]{2,30}@[0-9]{1,6}$'),
+  receipt_footer    text CHECK (char_length(receipt_footer) BETWEEN 1 AND 300),
+  receipt_signature text CHECK (char_length(receipt_signature) BETWEEN 1 AND 100),
+  print_count     int NOT NULL DEFAULT 0 CHECK (print_count >= 0),    -- the first print is the original, the rest are copies
   version         int NOT NULL DEFAULT 1,
   PRIMARY KEY (tenant_id, id),
   UNIQUE (tenant_id, client_draft_id),                                  -- DI-010
@@ -175,8 +180,9 @@ BEGIN
     RETURN OLD;
   END IF;
   IF OLD.status = 'Finalized' THEN
-    IF (to_jsonb(NEW) - ARRAY['return_status','version','last_activity_at'])
-       IS DISTINCT FROM (to_jsonb(OLD) - ARRAY['return_status','version','last_activity_at']) THEN
+    -- the receipt snapshot (written once) and the print count (only up) are kept by sales.sale_receipt_guard (BR-086)
+    IF (to_jsonb(NEW) - ARRAY['return_status','version','last_activity_at','receipt_template','receipt_footer','receipt_signature','print_count'])
+       IS DISTINCT FROM (to_jsonb(OLD) - ARRAY['return_status','version','last_activity_at','receipt_template','receipt_footer','receipt_signature','print_count']) THEN
       RAISE EXCEPTION 'finalized sale % is immutable', OLD.id USING ERRCODE = 'RC002';
     END IF;
   ELSIF OLD.status = 'Cancelled' AND NEW IS DISTINCT FROM OLD THEN
@@ -205,6 +211,37 @@ BEGIN
   RETURN NEW;
 END $$;
 CREATE TRIGGER tr_sale_transition BEFORE UPDATE OF status ON sales.sale FOR EACH ROW EXECUTE FUNCTION sales.sale_transition();
+
+-- BR-086: a receipt shows what was in force when it was issued: the snapshot is written once; copies only add up (US-092)
+CREATE OR REPLACE FUNCTION sales.sale_receipt_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF OLD.receipt_template IS NOT NULL
+     AND (NEW.receipt_template, NEW.receipt_footer, NEW.receipt_signature) IS DISTINCT FROM (OLD.receipt_template, OLD.receipt_footer, OLD.receipt_signature) THEN
+    RAISE EXCEPTION 'the receipt snapshot of sale % is written once', OLD.id USING ERRCODE = 'RC034';
+  END IF;
+  IF NEW.print_count < OLD.print_count THEN
+    RAISE EXCEPTION 'the print count of sale % only increases', OLD.id USING ERRCODE = 'RC034';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tr_sale_receipt_guard BEFORE UPDATE OF receipt_template, receipt_footer, receipt_signature, print_count ON sales.sale
+  FOR EACH ROW EXECUTE FUNCTION sales.sale_receipt_guard();
+
+-- CUS-009 / AB-12 (US-092): a receipt link opens one finalized sale's receipt without signing in. Only the SHA-256 of
+-- its 128-bit token is kept; it lasts 90 days and the store can revoke it. The QR on a printed receipt carries it.
+CREATE TABLE sales.receipt_link (
+  tenant_id  uuid NOT NULL,
+  token_hash bytea NOT NULL CHECK (octet_length(token_hash) = 32),
+  sale_id    uuid NOT NULL,
+  created_by uuid NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  expires_at timestamptz NOT NULL DEFAULT now() + interval '90 days',
+  revoked_at timestamptz,
+  PRIMARY KEY (tenant_id, token_hash),
+  FOREIGN KEY (tenant_id, sale_id) REFERENCES sales.sale (tenant_id, id)
+);
+CREATE UNIQUE INDEX ux_receipt_link_token ON sales.receipt_link (token_hash);
+CALL core.enable_tenant_rls('sales.receipt_link');
 
 CREATE OR REPLACE FUNCTION sales.guard_finalized_line() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE v_status text;
@@ -308,4 +345,20 @@ GRANT UPDATE (status, cancelled_at, cancel_reason, version) ON sales.sale TO rc_
 GRANT SELECT ON sales.cash_movement TO rc_worker, rc_reporting;
 REVOKE UPDATE ON sales.cash_movement FROM rc_app;          -- append-only (UC-06)
 GRANT EXECUTE ON FUNCTION sales.shift_expected_cash(uuid) TO rc_app, rc_worker;
+REVOKE DELETE ON sales.receipt_link FROM rc_app;
+
 RESET ROLE;
+
+-- the public receipt page holds only the token, not the store: this returns the store and sale of a link in force for the
+-- SHA-256 of a token the caller holds — nothing else (the pattern of iam.invitation_tenant)
+CREATE OR REPLACE FUNCTION sales.receipt_link_target(p_token_hash bytea) RETURNS TABLE (tenant_id uuid, sale_id uuid)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
+  SELECT l.tenant_id, l.sale_id FROM sales.receipt_link l WHERE l.token_hash = p_token_hash AND l.revoked_at IS NULL AND l.expires_at > now()
+$$;
+GRANT USAGE ON SCHEMA sales TO rc_tenant_directory;
+GRANT SELECT (tenant_id, token_hash, sale_id, expires_at, revoked_at) ON sales.receipt_link TO rc_tenant_directory;
+GRANT CREATE ON SCHEMA sales TO rc_tenant_directory;  -- a new owner needs CREATE on the schema; revoked at once (fitness 6)
+ALTER FUNCTION sales.receipt_link_target(bytea) OWNER TO rc_tenant_directory;
+REVOKE CREATE ON SCHEMA sales FROM rc_tenant_directory;
+REVOKE ALL ON FUNCTION sales.receipt_link_target(bytea) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION sales.receipt_link_target(bytea) TO rc_app;

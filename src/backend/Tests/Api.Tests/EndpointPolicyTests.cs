@@ -68,6 +68,17 @@ public sealed class EndpointPolicyTests : IClassFixture<ApiFactory>
                     continue;
                 }
 
+                if (op is { Permission: null } && path.StartsWith("/r/", StringComparison.Ordinal))
+                {
+                    // the public audience (CUS-009): explicitly anonymous and rate-limited, nothing else
+                    if (e.Metadata.GetMetadata<Microsoft.AspNetCore.Authorization.IAllowAnonymous>() is null)
+                    {
+                        problems.Add($"{method} {path} ({op.OperationId}): a public operation that is not explicitly anonymous");
+                    }
+
+                    continue;
+                }
+
                 if (op is null)
                 {
                     problems.Add($"{method} {path}: not in D07 (undocumented endpoint)");

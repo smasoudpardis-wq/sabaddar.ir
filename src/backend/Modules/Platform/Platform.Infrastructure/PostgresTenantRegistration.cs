@@ -99,6 +99,14 @@ public sealed class RegisterScopeLookup : IScopeLookup
 /// <summary>TEN-002 (US-012).</summary>
 public sealed class PostgresBranchAdministration(IOutbox outbox) : IBranchAdministration
 {
+    public async Task<BranchView?> GetBranchAsync(IUnitOfWorkScope scope, Guid branchId, CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command("SELECT id, code, name, status FROM platform.branch WHERE id = $1");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = branchId });
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(cancellationToken);
+        return await r.ReadAsync(cancellationToken) ? new BranchView(r.GetGuid(0), r.GetString(1), r.GetString(2), r.GetString(3)) : null;
+    }
+
     public async Task<BranchView> CreateBranchAsync(IUnitOfWorkScope scope, string code, string name, CancellationToken cancellationToken)
     {
         var s = (PostgresUnitOfWorkScope)scope;

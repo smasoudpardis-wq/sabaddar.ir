@@ -57,6 +57,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
         ["addCountEntries"] = f => new { clientBatchId = "gen-batch-0001", entries = new[] { new { variantId = f.Variant, qty = "1" } } },
         ["paySupplier"] = _ => new { amount = "1", method = "Cash", confirmedWarnings = new[] { "exceeds-balance" } },
         ["closePeriod"] = _ => new { expectedVersion = 1 },
+        ["printReceipt"] = _ => new { format = "80mm" },
         ["closeCount"] = _ => new { expectedVersion = 1 },
         ["confirmCount"] = _ => new { expectedVersion = 1 },
         ["finalizeSale"] = _ => new { expectedVersion = 1, expectedTotal = "1000" },
@@ -242,7 +243,8 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
                 (m, System.Text.RegularExpressions.Regex.Replace(e.RoutePattern.RawText!["/api/v1".Length..], @"\{(\w+):[^}]+\}", "{$1}"))))
             .ToHashSet();
         // the platform audience has its own realm and tests (PlatformTemplateTests); these are the merchant operations
-        List<Operation> ops = [.. d07.Where(o => mapped.Contains((o.Method, o.Path)) && !o.Path.StartsWith("/platform/", StringComparison.Ordinal))];
+        List<Operation> ops = [.. d07.Where(o => mapped.Contains((o.Method, o.Path)) && !o.Path.StartsWith("/platform/", StringComparison.Ordinal)
+                                       && !o.Path.StartsWith("/r/", StringComparison.Ordinal))];
         Assert.True(ops.Count >= 20, $"only {ops.Count} implemented operations found");
         return ops;
     }

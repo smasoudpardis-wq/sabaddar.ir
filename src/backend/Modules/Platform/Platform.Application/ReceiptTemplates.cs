@@ -24,6 +24,9 @@ public interface IIndustryTemplates
 
     Task<IndustryTemplate?> LatestAsync(IUnitOfWorkScope scope, string industryCode, CancellationToken cancellationToken);
 
+    /// <summary>The version a receipt cites (e.g. <c>supermarket@3</c>): versions never change, so a reprint shows the same text.</summary>
+    Task<IndustryTemplate?> VersionAsync(IUnitOfWorkScope scope, string templateRef, CancellationToken cancellationToken);
+
     /// <summary>Publishes version <paramref name="expectedVersion"/> + 1; a concurrent publish of the same number loses (409).</summary>
     Task<(TemplateOutcome Outcome, IndustryTemplate? Template)> PublishAsync(IUnitOfWorkScope scope, string industryCode, int expectedVersion,
         string legalText, IReadOnlyList<string> lockedFields, string reason, string createdBy, CancellationToken cancellationToken);

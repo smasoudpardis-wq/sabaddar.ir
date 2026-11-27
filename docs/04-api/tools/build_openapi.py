@@ -486,12 +486,20 @@ schema("CustomerCreditSummary", storeName="str", outstanding="money", overdue="m
        openCharges=[{"chargeId": "uuid", "invoiceNo": "str", "amount": "money", "open": "money", "dueDate": "date"}])
 schema("PortalPaymentCreate", membershipId="uuid", amount="money")
 schema("StoreAccessEvent", storeName="str", at="dt", kind=("enum", ["Lookup", "ReceiptLinked"]))
-schema("ReceiptPublic", storeName="str", branchName="str", invoiceNo="str", finalizedAt="dt",
-       lines=[{"name": "str", "qty": "qty", "unitPrice": "money", "discount": "money", "tax": "money", "lineTotal": "money"}],
-       totals={"net": "money", "tax": "money", "total": "money"}, tenders=[{"method": "str", "amount": "money"}],
-       credit="#ReceiptCredit?",
-       legalText="str", templateVersion="str", **{"taxStatus?": ("enum", ["Pending", "Accepted", "Rejected"])})
+schema("ReceiptPublic", storeName="str?", branchName="str?", invoiceNo="str", finalizedAt="dt",
+       lines=[{"name": "str", "qty": "qty", "unit": "str", "unitPrice": "money", "discount": "money", "tax": "money", "lineTotal": "money"}],
+       totals={"gross": "money", "discount": "money", "net": "money", "tax": "money", "total": "money"},
+       tenders=[{"method": "str", "amount": "money"}], credit="#ReceiptCredit?",
+       legalText=("desc", "str?", "The industry template version's legal text (BR-086): never removed by the store"),
+       lockedFields=["str"], templateVersion=("desc", "str?", "The version in force at Finalize, e.g. supermarket@3"),
+       footer="str?", signature="str?", **{"taxStatus?": ("enum", ["Pending", "Accepted", "Rejected"])})
+schema("PrintRequest", format=("enum", ["80mm", "A4"]))
+schema("PrintedReceipt", receipt="#ReceiptPublic", format=("enum", ["80mm", "A4"]),
+       copy=("desc", "int", "1 for the original; every reprint is numbered and printed as a copy"), isCopy="bool",
+       receiptUrl=("desc", "str", "For the QR: a new 128-bit receipt link (90 days, revocable; CUS-009), shown only now"),
+       linkExpiresAt="dt")
 schema("ReceiptCredit", amount="money", dueDate="date")
+schema("RevokedCount", revoked="int")
 
 # Tax
 schema("TaxProfile", personType=("enum", ["Individual", "Legal"]), nationalId="str", economicCode="str",
@@ -1125,6 +1133,12 @@ op("post", "/sales/{saleId}/returns", "createReturn", "Sales", "برگشت کا�
    params=[{"name": "X-Approval-Id", "in": "header", "required": False, "schema": {"type": "string", "format": "uuid"}}])
 op("get", "/sales/{saleId}/returns", "listReturns", "Sales", "برگشت‌های یک فاکتور", perm="sales.return.create", scope="Branch",
    resp="SaleReturn", list_of=True, reqs=["SAL-008"])
+op("post", "/sales/{saleId}/print", "printReceipt", "Sales", "چاپ فاکتور (۸۰mm یا A4) با QR فاکتور دیجیتال",
+   perm="pos.sell", scope="Register", body="PrintRequest", resp="PrintedReceipt", conflict=True, reqs=["SAL-012", "BR-086", "CUS-009"],
+   audited=True, desc="Only a Finalized sale (409 sale-not-finalized). Each call counts a print (the first is the original) and issues a fresh "
+                      "receipt link for the QR; the template version and the store's parts are those snapshotted at Finalize.")
+op("delete", "/sales/{saleId}/receipt-links", "revokeReceiptLinks", "Sales", "ابطال همه لینک‌های فاکتور", perm="pos.sell",
+   scope="Register", resp="RevokedCount", reqs=["CUS-009"], audited=True)
 op("post", "/sales/{saleId}/receipt-deliveries", "deliverReceipt", "Sales", "ارسال یا ارسال مجدد فاکتور دیجیتال",
    perm="pos.sell", scope="Branch", idem=True, body="DeliveryRequest", resp="Notification", resp_code="202",
    reqs=["NOT-002", "NOT-008", "CUS-011"], rate="receipt-delivery")
@@ -1283,7 +1297,8 @@ op("post", "/c/account/deletion", "portalRequestDeletion", "Portal", "درخوا
 # ---------------- Public receipt & webhooks
 tag("Public", "لینک فاکتور و Webhookهای بیرونی")
 op("get", "/r/{token}", "getPublicReceipt", "Public", "نمایش فاکتور با Receipt Link (بدون PII مشتری)", aud="public",
-   resp="ReceiptPublic", reqs=["CUS-009", "NOT-002", "AB-12"], rate="receipt-link")
+   resp="ReceiptPublic", reqs=["CUS-009", "NOT-002", "AB-12"], rate="receipt-link",
+   desc="No customer data. Unknown, expired and revoked links are the same 404; each view is audited in the store; 30 a minute per address.")
 op("post", "/integrations/bale/webhook/{secretPath}", "baleWebhook", "Public", "Webhook بات بله (Verification Required)",
    aud="public", resp_code="200", reqs=["NOT-003", "TM-032", "ADR-008"], rate="callback")
 PATHS["/integrations/bale/webhook/{secretPath}"]["post"]["requestBody"] = {

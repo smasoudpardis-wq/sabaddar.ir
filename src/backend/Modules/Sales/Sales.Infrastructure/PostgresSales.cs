@@ -174,6 +174,64 @@ public sealed class PostgresSales : ISales
         [.. (await ReadSalesAsync((PostgresUnitOfWorkScope)scope, "status = 'Held' AND branch_id = $1", branchId, cancellationToken))
             .OrderByDescending(x => x.LastActivityAt).Take(100)];
 
+    public async Task SnapshotReceiptAsync(IUnitOfWorkScope scope, Guid saleId, string templateRef, string? footer, string? signature,
+        CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
+            "UPDATE sales.sale SET receipt_template = $2, receipt_footer = $3, receipt_signature = $4 WHERE id = $1 AND receipt_template IS NULL");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = saleId });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = templateRef });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)footer ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)signature ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text });
+        await cmd.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<ReceiptSnapshot?> ReceiptSnapshotAsync(IUnitOfWorkScope scope, Guid saleId, CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
+            "SELECT receipt_template, receipt_footer, receipt_signature, print_count FROM sales.sale WHERE id = $1");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = saleId });
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(cancellationToken);
+        return await r.ReadAsync(cancellationToken)
+            ? new ReceiptSnapshot(r.IsDBNull(0) ? null : r.GetString(0), r.IsDBNull(1) ? null : r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2), r.GetInt32(3))
+            : null;
+    }
+
+    public async Task<int> CountPrintAsync(IUnitOfWorkScope scope, Guid saleId, CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
+            "UPDATE sales.sale SET print_count = print_count + 1 WHERE id = $1 RETURNING print_count");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = saleId });
+        return (int)(await cmd.ExecuteScalarAsync(cancellationToken))!;
+    }
+
+    public async Task<DateTimeOffset> CreateReceiptLinkAsync(IUnitOfWorkScope scope, Guid saleId, byte[] tokenHash, Guid createdBy,
+        CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
+            "INSERT INTO sales.receipt_link (tenant_id, token_hash, sale_id, created_by) VALUES (core.current_tenant(), $1, $2, $3) RETURNING expires_at");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = tokenHash });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = saleId });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = createdBy });
+        return new DateTimeOffset((DateTime)(await cmd.ExecuteScalarAsync(cancellationToken))!, TimeSpan.Zero);
+    }
+
+    public async Task<int> RevokeReceiptLinksAsync(IUnitOfWorkScope scope, Guid saleId, CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
+            "UPDATE sales.receipt_link SET revoked_at = now() WHERE sale_id = $1 AND revoked_at IS NULL AND expires_at > now()");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = saleId });
+        return await cmd.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<(Guid TenantId, Guid SaleId)?> ReceiptLinkTargetAsync(IUnitOfWorkScope scope, byte[] tokenHash, CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command("SELECT tenant_id, sale_id FROM sales.receipt_link_target($1)");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = tokenHash });
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(cancellationToken);
+        return await r.ReadAsync(cancellationToken) ? (r.GetGuid(0), r.GetGuid(1)) : null;
+    }
+
     public async Task<IReadOnlyList<SaleView>> RecentAsync(IUnitOfWorkScope scope, int limit, CancellationToken cancellationToken)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);

@@ -25,6 +25,21 @@ public sealed class PostgresIndustryTemplates : IIndustryTemplates
         return (await ReadAsync(cmd, cancellationToken)).SingleOrDefault();
     }
 
+    public async Task<IndustryTemplate?> VersionAsync(IUnitOfWorkScope scope, string templateRef, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(templateRef);
+        string[] parts = templateRef.Split('@');
+        if (parts.Length != 2 || !int.TryParse(parts[1], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int version))
+        {
+            return null;
+        }
+
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(Latest + "WHERE t.industry_code = $1 AND t.version = $2 ORDER BY t.industry_code, t.version DESC");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = parts[0] });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = version });
+        return (await ReadAsync(cmd, cancellationToken)).SingleOrDefault();
+    }
+
     public async Task<(TemplateOutcome Outcome, IndustryTemplate? Template)> PublishAsync(IUnitOfWorkScope scope, string industryCode, int expectedVersion,
         string legalText, IReadOnlyList<string> lockedFields, string reason, string createdBy, CancellationToken cancellationToken)
     {

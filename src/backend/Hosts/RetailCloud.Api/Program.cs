@@ -2134,6 +2134,93 @@ v1.MapGet("/purchase-returns", async (RequestContext ctx, IUnitOfWork uow, IProc
     })
     .RequirePermission(Permissions.ReportsView);
 
+// ---------------- US-092 / SAL-012 / BR-086 / CUS-009: the printed receipt (80 mm or A4) and its link. Every print issues a
+// fresh receipt link for the QR (only its SHA-256 is kept, 90 days, revocable); a reprint is numbered as a copy and audited.
+string receiptBase = (builder.Configuration["Receipts:PublicBaseUrl"] ?? "http://127.0.0.1:3000").TrimEnd('/');
+
+async Task<object> SaleReceiptJson(IUnitOfWorkScope s, HttpContext http, Guid tenantId, SaleView sale, ReceiptSnapshot snap, CancellationToken c)
+{
+    TenantProfile? shop = await http.RequestServices.GetRequiredService<ITenantProfileQuery>().GetAsync(new TenantId(tenantId), c);
+    BranchView? branch = await http.RequestServices.GetRequiredService<IBranchAdministration>().GetBranchAsync(s, sale.BranchId, c);
+    IndustryTemplate? template = snap.TemplateRef is null ? null
+        : await http.RequestServices.GetRequiredService<IIndustryTemplates>().VersionAsync(s, snap.TemplateRef, c);
+    var t = SaleMath.Totals(sale.Lines);
+    return new
+    {
+        storeName = shop?.LegalName, branchName = branch?.Name, sale.InvoiceNo, sale.FinalizedAt,
+        lines = sale.Lines.Select(l => new
+        {
+            l.Name, qty = Qty(l.Qty), l.Unit, unitPrice = Money(l.UnitPrice), discount = Money(l.Discount), tax = Money(l.Tax), lineTotal = Money(l.LineTotal),
+        }),
+        totals = new { gross = Money(t.Gross), discount = Money(t.Discount), net = Money(t.Net), tax = Money(t.Tax), total = Money(t.Total) },
+        tenders = (sale.Tenders ?? []).Where(x => !x.Voided).Select(x => new { x.Method, amount = Money(x.Amount) }),
+        credit = (object?)null,   // a credit sale prints its credit, due date and balance with EP-12
+        legalText = template?.LegalText, lockedFields = template?.LockedFields ?? [], templateVersion = snap.TemplateRef,
+        footer = snap.Footer, signature = snap.Signature,
+    };
+}
+
+v1.MapPost("/sales/{saleId:guid}/print", async (Guid saleId, PrintInput body, RequestContext ctx, IUnitOfWork uow, ISales sales, HttpContext http,
+        CancellationToken ct) =>
+    {
+        if (body.Format is not ("80mm" or "A4")) return Problems.Validation(http, new Dictionary<string, string[]> { ["format"] = ["80mm|A4"] });
+        return await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            if (await sales.GetAsync(s, saleId, c) is not { } sale
+                || !AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.PosSell, new ScopeRef(ScopeType.Register, sale.RegisterId, sale.BranchId)))
+            {
+                return Problems.NotFound(http);
+            }
+
+            if (sale.Status != "Finalized") return Problems.Create(http, StatusCodes.Status409Conflict, "sale-not-finalized", "Only an issued invoice is printed");
+            ReceiptSnapshot snap = (await sales.ReceiptSnapshotAsync(s, saleId, c))!;
+            int copy = await sales.CountPrintAsync(s, saleId, c);
+            // CUS-009: 128 random bits, URL-safe; only the hash is stored, so the link is shown now or never
+            string token = Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+            DateTimeOffset expires = await sales.CreateReceiptLinkAsync(s, saleId, System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.ASCII.GetBytes(token)),
+                ctx.User!.Value.Value, c);
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry("sales.receipt.printed", "Sale", saleId.ToString(), null,
+                new { copy, body.Format, sale.InvoiceNo }), c);
+            object receipt = await SaleReceiptJson(s, http, ctx.ActiveTenant!.Value.Value, sale, snap, c);
+            return Results.Ok(new { receipt, format = body.Format, copy, isCopy = copy > 1, receiptUrl = $"{receiptBase}/r/{token}", linkExpiresAt = expires });
+        }, ct);
+    })
+    .RequirePermission(Permissions.PosSell);
+
+v1.MapDelete("/sales/{saleId:guid}/receipt-links", async (Guid saleId, RequestContext ctx, IUnitOfWork uow, ISales sales, HttpContext http, CancellationToken ct) =>
+        await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            if (await sales.GetAsync(s, saleId, c) is not { } sale
+                || !AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.PosSell, new ScopeRef(ScopeType.Register, sale.RegisterId, sale.BranchId)))
+            {
+                return Problems.NotFound(http);
+            }
+
+            int revoked = await sales.RevokeReceiptLinksAsync(s, saleId, c);
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry("sales.receipt-links.revoked", "Sale", saleId.ToString(), null, new { revoked }), c);
+            return Results.Ok(new { revoked });
+        }, ct))
+    .RequirePermission(Permissions.PosSell);
+
+// CUS-009 / AB-12: the receipt behind a link, without signing in and without any customer data; unknown, expired and revoked
+// links look the same (404); every view is audited in the store and the endpoint is rate-limited per client address
+app.MapGet("/api/v1/r/{token}", async (string token, IUnitOfWork uow, ISales sales, HttpContext http, CancellationToken ct) =>
+    {
+        if (token.Length is < 20 or > 30 || !token.All(ch => char.IsAsciiLetterOrDigit(ch) || ch is '-' or '_')) return Problems.NotFound(http);
+        byte[] hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.ASCII.GetBytes(token));
+        if (await uow.ExecuteWithoutTenantAsync(null, (s, c) => sales.ReceiptLinkTargetAsync(s, hash, c), ct) is not { } target) return Problems.NotFound(http);
+        return await uow.ExecuteAsync(new FixedTenantContext(new TenantId(target.TenantId)), async (s, c) =>
+        {
+            if (await sales.GetAsync(s, target.SaleId, c) is not { Status: "Finalized" } sale) return Problems.NotFound(http);
+            ReceiptSnapshot snap = (await sales.ReceiptSnapshotAsync(s, sale.Id, c))!;
+            await Audit(http, s, new AuditActor(null, "System", [], null, null, ClientIp(http)), new AuditEntry("sales.receipt.viewed", "Sale", sale.Id.ToString(),
+                null, new { via = "receipt-link" }), c);
+            return Results.Ok(await SaleReceiptJson(s, http, target.TenantId, sale, snap, c));
+        }, ct);
+    })
+    .AllowAnonymous()
+    .RequireRateLimiting(RateLimits.ReceiptLink);
+
 // ---------------- US-082: the POS cart (SAL-001, SAL-002, SAL-010). A cart is the cashier's own, on their open shift,
 // worked on a registered device of the branch (ABAC-04, BR-050); every amount is the server's (BR-013..BR-018).
 string Money(long v) => v.ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -2772,6 +2859,13 @@ v1.MapIdempotentPost<FinalizeInput>("/sales/{saleId:guid}/finalize", "sales.fina
         }
 
         SaleView after = await sales.FinalizeAsync(scope, sale.Id, invoiceNo, fiscalYear, finalized, ct);
+        // BR-086 (US-092): the receipt cites the template version in force now and the store's footer and signature as they are now
+        if (await http.RequestServices.GetRequiredService<ITenantProfileQuery>().GetAsync(ctx.ActiveTenant!.Value, ct) is { } shop
+            && await http.RequestServices.GetRequiredService<IIndustryTemplates>().LatestAsync(scope, shop.IndustryCode, ct) is { } template)
+        {
+            ReceiptOverride own = await http.RequestServices.GetRequiredService<IReceiptTemplateOverrides>().GetAsync(scope, ct);
+            await sales.SnapshotReceiptAsync(scope, sale.Id, template.Ref, own.FooterText, own.Signature, ct);
+        }
         await http.RequestServices.GetRequiredService<IOutbox>().AddAsync(scope, "Sales", "sales.sale-finalized", 1, sale.Id, new
         {
             saleId = sale.Id, invoiceNo, after.BranchId, after.RegisterId, after.ShiftId, after.CashierId, after.TerminalId, after.Channel,
@@ -4064,6 +4158,7 @@ internal sealed record CountCreateInput(Guid? WarehouseId, string? Scope, Guid[]
 internal sealed record CountEntryInput(Guid? VariantId, string? Qty);
 internal sealed record CountEntriesInput(CountEntryInput?[]? Entries, string? ClientBatchId);
 internal sealed record VersionInput(int? ExpectedVersion);
+internal sealed record PrintInput(string? Format);
 internal sealed record SupportAccessRequestInput(string? Reason, int? DurationMinutes);
 internal sealed record ReceiptOverridesInput(string? LogoObjectKey, string? FooterText, string? Signature);
 internal sealed record ReceiptTemplateUpdateInput(int? ExpectedVersion, ReceiptOverridesInput? Overrides);

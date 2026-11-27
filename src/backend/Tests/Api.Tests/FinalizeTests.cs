@@ -206,6 +206,56 @@ public sealed class FinalizeTests : IClassFixture<ApiFactory>, IAsyncLifetime
     }
 
     [DbFact]
+    public async Task AT070_a_finalized_sale_prints_with_its_industry_template_snapshot_a_copy_mark_and_a_receipt_link_that_can_be_revoked()
+    {
+        await Product("FN-PRN", "100000", "10", "60000");
+        await OpenShift("cashier", _r1);
+        Assert.Equal(HttpStatusCode.OK, (await As("owner", false).PutAsJsonAsync("/api/v1/templates/receipt",
+            new { expectedVersion = 0, overrides = new { footerText = "با سپاس", signature = "فروشگاه نهایی" } })).StatusCode);
+        JsonElement paid = await PaidCart("cashier", _r1, "FN-PRN", "2");
+        Guid saleId = paid.GetProperty("id").GetGuid();
+        string print = $"/api/v1/sales/{saleId}/print";
+        Assert.Equal("sale-not-finalized", await Code(await As("cashier").PostAsJsonAsync(print, new { format = "80mm" })));
+        Assert.Equal(HttpStatusCode.OK, (await Finalize("cashier", paid)).StatusCode);
+
+        // the store changes its footer after the sale: the receipt keeps what was in force when it was issued (BR-086)
+        Assert.Equal(HttpStatusCode.OK, (await As("owner", false).PutAsJsonAsync("/api/v1/templates/receipt",
+            new { expectedVersion = 1, overrides = new { footerText = "متن تازه" } })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await As("cashier").PostAsJsonAsync(print, new { format = "A5" })).StatusCode);
+        JsonElement first = await Body(await As("cashier").PostAsJsonAsync(print, new { format = "80mm" }));
+        JsonElement receipt = first.GetProperty("receipt");
+        Assert.Equal((1, false), (first.GetProperty("copy").GetInt32(), first.GetProperty("isCopy").GetBoolean()));
+        Assert.StartsWith("supermarket@", receipt.GetProperty("templateVersion").GetString(), StringComparison.Ordinal);
+        Assert.Equal(("با سپاس", "فروشگاه نهایی", "نهایی", "یک"), (receipt.GetProperty("footer").GetString(), receipt.GetProperty("signature").GetString(),
+            receipt.GetProperty("storeName").GetString(), receipt.GetProperty("branchName").GetString()));
+        Assert.False(string.IsNullOrWhiteSpace(receipt.GetProperty("legalText").GetString()));
+        Assert.Contains("invoiceNo", receipt.GetProperty("lockedFields").EnumerateArray().Select(x => x.GetString()));
+        Assert.Equal("220000", receipt.GetProperty("totals").GetProperty("total").GetString());
+
+        JsonElement second = await Body(await As("cashier").PostAsJsonAsync(print, new { format = "A4" }));
+        Assert.Equal((2, true), (second.GetProperty("copy").GetInt32(), second.GetProperty("isCopy").GetBoolean()));
+
+        // CUS-009: the QR's link opens the receipt without signing in and without any customer data; a guessed one is not found
+        string url = first.GetProperty("receiptUrl").GetString()!;
+        string token = url[(url.LastIndexOf('/') + 1)..];
+        Assert.True(token.Length >= 21, url);   // 128 random bits, URL-safe
+        HttpClient anonymous = _factory.CreateClient();
+        HttpResponseMessage opened = await anonymous.GetAsync($"/api/v1/r/{token}");
+        Assert.Equal(HttpStatusCode.OK, opened.StatusCode);
+        string publicBody = await opened.Content.ReadAsStringAsync();
+        JsonElement pub = JsonElement.Parse(publicBody);
+        Assert.Equal(receipt.GetProperty("invoiceNo").GetString(), pub.GetProperty("invoiceNo").GetString());
+        Assert.DoesNotContain("customer", publicBody, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(_u["cashier"].Id.ToString(), publicBody, StringComparison.Ordinal);
+        Assert.Equal(HttpStatusCode.NotFound, (await anonymous.GetAsync($"/api/v1/r/{token[..^2]}xx")).StatusCode);
+        Assert.Equal(1L, await Scalar<long>("SELECT count(*) FROM audit.audit_record WHERE action = 'sales.receipt.viewed' AND resource_id = $1", saleId.ToString()));
+
+        JsonElement revoked = await Body(await As("cashier").DeleteAsync($"/api/v1/sales/{saleId}/receipt-links"));
+        Assert.Equal(2, revoked.GetProperty("revoked").GetInt32());
+        Assert.Equal(HttpStatusCode.NotFound, (await anonymous.GetAsync($"/api/v1/r/{token}")).StatusCode);
+    }
+
+    [DbFact]
     public async Task AT210_twenty_finalizes_with_one_key_make_one_invoice_one_issue_and_one_set_of_entries()
     {
         await Product("FN-OIL", "200000", "50", "120000");
