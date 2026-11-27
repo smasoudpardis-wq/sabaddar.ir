@@ -540,9 +540,12 @@ schema("ReportMeta", generatedAt="dt", dataAsOf=("desc", "dt", "Read model fresh
 schema("AuditRecord", seq="long", occurredAt="dt", actorKind="str", actorId="uuid?", actorRoles=["str"], impersonatedBy="uuid?",
        action="str", resourceType="str", resourceId="str?", reason="str?", branchId="uuid?", terminalId="uuid?",
        clientIp="str?", details=("desc", "obj", "Sanitised at write time: no OTP, token, PIN, key, card number or contact PII (AUD-003)"))
-schema("IntegrationKeyCreate", name="str", scopes=[("enum", ["catalog.read", "inventory.read"])], expiresAt="dt")
-schema("IntegrationKey", id="uuid", name="str", scopes=["str"], expiresAt="dt", lastUsedAt="dt?",
-       **{"secret?": ("desc", "str", "Returned once at creation only")})
+schema("IntegrationKeyCreate", name="str", scopes=[("enum", ["catalog.read", "inventory.read"])],
+       expiresAt=("desc", "dt", "At most 365 days ahead"))
+schema("IntegrationKey", id="uuid", name="str", prefix=("desc", "str", "The public part of the key (rck_<prefix>_...)"), scopes=["str"],
+       createdAt="dt", expiresAt="dt", revokedAt="dt?", lastUsedAt="dt?", status=("enum", ["Active", "Expired", "Revoked"]),
+       **{"secret?": ("desc", "str?", "The full key, returned once at creation only; only the SHA-256 of its secret is kept")})
+schema("PartnerBalance", warehouseId="uuid", variantId="uuid", onHand="qty", reserved="qty", available="qty")
 
 # Platform admin
 schema("PlatformTenant", id="uuid", legalName="str", status="str", plan="str", createdAt="dt", branches="int")
@@ -1342,6 +1345,8 @@ op("get", "/templates/receipt", "getReceiptTemplate", "Settings", "قالب فا
    reqs=["BR-086", "SAL-012"])
 op("put", "/templates/receipt", "updateReceiptTemplate", "Settings", "تغییر بخش‌های مجاز قالب", perm="templates.receipt.manage",
    scope="Tenant", body="ReceiptTemplateUpdate", resp="ReceiptTemplate", reqs=["BR-086", "DI-085"], audited=True, conflict=True)
+op("get", "/integrations/keys", "listIntegrationKeys", "Settings", "کلیدهای API فروشگاه", perm="integrations.manage", scope="Tenant",
+   resp="IntegrationKey", list_of=True, reqs=["INT-001"])
 op("post", "/integrations/keys", "createIntegrationKey", "Settings", "کلید API با Scope", perm="integrations.manage",
    scope="Tenant", body="IntegrationKeyCreate", resp="IntegrationKey", resp_code="201", reqs=["INT-001"], audited=True)
 op("delete", "/integrations/keys/{keyId}", "revokeIntegrationKey", "Settings", "ابطال کلید API", perm="integrations.manage",
@@ -1370,9 +1375,14 @@ op("get", "/audit", "listAudit", "Audit", "رکوردهای ممیزی Tenant", 
 # ---------------- Integration API (API key)
 tag("PartnerApi", "API عمومی با Integration Key (INT)")
 op("get", "/partner/catalog/products", "partnerListProducts", "PartnerApi", "کاتالوگ Tenant (catalog.read)", aud="integration",
-   resp="Product", list_of=True, page=True, reqs=["INT-001"], rate="partner")
+   resp="Product", list_of=True, page=True, reqs=["INT-001", "AT-180"], rate="partner",
+   desc="The store's products (not merged), with variants, barcodes and current prices. Needs catalog.read.")
 op("get", "/partner/inventory/balances", "partnerListBalances", "PartnerApi", "موجودی (inventory.read؛ بدون بها)", aud="integration",
-   resp="StockBalance", list_of=True, page=True, reqs=["INT-001"], rate="partner")
+   resp="PartnerBalance", list_of=True, page=True, reqs=["INT-001", "AT-180"], rate="partner",
+   params=[{"name": "warehouseId", "in": "query", "required": False, "schema": {"type": "string", "format": "uuid"}},
+           {"name": "variantId", "in": "query", "required": False, "schema": {"type": "string", "format": "uuid"}}],
+   desc="Quantities only: never the cost (WAC) or the value. 401 invalid-api-key for an unknown, wrong, revoked or expired key; "
+        "403 scope-missing without inventory.read; 120 calls a minute per key.")
 
 # ---------------- Platform admin
 tag("Platform", "Platform Admin (Audience: platform-api؛ بدون دسترسی به داده کسب‌وکار)")

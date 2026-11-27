@@ -7957,6 +7957,44 @@ paths:
       - DI-085
       x-audited: true
   /integrations/keys:
+    get:
+      operationId: listIntegrationKeys
+      tags:
+      - Settings
+      summary: کلیدهای API فروشگاه
+      security: *id001
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - items
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/IntegrationKey'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: integrations.manage
+      x-scope: Tenant
+      x-idempotent: false
+      x-requirements:
+      - INT-001
     post:
       operationId: createIntegrationKey
       tags:
@@ -8369,6 +8407,7 @@ paths:
       tags:
       - PartnerApi
       summary: کاتالوگ Tenant (catalog.read)
+      description: The store's products (not merged), with variants, barcodes and current prices. Needs catalog.read.
       security: &id004
       - integrationKey: []
       parameters:
@@ -8407,6 +8446,7 @@ paths:
       x-idempotent: false
       x-requirements:
       - INT-001
+      - AT-180
       x-rate-limit-class: partner
   /partner/inventory/balances:
     get:
@@ -8414,10 +8454,24 @@ paths:
       tags:
       - PartnerApi
       summary: موجودی (inventory.read؛ بدون بها)
+      description: 'Quantities only: never the cost (WAC) or the value. 401 invalid-api-key for an unknown, wrong, revoked
+        or expired key; 403 scope-missing without inventory.read; 120 calls a minute per key.'
       security: *id004
       parameters:
       - $ref: '#/components/parameters/Cursor'
       - $ref: '#/components/parameters/Limit'
+      - name: warehouseId
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - name: variantId
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
       responses:
         '200':
           description: Success
@@ -8433,13 +8487,15 @@ paths:
                   items:
                     type: array
                     items:
-                      $ref: '#/components/schemas/StockBalance'
+                      $ref: '#/components/schemas/PartnerBalance'
                   page:
                     $ref: '#/components/schemas/PageInfo'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
         '429':
           $ref: '#/components/responses/TooManyRequests'
         default:
@@ -8451,6 +8507,7 @@ paths:
       x-idempotent: false
       x-requirements:
       - INT-001
+      - AT-180
       x-rate-limit-class: partner
   /platform/tenants:
     get:
@@ -11048,27 +11105,50 @@ components:
           format: uuid
         name:
           type: string
+        prefix:
+          type: string
+          description: The public part of the key (rck_<prefix>_...)
         scopes:
           type: array
           items:
             type: string
+        createdAt:
+          type: string
+          format: date-time
         expiresAt:
           type: string
+          format: date-time
+        revokedAt:
+          type:
+          - string
+          - 'null'
           format: date-time
         lastUsedAt:
           type:
           - string
           - 'null'
           format: date-time
-        secret:
+        status:
           type: string
-          description: Returned once at creation only
+          enum:
+          - Active
+          - Expired
+          - Revoked
+        secret:
+          type:
+          - string
+          - 'null'
+          description: The full key, returned once at creation only; only the SHA-256 of its secret is kept
       required:
       - id
       - name
+      - prefix
       - scopes
+      - createdAt
       - expiresAt
+      - revokedAt
       - lastUsedAt
+      - status
     IntegrationKeyCreate:
       type: object
       additionalProperties: false
@@ -11085,6 +11165,7 @@ components:
         expiresAt:
           type: string
           format: date-time
+          description: At most 365 days ahead
       required:
       - name
       - scopes
@@ -11633,6 +11714,28 @@ components:
       - code
       - branchId
       - expiresAt
+    PartnerBalance:
+      type: object
+      additionalProperties: false
+      properties:
+        warehouseId:
+          type: string
+          format: uuid
+        variantId:
+          type: string
+          format: uuid
+        onHand:
+          $ref: '#/components/schemas/Quantity'
+        reserved:
+          $ref: '#/components/schemas/Quantity'
+        available:
+          $ref: '#/components/schemas/Quantity'
+      required:
+      - warehouseId
+      - variantId
+      - onHand
+      - reserved
+      - available
     PaymentIntent:
       type: object
       additionalProperties: false

@@ -768,6 +768,30 @@ try {
     check('X02', 'the finished export downloads from its presigned link as a ZIP (TEN-005, D-49)',
       file.status() === 200 && bytes[0] === 0x50 && bytes[1] === 0x4b && job.downloadUrl.includes('X-Amz-Expires=300'));
   }
+  // IK01–IK03 US-162: the owner (fresh MFA) makes a read-only partner key, shown once; it opens the partner API for this store
+  // only, without costs, and stops the moment it is revoked (INT-001, AT-180)
+  await page.goto(`${BFF}/integrations`);
+  await page.locator('input[name="keyName"]').fill('فروشگاه اینترنتی آزمایشی');
+  await page.locator('input[name="inventory.read"]').check();
+  await page.getByTestId('create-key').click();
+  const partnerKey = (await page.getByTestId('key-secret').textContent()) ?? '';
+  await page.getByTestId('key-status-فروشگاه اینترنتی آزمایشی').filter({ hasText: 'فعال' }).waitFor();
+  const listedKeys = (await page.getByTestId('keys').textContent()) ?? '';
+  check('IK01', 'a key is shown once at creation and the list shows only its public prefix (INT-001)',
+    /^rck_[a-z0-9]{10}_[A-Za-z0-9_-]{40,}$/.test(partnerKey) && !listedKeys.includes(partnerKey.split('_')[2]), partnerKey.slice(0, 15));
+  const partnerGet = (path, key) => page.request.get(`http://127.0.0.1:5080/api/v1/partner${path}`, { headers: { 'X-Api-Key': key } });
+  const pp = await partnerGet('/catalog/products', partnerKey);
+  const pb = await partnerGet('/inventory/balances', partnerKey);
+  const pbText = await pb.text();
+  const ppNames = ((await pp.json()).items ?? []).map((x) => x.name);
+  check('IK02', 'the partner reads this store\'s products and quantities, never the cost (INT-001)',
+    pp.status() === 200 && pb.status() === 200 && ppNames.includes('ماست آزمایشی') && !/wac|value/i.test(pbText), `${pp.status()}/${pb.status()}`);
+  page.once('dialog', (d) => void d.accept());
+  await page.getByTestId('revoke-key-فروشگاه اینترنتی آزمایشی').click();
+  await page.getByTestId('key-status-فروشگاه اینترنتی آزمایشی').filter({ hasText: 'ابطال‌شده' }).waitFor();
+  const afterRevoke = await partnerGet('/catalog/products', partnerKey);
+  check('IK03', 'a revoked key is refused at once (401 invalid-api-key)', afterRevoke.status() === 401, String(afterRevoke.status()));
+  await shot(page, 'integrations');
   await page.goto(BFF);
   await page.getByTestId('logout').waitFor();
 

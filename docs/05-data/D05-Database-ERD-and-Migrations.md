@@ -53,7 +53,7 @@ open_questions: [BQ-01..BQ-04]
 | Schema | ماژول | جداول اصلی (✓ = در DDL نمونه پیاده و تست‌شده) | Tenant-scoped |
 |---|---|---|---|
 | `core` | BuildingBlocks | `current_tenant()` ✓، `enable_tenant_rls()` ✓، `forbid_update_delete()` ✓ | — |
-| `platform` | Platform | `tenant` ✓، `branch` ✓، `register` ✓، `terminal`، `subscription`، `entitlement`، `industry_profile` ✓ (Global)، `receipt_template_industry` ✓ (Global، نسخه‌دار)، `retention_policy` (Global + Override)، `tax_submission_policy` (Global) | بله، جز Globalها |
+| `platform` | Platform | `tenant` ✓، `branch` ✓، `register` ✓، `terminal`، `subscription`، `entitlement`، `industry_profile` ✓ (Global)، `receipt_template_industry` ✓ (Global، نسخه‌دار)، `integration_key` ✓ (فقط Hash راز؛ INT-001)، `retention_policy` (Global + Override)، `tax_submission_policy` (Global) | بله، جز Globalها |
 | `iam` | IdentityAccess | `merchant_user` (Global: فقط `sub` و پروفایل)، `tenant_membership`، `role`، `role_permission`، `role_assignment` (Scope)، `approval_request`، `support_access_grant`، `pin_credential` | بله، جز `merchant_user` |
 | `merch` | Merchandising | `tenant_product` ✓، `tenant_variant` ✓، `tenant_product_barcode` ✓، `unit_conversion`، `price_list` ✓، `price_list_item` ✓، `discount_rule` ✓، `manual_discount_cap` ✓، `weighted_barcode_profile` ✓، `receipt_template_override` ✓، `receipt_template_override` ✓، `weighted_barcode_settings` ✓، `receipt_template_override` | بله |
 | `catalog` | Catalog | `catalog_product` ✓، `catalog_variant`، `global_barcode` ✓، `catalog_source_record` ✓ (Cache Provider)، `catalog_suggestion` ✓، `catalog_review`، `provider_health` | **Global** |

@@ -33,6 +33,7 @@ builder.Services.AddSingleton<IWeightedBarcodeProfiles, PostgresWeightedBarcodeP
 builder.Services.AddSingleton<IPriceLists, PostgresPriceLists>();
 builder.Services.AddSingleton<IDiscounts, PostgresDiscounts>();
 builder.Services.AddSingleton<IGlobalCatalog, PostgresGlobalCatalog>();
+builder.Services.AddSingleton<IIntegrationKeys, RetailCloud.Platform.Infrastructure.PostgresIntegrationKeys>();
 // ADR-007: licensed providers; Open Food Facts stays off until the ODbL review (X-06). No request can choose its host (SEC-T-040).
 OpenFoodFactsOptions offOptions = builder.Configuration.GetSection("Catalog:OpenFoodFacts").Get<OpenFoodFactsOptions>() ?? new OpenFoodFactsOptions();
 builder.Services.AddSingleton(offOptions);
@@ -1592,6 +1593,117 @@ v1.MapPost("/products/{productId:guid}/catalog-suggestions", async (Guid product
         }, ct);
     })
     .RequirePermission(Permissions.CatalogProductManage);
+
+// ---------------- US-162 / INT-001: partner integration keys (read scopes only in the MVP) and the partner API they open
+object KeyJson(IntegrationKeyView k, string? secret = null) => new
+{
+    k.Id, k.Name, k.Prefix, k.Scopes, k.CreatedAt, k.ExpiresAt, k.RevokedAt, k.LastUsedAt,
+    status = k.RevokedAt is not null ? "Revoked" : k.ExpiresAt <= DateTimeOffset.UtcNow ? "Expired" : "Active", secret,
+};
+
+v1.MapGet("/integrations/keys", async (RequestContext ctx, IUnitOfWork uow, IIntegrationKeys keys, CancellationToken ct) =>
+        Results.Ok(new { items = (await uow.ExecuteAsync(ctx, (s, c) => keys.ListAsync(s, c), ct)).Select(k => KeyJson(k)) }))
+    .RequirePermission(Permissions.IntegrationsManage);
+
+v1.MapPost("/integrations/keys", async (IntegrationKeyInput body, RequestContext ctx, IUnitOfWork uow, IIntegrationKeys keys, HttpContext http,
+        CancellationToken ct) =>
+    {
+        var errors = new Dictionary<string, string[]>();
+        string? name = body.Name?.Trim();
+        if (name is not { Length: >= 1 and <= 100 }) errors["name"] = ["1-100 characters"];
+        string[] scopes = [.. (body.Scopes ?? []).Distinct(StringComparer.Ordinal)];
+        if (scopes.Length == 0 || scopes.Any(x => !IntegrationKeyRules.Scopes.Contains(x))) errors["scopes"] = ["catalog.read and/or inventory.read"];
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        if (body.ExpiresAt is not { } expires || expires <= now.AddMinutes(5) || expires > now.AddDays(IntegrationKeyRules.MaxDays))
+        {
+            errors["expiresAt"] = [$"between now and {IntegrationKeyRules.MaxDays} days ahead"];
+        }
+
+        if (errors.Count > 0) return Problems.Validation(http, errors);
+        var (prefix, key, hash) = IntegrationKeyRules.New();
+        return await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            IntegrationKeyView created = await keys.CreateAsync(s, prefix, hash, name!, scopes, body.ExpiresAt!.Value, ctx.User!.Value.Value, c);
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry("integrations.key.created", "IntegrationKey", created.Id.ToString(), null,
+                new { created.Name, created.Prefix, created.Scopes, created.ExpiresAt }), c);
+            return Results.Created($"/api/v1/integrations/keys/{created.Id}", KeyJson(created, key));   // the only time the key is shown
+        }, ct);
+    })
+    .RequirePermission(Permissions.IntegrationsManage)
+    .RequireRecentMfa();   // ABAC-05
+
+v1.MapDelete("/integrations/keys/{keyId:guid}", async (Guid keyId, RequestContext ctx, IUnitOfWork uow, IIntegrationKeys keys, HttpContext http,
+        CancellationToken ct) =>
+        await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            if (!await keys.RevokeAsync(s, keyId, ctx.User!.Value.Value, c)) return Problems.NotFound(http);
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry("integrations.key.revoked", "IntegrationKey", keyId.ToString()), c);
+            return Results.NoContent();
+        }, ct))
+    .RequirePermission(Permissions.IntegrationsManage)
+    .RequireRecentMfa();   // ABAC-05
+
+// the partner API: no user, no session — the X-Api-Key alone opens one store, for the scopes it was given (TM-071: never a JWT)
+RouteGroupBuilder partner = app.MapGroup("/api/v1/partner").AllowAnonymous().RequireRateLimiting(RateLimits.Partner);
+partner.AddEndpointFilter(async (fc, next) =>
+{
+    HttpContext http = fc.HttpContext;
+    string? need = http.GetEndpoint()?.Metadata.GetMetadata<PartnerScope>()?.Scope;
+    if (IntegrationKeyRules.Parse(http.Request.Headers["X-Api-Key"]) is not { } presented)
+    {
+        return Problems.Create(http, StatusCodes.Status401Unauthorized, "invalid-api-key", "A valid X-Api-Key is required");
+    }
+
+    IUnitOfWork uow = http.RequestServices.GetRequiredService<IUnitOfWork>();
+    IntegrationKeyTarget? target = await uow.ExecuteWithoutTenantAsync(null,
+        (s, c) => http.RequestServices.GetRequiredService<IIntegrationKeys>().FindAsync(s, presented.Prefix, c), http.RequestAborted);
+    if (target is null || !System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(target.SecretHash, IntegrationKeyRules.Hash(presented.Secret)))
+    {
+        return Problems.Create(http, StatusCodes.Status401Unauthorized, "invalid-api-key", "A valid X-Api-Key is required");   // unknown, wrong, revoked or expired alike
+    }
+
+    if (need is null || !target.Scopes.Contains(need))
+    {
+        return Problems.Create(http, StatusCodes.Status403Forbidden, "scope-missing", $"This key does not have {need}");
+    }
+
+    http.Items[typeof(IntegrationKeyTarget)] = target;
+    return await next(fc);
+});
+IntegrationKeyTarget KeyOf(HttpContext http) => (IntegrationKeyTarget)http.Items[typeof(IntegrationKeyTarget)]!;
+
+partner.MapGet("/catalog/products", async (IUnitOfWork uow, IProductCatalog catalog, IIntegrationKeys keys, HttpContext http, string? cursor, int? limit,
+        CancellationToken ct) =>
+    {
+        int size = limit ?? 50;
+        if (size is < 1 or > 200) return Problems.Validation(http, new Dictionary<string, string[]> { ["limit"] = ["1-200"] });
+        IntegrationKeyTarget key = KeyOf(http);
+        var (items, next) = await uow.ExecuteAsync(new FixedTenantContext(new TenantId(key.TenantId)), async (s, c) =>
+        {
+            await keys.TouchAsync(s, key.KeyId, c);
+            return await catalog.SearchAsync(s, null, null, cursor, size, c);
+        }, ct);
+        return Results.Ok(new { items = items.Select(ProductJson), page = new { nextCursor = next, hasMore = next is not null } });
+    })
+    .WithMetadata(new PartnerScope("catalog.read"));
+
+partner.MapGet("/inventory/balances", async (IUnitOfWork uow, IStockLedger ledger, IIntegrationKeys keys, HttpContext http, Guid? warehouseId,
+        Guid? variantId, CancellationToken ct) =>
+    {
+        IntegrationKeyTarget key = KeyOf(http);
+        var rows = await uow.ExecuteAsync(new FixedTenantContext(new TenantId(key.TenantId)), async (s, c) =>
+        {
+            await keys.TouchAsync(s, key.KeyId, c);
+            return await ledger.BalancesAsync(s, warehouseId, variantId, c);
+        }, ct);
+        // inventory.read is quantities only: never the cost (WAC) or the value (INT-001)
+        return Results.Ok(new
+        {
+            items = rows.Select(b => new { b.WarehouseId, b.VariantId, onHand = Qty(b.OnHand), reserved = Qty(b.Reserved), available = Qty(b.OnHand - b.Reserved) }),
+            page = new { nextCursor = (string?)null, hasMore = false },
+        });
+    })
+    .WithMetadata(new PartnerScope("inventory.read"));
 
 // ---------------- US-061: stock ledger (INV-001..006): balances, card, negative-stock policy
 v1.MapGet("/warehouses", async (RequestContext ctx, IUnitOfWork uow, CancellationToken ct) =>
@@ -4246,6 +4358,10 @@ internal sealed record CountCreateInput(Guid? WarehouseId, string? Scope, Guid[]
 internal sealed record CountEntryInput(Guid? VariantId, string? Qty);
 internal sealed record CountEntriesInput(CountEntryInput?[]? Entries, string? ClientBatchId);
 internal sealed record VersionInput(int? ExpectedVersion);
+internal sealed record IntegrationKeyInput(string? Name, string[]? Scopes, DateTimeOffset? ExpiresAt);
+
+/// <summary>INT-001: the scope a partner endpoint needs from the key.</summary>
+internal sealed record PartnerScope(string Scope);
 internal sealed record ProductMergeInput(Guid? TargetProductId, int? ExpectedVersion, string? Reason);
 internal sealed record CatalogSuggestInput(bool? Consent, string? Category);
 internal sealed record PrintInput(string? Format);

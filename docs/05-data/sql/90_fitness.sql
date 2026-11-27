@@ -56,7 +56,10 @@ WHERE EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rc_tenant_directory')
         ('core.outbox','tenant_id'), ('core.outbox','published_at'), ('core.outbox','dead_at'), ('core.outbox','next_attempt_at'),
         ('core.outbox','producer'), ('core.outbox','occurred_at'),
         ('sales.receipt_link','tenant_id'), ('sales.receipt_link','token_hash'), ('sales.receipt_link','sale_id'),
-        ('sales.receipt_link','expires_at'), ('sales.receipt_link','revoked_at'))
+        ('sales.receipt_link','expires_at'), ('sales.receipt_link','revoked_at'),
+        ('platform.integration_key','tenant_id'), ('platform.integration_key','id'), ('platform.integration_key','prefix'),
+        ('platform.integration_key','secret_hash'), ('platform.integration_key','scopes'), ('platform.integration_key','expires_at'),
+        ('platform.integration_key','revoked_at'))
 UNION ALL
 -- (6) The tenant directory never keeps CREATE on a schema (granted only for the moment a migration hands it a function).
 SELECT 'tenant-directory-can-create', n.nspname

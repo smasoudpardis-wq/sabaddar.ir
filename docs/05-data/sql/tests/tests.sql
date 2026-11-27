@@ -332,6 +332,13 @@ SELECT t.expect_error('T251 a suggestion to the global catalog has only a public
   $$INSERT INTO catalog.catalog_suggestion (id, gtin14, name, source_hash) VALUES (gen_random_uuid(), '02000000000017', 'کالای وزنی', decode(repeat('ab', 32), 'hex'))$$);
 SELECT t.expect_error('T252 a store cannot publish or reject a suggestion (moderation does)', '42501',
   $$UPDATE catalog.catalog_suggestion SET status = 'Published'$$);
+-- US-162 integration keys (INT-001)
+SELECT t.expect_error('T253 an integration key has only the MVP read scopes', '23514',
+  $$INSERT INTO platform.integration_key (tenant_id, id, prefix, secret_hash, name, scopes, created_by, expires_at)
+    VALUES (core.current_tenant(), gen_random_uuid(), 'abcdefghij', decode(repeat('ab', 32), 'hex'), 'شریک', '{sales.write}', gen_random_uuid(), now() + interval '30 days')$$);
+SELECT t.expect_error('T254 an integration key lasts at most a year', '23514',
+  $$INSERT INTO platform.integration_key (tenant_id, id, prefix, secret_hash, name, scopes, created_by, expires_at)
+    VALUES (core.current_tenant(), gen_random_uuid(), 'abcdefghij', decode(repeat('ab', 32), 'hex'), 'شریک', '{catalog.read}', gen_random_uuid(), now() + interval '2 years')$$);
 SELECT t.expect_error('T14 stock movement is append-only for the app role', '42501',
   $$UPDATE inv.stock_movement SET qty_base = -2$$);
 SELECT t.expect_error('T15 movement for another tenant via parent rejected', '42501',

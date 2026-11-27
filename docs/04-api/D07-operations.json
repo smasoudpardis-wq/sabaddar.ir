@@ -2346,6 +2346,17 @@
   "idempotent": false
  },
  {
+  "operationId": "listIntegrationKeys",
+  "method": "GET",
+  "path": "/integrations/keys",
+  "permission": "integrations.manage",
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
+ },
+ {
   "operationId": "createIntegrationKey",
   "method": "POST",
   "path": "/integrations/keys",

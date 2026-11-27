@@ -58,6 +58,7 @@ public static class Permissions
     public const string AccountingJournalPost = "accounting.journal.post";
     public const string AccountingPeriodClose = "accounting.period.close";
     public const string TemplatesReceiptManage = "templates.receipt.manage";
+    public const string IntegrationsManage = "integrations.manage";
 
     public static readonly IReadOnlyList<string> All =
     [

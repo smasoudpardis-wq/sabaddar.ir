@@ -252,6 +252,28 @@ LANGUAGE sql STABLE SET search_path = pg_catalog AS $$
   WHERE t.id = core.current_tenant()
 $$;
 
+-- INT-001 (US-162): a partner's key to read this store's catalog or stock. The key is shown once; only the SHA-256 of its
+-- secret is kept. Scopes are the MVP's read scopes; a key lasts at most a year and can be revoked at once.
+CREATE TABLE platform.integration_key (
+  tenant_id    uuid NOT NULL REFERENCES platform.tenant (id),
+  id           uuid NOT NULL,
+  prefix       text NOT NULL CHECK (prefix ~ '^[a-z0-9]{10}$'),        -- the public part, to find the key
+  secret_hash  bytea NOT NULL CHECK (octet_length(secret_hash) = 32),
+  name         text NOT NULL CHECK (char_length(btrim(name)) BETWEEN 1 AND 100),
+  scopes       text[] NOT NULL CHECK (cardinality(scopes) >= 1 AND scopes <@ ARRAY['catalog.read','inventory.read']::text[]),
+  created_by   uuid NOT NULL,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  expires_at   timestamptz NOT NULL,
+  revoked_at   timestamptz,
+  revoked_by   uuid,
+  last_used_at timestamptz,
+  PRIMARY KEY (tenant_id, id),
+  CHECK (expires_at > created_at AND expires_at <= created_at + interval '366 days'),
+  CHECK ((revoked_at IS NULL) = (revoked_by IS NULL))
+);
+CREATE UNIQUE INDEX ux_integration_key_prefix ON platform.integration_key (prefix);
+CALL core.enable_tenant_rls('platform.integration_key');
+
 GRANT USAGE ON SCHEMA platform TO rc_app, rc_worker, rc_reporting;
 GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA platform TO rc_app;
 REVOKE INSERT, UPDATE ON platform.industry_profile FROM rc_app;   -- reference data: changed by migration only
@@ -266,3 +288,18 @@ GRANT EXECUTE ON FUNCTION platform.entitlement_cap(text), platform.read_only_rea
 REVOKE UPDATE ON platform.export_job FROM rc_app;            -- the API only requests; the Workers run and complete
 GRANT UPDATE (status, object_key, row_count, sha256, error, completed_at, expires_at, purged_at) ON platform.export_job TO rc_worker;
 RESET ROLE;
+
+-- a partner request carries the key, not the store: this returns the store, scopes and secret hash of a key in force for
+-- its public prefix — nothing else (the pattern of iam.invitation_tenant); the API compares the hash in constant time
+CREATE OR REPLACE FUNCTION platform.integration_key_target(p_prefix text)
+RETURNS TABLE (tenant_id uuid, key_id uuid, secret_hash bytea, scopes text[])
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
+  SELECT k.tenant_id, k.id, k.secret_hash, k.scopes FROM platform.integration_key k
+   WHERE k.prefix = p_prefix AND k.revoked_at IS NULL AND k.expires_at > now()
+$$;
+GRANT SELECT (tenant_id, id, prefix, secret_hash, scopes, expires_at, revoked_at) ON platform.integration_key TO rc_tenant_directory;
+GRANT CREATE ON SCHEMA platform TO rc_tenant_directory;  -- a new owner needs CREATE on the schema; revoked at once (fitness 6)
+ALTER FUNCTION platform.integration_key_target(text) OWNER TO rc_tenant_directory;
+REVOKE CREATE ON SCHEMA platform FROM rc_tenant_directory;
+REVOKE ALL ON FUNCTION platform.integration_key_target(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION platform.integration_key_target(text) TO rc_app;

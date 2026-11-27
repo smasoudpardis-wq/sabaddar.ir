@@ -126,6 +126,12 @@ public static class ServiceCollectionExtensions
                 http.Connection.RemoteIpAddress?.ToString() ?? "unknown",
                 _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions { PermitLimit = 30, Window = TimeSpan.FromMinutes(1) }));
 
+            // INT-001: a partner key, 120 calls a minute per key (its public prefix), or per address without one
+            o.AddPolicy(RateLimits.Partner, http => System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+                http.Request.Headers["X-Api-Key"].ToString() is { Length: >= 15 } k && k.StartsWith("rck_", StringComparison.Ordinal)
+                    ? k[..15] : "ip|" + http.Connection.RemoteIpAddress,
+                _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions { PermitLimit = 120, Window = TimeSpan.FromMinutes(1) }));
+
             // D07 README: barcode resolve 120 a minute per user (a scanner is fast, a scraper faster)
             o.AddPolicy(RateLimits.CatalogResolve, http => System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
                 http.User.FindFirst("iss")?.Value + "|" + http.User.FindFirst("sub")?.Value,
@@ -166,5 +172,6 @@ public static class RateLimits
     public const string Invitation = "invitation";
     public const string CatalogResolve = "catalog-resolve";
     public const string ReceiptLink = "receipt-link";
+    public const string Partner = "partner";
 }
 

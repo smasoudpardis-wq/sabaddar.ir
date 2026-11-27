@@ -68,10 +68,11 @@ public sealed class EndpointPolicyTests : IClassFixture<ApiFactory>
                     continue;
                 }
 
-                if (op is { Permission: null } && path.StartsWith("/r/", StringComparison.Ordinal))
+                if (op is { Permission: null } && (path.StartsWith("/r/", StringComparison.Ordinal) || path.StartsWith("/partner/", StringComparison.Ordinal)))
                 {
                     // the public audience (CUS-009): explicitly anonymous and rate-limited, nothing else
-                    if (e.Metadata.GetMetadata<Microsoft.AspNetCore.Authorization.IAllowAnonymous>() is null)
+                    if (e.Metadata.GetMetadata<Microsoft.AspNetCore.Authorization.IAllowAnonymous>() is null
+                        || (path.StartsWith("/partner/", StringComparison.Ordinal) && !e.Metadata.Any(m => m.GetType().Name == "PartnerScope")))
                     {
                         problems.Add($"{method} {path} ({op.OperationId}): a public operation that is not explicitly anonymous");
                     }
