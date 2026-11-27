@@ -703,6 +703,32 @@ try {
   await page.getByTestId('product-submit').click();
   await page.getByTestId('product-created').filter({ hasText: 'چای سیاه آزمایشی' }).waitFor();
   check('CG02', 'a suggestion is saved only after the user ticks that they checked it (CAT-004.1)', true);
+  // MG01–MG02 US-044: a duplicate product is merged into the original (its barcode follows), and the original is suggested to the
+  // global catalog only after the store agrees (CAT-006, CAT-005.1)
+  for (const [name, sku, code] of [['ماست آزمایشی', 'E2E-YOG', '6260000000125'], ['ماست تکراری', 'E2E-YOG-DUP', '6260000000132']]) {
+    await page.getByTestId('product-name').fill(name);
+    await page.getByTestId('product-sku').fill(sku);
+    await page.getByTestId('product-barcode').fill(code);
+    await page.getByTestId('product-submit').click();
+    await page.getByTestId('product-created').filter({ hasText: name }).waitFor();
+  }
+  await page.getByTestId('product-search').fill('ماست');
+  await page.getByTestId('product-search-submit').click();
+  const dupRow = page.locator('[data-testid="products"] > li', { hasText: 'ماست تکراری' });
+  await dupRow.getByTestId('product-merge-open').click();
+  await dupRow.getByTestId('product-merge-target').fill('E2E-YOG');
+  await dupRow.getByTestId('product-merge-reason').fill('ثبت دوباره‌ی یک کالا');
+  await dupRow.getByTestId('product-merge-submit').click();
+  await dupRow.waitFor({ state: 'detached' });
+  const original = page.locator('[data-testid="products"] > li', { hasText: 'ماست آزمایشی' });
+  const both = (await original.textContent()) ?? '';
+  check('MG01', 'the duplicate disappears from the list and its barcode now belongs to the original (CAT-006)',
+    both.includes('6260000000125') && both.includes('6260000000132'), both);
+  await original.getByTestId('product-suggest-open').click();
+  await original.getByTestId('product-suggest-consent').check();
+  await original.getByTestId('product-suggest-submit').click();
+  await original.getByTestId('product-action-note').filter({ hasText: 'فرستاده شد' }).waitFor();
+  check('MG02', 'with the store\'s explicit consent the product is sent to the global catalog for moderation (CAT-005.1)', true);
   // W01–W03 US-045: the owner sets a scale label format; a printed label then decodes to the item and its weight
   await page.goto(`${BFF}/products`);
   await page.getByTestId('product-name').fill('پنیر فله آزمایشی');

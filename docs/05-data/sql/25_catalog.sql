@@ -37,7 +37,25 @@ CREATE TABLE catalog.catalog_source_record (
   PRIMARY KEY (source, gtin14)
 );
 
+-- CAT-005.1 (US-044): a store's opt-in suggestion of one of its products, for moderation (US-047). Only the descriptive
+-- fields and the public barcode leave the store: no price, cost, stock or supplier, and not even which store sent it —
+-- only a one-way fingerprint so the same store suggesting the same code twice counts once.
+CREATE TABLE catalog.catalog_suggestion (
+  id           uuid PRIMARY KEY,
+  gtin14       text NOT NULL CHECK (gtin14 ~ '^[0-9]{14}$' AND left(gtin14, 1) <> '2' AND left(gtin14, 2) NOT IN ('02','04')),
+  name         text NOT NULL CHECK (char_length(btrim(name)) BETWEEN 1 AND 200),
+  brand        text CHECK (char_length(brand) BETWEEN 1 AND 100),
+  category     text CHECK (char_length(category) BETWEEN 1 AND 100),
+  source_hash  bytea NOT NULL CHECK (octet_length(source_hash) = 32),
+  status       text NOT NULL DEFAULT 'Pending' CHECK (status IN ('Pending','Published','Rejected')),
+  submitted_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (gtin14, source_hash)
+);
+CREATE INDEX ix_catalog_suggestion_pending ON catalog.catalog_suggestion (submitted_at) WHERE status = 'Pending';
+
 GRANT USAGE ON SCHEMA catalog TO rc_app, rc_worker, rc_reporting;
 GRANT SELECT ON catalog.catalog_product, catalog.global_barcode, catalog.catalog_source_record TO rc_app, rc_worker, rc_reporting;
 GRANT INSERT, UPDATE ON catalog.catalog_source_record TO rc_app;   -- the provider cache; the catalog itself is moderation's
+GRANT INSERT ON catalog.catalog_suggestion TO rc_app;   -- a store only adds a suggestion; deciding is moderation's (US-047)
+GRANT SELECT (id, gtin14, source_hash) ON catalog.catalog_suggestion TO rc_app;   -- enough to see its own was already sent
 RESET ROLE;

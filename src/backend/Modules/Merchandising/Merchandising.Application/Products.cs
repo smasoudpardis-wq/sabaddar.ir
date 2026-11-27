@@ -69,9 +69,31 @@ public enum CatalogOutcome
 
 public sealed record CatalogResult<T>(CatalogOutcome Outcome, T? Value, Guid? ConflictProductId = null);
 
+public enum MergeOutcome
+{
+    Done,
+    NotFound,
+    SameProduct,
+    AlreadyMerged,
+    VersionConflict,
+    UnitMismatch,
+    VariantMismatch,
+}
+
+/// <summary>CAT-006: what a merge did — the target as it is now and the codes it took over from the source.</summary>
+public sealed record MergeResult(MergeOutcome Outcome, ProductView? Target, IReadOnlyList<string> MovedBarcodes, string? Detail = null);
+
 public interface IProductCatalog
 {
     Task<CatalogResult<ProductView>> CreateAsync(IUnitOfWorkScope scope, ProductSpec spec, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// CAT-006 (US-044): a duplicate (source) is merged into the target with the same base unit. Each source variant is paired
+    /// with the target variant of the same axis values; its active barcodes are retired and added again to that variant
+    /// (barcode history stays, RC016); the source variants go inactive and the source product becomes Merged — nothing is deleted.
+    /// The caller checks first that the source holds no stock.
+    /// </summary>
+    Task<MergeResult> MergeAsync(IUnitOfWorkScope scope, Guid sourceId, Guid targetId, int expectedVersion, CancellationToken cancellationToken);
 
     Task<ProductView?> GetAsync(IUnitOfWorkScope scope, Guid productId, CancellationToken cancellationToken);
 

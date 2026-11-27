@@ -235,7 +235,10 @@ schema("Product", id="uuid", name="str", brand="str?", baseUnit="str", taxCode="
 schema("ProductUpdate", expectedVersion="int", **{"name?": "str", "brand?": "str", "taxCode?": "str", "taxRate?": "bp",
                                                   "status?": ("enum", ["Active", "Inactive"])})
 schema("VariantUpdate", expectedVersion=("desc", "int", "The product's version"), status=("enum", ["Active", "Inactive"]))
-schema("ProductMerge", targetProductId="uuid", expectedVersion="int", reason="str")
+schema("ProductMerge", targetProductId="uuid", expectedVersion=("desc", "int", "The duplicate's version"), reason=("desc", "str", "3-200 characters"))
+schema("CatalogSuggestionCreate", consent=("desc", "bool", "Must be true: the store opts in for this suggestion (CAT-005.1)"),
+       **{"category?": "str"})
+schema("CatalogSuggestionReceipt", submitted=["str"], alreadySubmitted=("desc", ["str"], "Codes this store had already suggested"))
 schema("PriceSet", items=[{"variantId": "uuid", "unitPrice": "money"}], validFrom="dt", **{"reason?": "str"})
 schema("PriceList", id="uuid", name="str", isDefault=("desc", "bool", "The tenant's list; created on first use"),
        branchIds=("desc", ["uuid"], "Branches with their own list; empty: every branch sells from the default list (CAT-009)"))
@@ -932,10 +935,16 @@ op("delete", "/products/{productId}/variants/{variantId}/barcodes/{barcodeId}", 
    "غیرفعال‌سازی بارکد (تاریخچه حفظ می‌شود)", perm="catalog.product.manage", scope="Tenant", no_content=True,
    reqs=["CAT-002"], audited=True)
 op("post", "/products/{productId}/merge", "mergeProduct", "Catalog", "Merge کالای تکراری", perm="catalog.product.manage",
-   scope="Tenant", idem=True, body="ProductMerge", resp="Product", reqs=["CAT-006"], audited=True)
+   scope="Tenant", idem=True, body="ProductMerge", resp="Product", reqs=["CAT-006", "AT-028"], audited=True, conflict=True,
+   desc="The path product (the duplicate) is merged into targetProductId; the response is the target. Same base unit only "
+        "(409 base-unit-mismatch); every duplicate variant needs a target variant with the same axis values (409 merge-variant-mismatch); "
+        "the duplicate must hold no stock or reservation (409 merge-source-has-stock). Its active barcodes move to the target, its "
+        "variants go inactive and it becomes Merged (never deleted).")
 op("post", "/products/{productId}/catalog-suggestions", "suggestToGlobalCatalog", "Catalog",
    "پیشنهاد کالا به کاتالوگ عمومی (Opt-in؛ فقط فیلدهای مجاز)", perm="catalog.product.manage", scope="Tenant",
-   resp_code="202", reqs=["CAT-005.1"], audited=True)
+   body="CatalogSuggestionCreate", resp="CatalogSuggestionReceipt", resp_code="202", reqs=["CAT-005.1", "AT-027"], audited=True,
+   desc="Sends only name, brand, category and the public (GS1, not restricted) barcodes for moderation; never price, cost, stock, "
+        "supplier or the store's identity (a one-way fingerprint counts a store once). 422 no-public-barcode otherwise.")
 op("get", "/price-lists", "listPriceLists", "Catalog", "فهرست قیمت‌ها", resp="PriceList", list_of=True, reqs=["CAT-009"])
 op("get", "/price-lists/{priceListId}/prices", "listPriceVersions", "Catalog", "تاریخچه قیمت (یک Variant یا کل فهرست)",
    perm="catalog.price.manage", scope="Tenant", resp="PriceVersion", list_of=True, reqs=["CAT-009", "AB-06"],

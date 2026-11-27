@@ -588,7 +588,10 @@
   "pathParams": [
    "productId"
   ],
-  "bodyProps": null,
+  "bodyProps": [
+   "category",
+   "consent"
+  ],
   "idempotent": false
  },
  {

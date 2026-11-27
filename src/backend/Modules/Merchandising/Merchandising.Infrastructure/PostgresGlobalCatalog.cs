@@ -86,5 +86,20 @@ public sealed class PostgresGlobalCatalog : IGlobalCatalog
         await cmd.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task<bool> SuggestAsync(IUnitOfWorkScope scope, string gtin14, string name, string? brand, string? category, byte[] sourceHash,
+        CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
+            "INSERT INTO catalog.catalog_suggestion (id, gtin14, name, brand, category, source_hash) VALUES ($1, $2, $3, $4, $5, $6) " +
+            "ON CONFLICT (gtin14, source_hash) DO NOTHING");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = Guid.CreateVersion7() });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = gtin14 });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = name });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)brand ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)category ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = sourceHash });
+        return await cmd.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
     private static string? Str(NpgsqlDataReader r, int i) => r.IsDBNull(i) ? null : r.GetString(i);
 }

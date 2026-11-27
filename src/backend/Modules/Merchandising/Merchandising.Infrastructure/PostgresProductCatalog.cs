@@ -327,6 +327,68 @@ public sealed class PostgresProductCatalog(IOutbox outbox) : IProductCatalog
         return new(CatalogOutcome.Done, new BarcodeView(id, spec.Code, spec.Normalized, spec.PackagingUnit, Factor(spec.UnitFactor), spec.IsInternal, true));
     }
 
+    public async Task<MergeResult> MergeAsync(IUnitOfWorkScope scope, Guid sourceId, Guid targetId, int expectedVersion, CancellationToken cancellationToken)
+    {
+        var s = (PostgresUnitOfWorkScope)scope;
+        if (sourceId == targetId)
+        {
+            return new(MergeOutcome.SameProduct, null, []);
+        }
+
+        await Exec(s, "SELECT 1 FROM merch.tenant_product WHERE id = ANY($1) ORDER BY id FOR UPDATE", cancellationToken, new[] { sourceId, targetId });
+        if (await GetAsync(scope, sourceId, cancellationToken) is not { } source || await GetAsync(scope, targetId, cancellationToken) is not { } target)
+        {
+            return new(MergeOutcome.NotFound, null, []);
+        }
+
+        if (source.Status == "Merged" || target.Status == "Merged")
+        {
+            return new(MergeOutcome.AlreadyMerged, null, []);
+        }
+
+        if (source.Version != expectedVersion)
+        {
+            return new(MergeOutcome.VersionConflict, null, []);
+        }
+
+        if (source.BaseUnit != target.BaseUnit)
+        {
+            return new(MergeOutcome.UnitMismatch, null, [], $"{source.BaseUnit} ≠ {target.BaseUnit}");
+        }
+
+        static string Key(IReadOnlyDictionary<string, string> axes) => string.Join("|", axes.OrderBy(a => a.Key, StringComparer.Ordinal).Select(a => a.Key + "=" + a.Value));
+        var pairs = new List<(VariantView From, VariantView To)>();
+        foreach (VariantView v in source.Variants)
+        {
+            if (target.Variants.FirstOrDefault(x => Key(x.AxisValues) == Key(v.AxisValues)) is not { } to)
+            {
+                return new(MergeOutcome.VariantMismatch, null, [], v.Sku);
+            }
+
+            pairs.Add((v, to));
+        }
+
+        var moved = new List<string>();
+        foreach ((VariantView from, VariantView to) in pairs)
+        {
+            foreach (BarcodeView b in from.Barcodes.Where(b => b.Active))
+            {
+                await Exec(s, "UPDATE merch.tenant_product_barcode SET active = false, removed_at = now() WHERE id = $1 AND active", cancellationToken, b.Id);
+                await Exec(s, "INSERT INTO merch.tenant_product_barcode (tenant_id, id, variant_id, code_normalized, code_original, is_internal, packaging_unit, unit_factor) " +
+                              "VALUES (core.current_tenant(), $1, $2, $3, $4, $5, $6, $7)", cancellationToken,
+                    Guid.CreateVersion7(), to.Id, b.CodeNormalized, b.Code, b.IsInternal, b.PackagingUnit,
+                    decimal.Parse(b.UnitFactor, System.Globalization.CultureInfo.InvariantCulture));
+                moved.Add(b.Code);
+            }
+
+            await Exec(s, "UPDATE merch.tenant_variant SET status = 'Inactive' WHERE id = $1", cancellationToken, from.Id);
+        }
+
+        await Exec(s, "UPDATE merch.tenant_product SET status = 'Merged', merged_into_id = $2, version = version + 1 WHERE id = $1", cancellationToken,
+            sourceId, targetId);
+        return new(MergeOutcome.Done, await GetAsync(scope, targetId, cancellationToken), moved);
+    }
+
     public async Task<CatalogOutcome> RemoveBarcodeAsync(IUnitOfWorkScope scope, Guid productId, Guid variantId, Guid barcodeId, CancellationToken cancellationToken)
     {
         var s = (PostgresUnitOfWorkScope)scope;

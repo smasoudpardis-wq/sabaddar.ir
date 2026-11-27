@@ -58,6 +58,8 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
         ["paySupplier"] = _ => new { amount = "1", method = "Cash", confirmedWarnings = new[] { "exceeds-balance" } },
         ["closePeriod"] = _ => new { expectedVersion = 1 },
         ["printReceipt"] = _ => new { format = "80mm" },
+        ["mergeProduct"] = f => new { targetProductId = Guid.CreateVersion7(), expectedVersion = 1, reason = "آزمون" },
+        ["suggestToGlobalCatalog"] = _ => new { consent = true },
         ["closeCount"] = _ => new { expectedVersion = 1 },
         ["confirmCount"] = _ => new { expectedVersion = 1 },
         ["finalizeSale"] = _ => new { expectedVersion = 1, expectedTotal = "1000" },

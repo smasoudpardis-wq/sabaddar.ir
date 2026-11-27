@@ -1505,6 +1505,94 @@ v1.MapPost("/catalog/barcodes/resolve", async (BarcodeResolveInput body, Request
     .AllowWhenReadOnly()
     .RequireRateLimiting(RateLimits.CatalogResolve);
 
+// ---------------- US-044 / CAT-006: merging a duplicate product into another, and CAT-005.1: suggesting a product to the
+// global catalog (opt-in, descriptive fields and public barcodes only)
+v1.MapIdempotentPost<ProductMergeInput>("/products/{productId:guid}/merge", "catalog.merge-product", async (body, scope, http, ct) =>
+    {
+        RequestContext ctx = http.RequestServices.GetRequiredService<RequestContext>();
+        Guid productId = Guid.Parse((string)http.GetRouteValue("productId")!, System.Globalization.CultureInfo.InvariantCulture);
+        var errors = new Dictionary<string, string[]>();
+        if (body.TargetProductId is null) errors["targetProductId"] = ["required"];
+        if (body.ExpectedVersion is null) errors["expectedVersion"] = ["required"];
+        string? reason = body.Reason?.Trim();
+        if (reason is not { Length: >= 3 and <= 200 }) errors["reason"] = ["3-200 characters"];
+        if (errors.Count > 0) return CommandResult.Fail(Problems.Validation(http, errors));
+        if (body.TargetProductId == productId)
+        {
+            return CommandResult.Fail(Problems.Validation(http, new Dictionary<string, string[]> { ["targetProductId"] = ["another product"] }));
+        }
+
+        IProductCatalog catalog = http.RequestServices.GetRequiredService<IProductCatalog>();
+        if (await catalog.GetAsync(scope, productId, ct) is not { } source) return CommandResult.Fail(Problems.NotFound(http));
+        // stock is the ledger's: a merge never moves it silently; transfer or adjust it first (INV-002)
+        IStockLedger ledger = http.RequestServices.GetRequiredService<IStockLedger>();
+        var holding = new List<string>();
+        foreach (VariantView v in source.Variants)
+        {
+            if ((await ledger.BalancesAsync(scope, null, v.Id, ct)).Any(b => b.OnHand != 0 || b.Reserved != 0)) holding.Add(v.Sku);
+        }
+
+        if (holding.Count > 0)
+        {
+            return CommandResult.Fail(Problems.WithContext(http, StatusCodes.Status409Conflict, "merge-source-has-stock",
+                "Adjust or transfer the duplicate's stock to zero first", new { skus = holding }));
+        }
+
+        MergeResult merged = await catalog.MergeAsync(scope, productId, body.TargetProductId!.Value, body.ExpectedVersion!.Value, ct);
+        IResult? refused = merged.Outcome switch
+        {
+            MergeOutcome.Done => null,
+            MergeOutcome.NotFound => Problems.NotFound(http),
+            MergeOutcome.SameProduct => Problems.Validation(http, new Dictionary<string, string[]> { ["targetProductId"] = ["another product"] }),
+            MergeOutcome.AlreadyMerged => Problems.Create(http, StatusCodes.Status409Conflict, "product-merged", "One of the products is already merged"),
+            MergeOutcome.VersionConflict => Problems.Create(http, StatusCodes.Status409Conflict, "version-conflict", "The product changed; reload it"),
+            MergeOutcome.UnitMismatch => Problems.WithContext(http, StatusCodes.Status409Conflict, "base-unit-mismatch",
+                "Only products with the same base unit merge (CAT-006)", new { units = merged.Detail }),
+            _ => Problems.WithContext(http, StatusCodes.Status409Conflict, "merge-variant-mismatch",
+                "Every variant of the duplicate needs a variant with the same axis values in the target", new { sku = merged.Detail }),
+        };
+        if (refused is not null) return CommandResult.Fail(refused);
+        await Audit(http, scope, ActorOf(ctx, http), new AuditEntry("catalog.product.merged", "Product", productId.ToString(), reason,
+            new { into = body.TargetProductId, barcodes = merged.MovedBarcodes, sourceName = source.Name }), ct);
+        return CommandResult.Ok(ProductJson(merged.Target!));
+    })
+    .RequirePermission(Permissions.CatalogProductManage);
+
+v1.MapPost("/products/{productId:guid}/catalog-suggestions", async (Guid productId, CatalogSuggestInput body, RequestContext ctx, IUnitOfWork uow,
+        IProductCatalog catalog, IGlobalCatalog global, HttpContext http, CancellationToken ct) =>
+    {
+        var errors = new Dictionary<string, string[]>();
+        // CAT-005.1: the store opts in explicitly, each time; nothing is sent on its behalf
+        if (body.Consent != true) errors["consent"] = ["required: true (CAT-005.1 opt-in)"];
+        string? category = string.IsNullOrWhiteSpace(body.Category) ? null : body.Category.Trim();
+        if (category is { Length: > 100 }) errors["category"] = ["up to 100 characters"];
+        if (errors.Count > 0) return Problems.Validation(http, errors);
+        return await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            if (await catalog.GetAsync(s, productId, c) is not { Status: not "Merged" } product) return Problems.NotFound(http);
+            string[] codes = [.. product.Variants.SelectMany(v => v.Barcodes)
+                .Where(b => b.Active && !b.IsInternal && Gtin.TryParse(b.CodeNormalized, out Gtin g) && !g.IsRestrictedCirculation)
+                .Select(b => b.CodeNormalized).Distinct()];
+            if (codes.Length == 0)
+            {
+                return Problems.Create(http, StatusCodes.Status422UnprocessableEntity, "no-public-barcode",
+                    "Only a product with a public (GS1) barcode can be suggested; internal and weighed codes stay in the store");
+            }
+
+            byte[] source = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes("catalog-suggestion|" + ctx.ActiveTenant!.Value.Value));
+            var sent = new List<string>();
+            foreach (string code in codes)
+            {
+                if (await global.SuggestAsync(s, code, product.Name, product.Brand, category, source, c)) sent.Add(code);
+            }
+
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry("catalog.product.suggested", "Product", productId.ToString(), null,
+                new { codes = sent, already = codes.Except(sent) }), c);
+            return Results.Accepted(value: new { submitted = sent, alreadySubmitted = codes.Except(sent) });
+        }, ct);
+    })
+    .RequirePermission(Permissions.CatalogProductManage);
+
 // ---------------- US-061: stock ledger (INV-001..006): balances, card, negative-stock policy
 v1.MapGet("/warehouses", async (RequestContext ctx, IUnitOfWork uow, CancellationToken ct) =>
         Results.Ok(new
@@ -4158,6 +4246,8 @@ internal sealed record CountCreateInput(Guid? WarehouseId, string? Scope, Guid[]
 internal sealed record CountEntryInput(Guid? VariantId, string? Qty);
 internal sealed record CountEntriesInput(CountEntryInput?[]? Entries, string? ClientBatchId);
 internal sealed record VersionInput(int? ExpectedVersion);
+internal sealed record ProductMergeInput(Guid? TargetProductId, int? ExpectedVersion, string? Reason);
+internal sealed record CatalogSuggestInput(bool? Consent, string? Category);
 internal sealed record PrintInput(string? Format);
 internal sealed record SupportAccessRequestInput(string? Reason, int? DurationMinutes);
 internal sealed record ReceiptOverridesInput(string? LogoObjectKey, string? FooterText, string? Signature);

@@ -328,6 +328,10 @@ SELECT t.ok('T247 the app holds no way to list receipt links of other stores (RL
   (SELECT count(*) FROM sales.receipt_link_target(decode(repeat('ab', 32), 'hex'))) = 0);
 SELECT t.expect_error('T248 a receipt link token is a 32-byte hash', '23514',
   $$INSERT INTO sales.receipt_link (tenant_id, token_hash, sale_id, created_by) VALUES (core.current_tenant(), '\x01', gen_random_uuid(), gen_random_uuid())$$);
+SELECT t.expect_error('T251 a suggestion to the global catalog has only a public barcode (no internal code)', '23514',
+  $$INSERT INTO catalog.catalog_suggestion (id, gtin14, name, source_hash) VALUES (gen_random_uuid(), '02000000000017', 'کالای وزنی', decode(repeat('ab', 32), 'hex'))$$);
+SELECT t.expect_error('T252 a store cannot publish or reject a suggestion (moderation does)', '42501',
+  $$UPDATE catalog.catalog_suggestion SET status = 'Published'$$);
 SELECT t.expect_error('T14 stock movement is append-only for the app role', '42501',
   $$UPDATE inv.stock_movement SET qty_base = -2$$);
 SELECT t.expect_error('T15 movement for another tenant via parent rejected', '42501',

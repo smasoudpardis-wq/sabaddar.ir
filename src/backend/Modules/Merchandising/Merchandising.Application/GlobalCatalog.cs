@@ -52,6 +52,13 @@ public interface IGlobalCatalog
     Task<IReadOnlyList<ProviderRecord>> CachedAsync(IUnitOfWorkScope scope, string gtin14, DateTimeOffset notBefore, CancellationToken cancellationToken);
 
     Task SaveAsync(IUnitOfWorkScope scope, ProviderRecord record, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// CAT-005.1 (US-044): a store's opt-in suggestion for moderation; false when this store already suggested this code.
+    /// <paramref name="sourceHash"/> is a one-way fingerprint of the store: the global catalog never learns which store it was.
+    /// </summary>
+    Task<bool> SuggestAsync(IUnitOfWorkScope scope, string gtin14, string name, string? brand, string? category, byte[] sourceHash,
+        CancellationToken cancellationToken);
 }
 
 /// <summary>CAT-004 / CAT-004.1 / TM-041: how candidates are scored, compared and cleaned.</summary>

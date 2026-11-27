@@ -1936,6 +1936,10 @@ paths:
       tags:
       - Catalog
       summary: Merge کالای تکراری
+      description: The path product (the duplicate) is merged into targetProductId; the response is the target. Same base
+        unit only (409 base-unit-mismatch); every duplicate variant needs a target variant with the same axis values (409
+        merge-variant-mismatch); the duplicate must hold no stock or reservation (409 merge-source-has-stock). Its active
+        barcodes move to the target, its variants go inactive and it becomes Merged (never deleted).
       security: *id001
       parameters:
       - name: productId
@@ -1983,6 +1987,7 @@ paths:
       x-idempotent: true
       x-requirements:
       - CAT-006
+      - AT-028
       x-audited: true
   /products/{productId}/catalog-suggestions:
     post:
@@ -1990,6 +1995,8 @@ paths:
       tags:
       - Catalog
       summary: پیشنهاد کالا به کاتالوگ عمومی (Opt-in؛ فقط فیلدهای مجاز)
+      description: Sends only name, brand, category and the public (GS1, not restricted) barcodes for moderation; never price,
+        cost, stock, supplier or the store's identity (a one-way fingerprint counts a store once). 422 no-public-barcode otherwise.
       security: *id001
       parameters:
       - name: productId
@@ -1998,15 +2005,29 @@ paths:
         schema:
           type: string
           format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CatalogSuggestionCreate'
       responses:
         '202':
-          description: OK
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogSuggestionReceipt'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
         '429':
           $ref: '#/components/responses/TooManyRequests'
         default:
@@ -2020,6 +2041,7 @@ paths:
       x-idempotent: false
       x-requirements:
       - CAT-005.1
+      - AT-027
       x-audited: true
   /price-lists:
     get:
@@ -9806,6 +9828,33 @@ components:
       - fields
       - sources
       - submittedAt
+    CatalogSuggestionCreate:
+      type: object
+      additionalProperties: false
+      properties:
+        consent:
+          type: boolean
+          description: 'Must be true: the store opts in for this suggestion (CAT-005.1)'
+        category:
+          type: string
+      required:
+      - consent
+    CatalogSuggestionReceipt:
+      type: object
+      additionalProperties: false
+      properties:
+        submitted:
+          type: array
+          items:
+            type: string
+        alreadySubmitted:
+          type: array
+          items:
+            type: string
+          description: Codes this store had already suggested
+      required:
+      - submitted
+      - alreadySubmitted
     Collection:
       type: object
       additionalProperties: false
@@ -12161,8 +12210,10 @@ components:
         expectedVersion:
           type: integer
           format: int32
+          description: The duplicate's version
         reason:
           type: string
+          description: 3-200 characters
       required:
       - targetProductId
       - expectedVersion

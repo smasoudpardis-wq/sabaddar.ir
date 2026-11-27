@@ -84,6 +84,84 @@ const rial = (v: string) => Number(v).toLocaleString('fa-IR');
  * US-052 / CAT-009 / BR-041: a new price for one variant, from now. A big change needs another manager's approval:
  * the request waits on the approvals page and, once approved, the same change is sent again with the approval.
  */
+/**
+ * US-044 / CAT-006 / CAT-005.1: a duplicate is merged into the product it duplicates (found by its SKU), and a product can be
+ * suggested to the global catalog — only after the store says so, and only its name, brand, category and public barcodes.
+ */
+function ProductActions({ product, onDone }: { product: Product; onDone: () => void }) {
+  const [mode, setMode] = useState<'none' | 'merge' | 'suggest'>('none');
+  const [targetSku, setTargetSku] = useState('');
+  const [reason, setReason] = useState('');
+  const [consent, setConsent] = useState(false);
+  const [note, setNote] = useState('');
+  const [key, setKey] = useState(() => crypto.randomUUID());
+
+  async function merge(e: React.FormEvent) {
+    e.preventDefault();
+    setNote('');
+    const found = await fetch(`/bff/products?q=${encodeURIComponent(targetSku.trim())}`, { cache: 'no-store' });
+    const target = found.ok ? ((await found.json()).items as Product[]).find((p) => p.variants.some((v) => v.sku === targetSku.trim())) : undefined;
+    if (!target || target.id === product.id) return setNote('کالای مقصد با این SKU پیدا نشد.');
+    const r = await fetch(`/bff/products/${product.id}/merge`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf(), 'idempotency-key': key },
+      body: JSON.stringify({ targetProductId: target.id, expectedVersion: product.version, reason }),
+    });
+    if (!r.ok) {
+      const code = await codeOf(r);
+      return setNote(MERGE_ERRORS[code] ?? MESSAGES[code] ?? code);
+    }
+    setKey(crypto.randomUUID());
+    setMode('none');
+    onDone();
+  }
+
+  async function suggest(e: React.FormEvent) {
+    e.preventDefault();
+    setNote('');
+    const r = await fetch(`/bff/products/${product.id}/catalog-suggestions`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf() }, body: JSON.stringify({ consent }),
+    });
+    if (!r.ok) {
+      const code = await codeOf(r);
+      return setNote(code === 'no-public-barcode' ? 'فقط کالایی با بارکد عمومی (نه کد داخلی یا وزنی) پیشنهاد می‌شود.' : MESSAGES[code] ?? code);
+    }
+    const p = await r.json();
+    setNote(p.submitted.length > 0 ? 'برای بررسی ناظر کاتالوگ فرستاده شد.' : 'این کالا قبلاً پیشنهاد شده است.');
+    setMode('none');
+  }
+
+  return (
+    <span data-testid={`product-actions-${product.id}`}>
+      {' '}<button type="button" style={{ minHeight: 44 }} onClick={() => setMode(mode === 'merge' ? 'none' : 'merge')} data-testid="product-merge-open">ادغام در کالای دیگر</button>
+      {' '}<button type="button" style={{ minHeight: 44 }} onClick={() => setMode(mode === 'suggest' ? 'none' : 'suggest')} data-testid="product-suggest-open">پیشنهاد به کاتالوگ عمومی</button>
+      {mode === 'merge' && (
+        <form onSubmit={(e) => void merge(e)} data-testid="product-merge-form">
+          این کالا تکراری است و در کالای با SKU{' '}
+          <input required value={targetSku} onChange={(e) => setTargetSku(e.target.value)} dir="ltr" size={12} data-testid="product-merge-target" />{' '}
+          ادغام شود؛ دلیل <input required minLength={3} value={reason} onChange={(e) => setReason(e.target.value)} data-testid="product-merge-reason" />{' '}
+          <button type="submit" style={{ minHeight: 44 }} data-testid="product-merge-submit">ادغام</button>
+          <br />بارکدها به کالای مقصد منتقل می‌شوند و این کالا حذف نمی‌شود (در سابقه می‌ماند). موجودی آن باید صفر باشد.
+        </form>
+      )}
+      {mode === 'suggest' && (
+        <form onSubmit={(e) => void suggest(e)} data-testid="product-suggest-form">
+          <label><input type="checkbox" required checked={consent} onChange={(e) => setConsent(e.target.checked)} data-testid="product-suggest-consent" />{' '}
+            موافقم نام، برند و بارکد عمومی این کالا (بدون قیمت، موجودی و نام فروشگاه) برای کاتالوگ عمومی فرستاده شود</label>{' '}
+          <button type="submit" style={{ minHeight: 44 }} data-testid="product-suggest-submit">فرستادن</button>
+        </form>
+      )}
+      {note && <span role="status" data-testid="product-action-note"> {note}</span>}
+    </span>
+  );
+}
+
+const MERGE_ERRORS: Record<string, string> = {
+  'base-unit-mismatch': 'واحد پایه دو کالا یکی نیست؛ ادغام ممکن نیست.',
+  'merge-source-has-stock': 'این کالا هنوز موجودی دارد؛ اول موجودی آن را صفر کنید (انتقال یا تعدیل).',
+  'merge-variant-mismatch': 'حالت‌های (رنگ/سایز) دو کالا با هم جور نیستند.',
+  'product-merged': 'یکی از دو کالا قبلاً ادغام شده است.',
+};
+
 function PriceForm({ listId, variantId, onDone }: { listId: string; variantId: string; onDone: () => void }) {
   const [price, setPrice] = useState('');
   const [pending, setPending] = useState<{ approvalId: string; key: string; body: string } | null>(null);
@@ -236,6 +314,7 @@ export default function ProductsPage() {
         {items.map((p) => (
           <li key={p.id} data-product={p.id}>
             {p.name}{p.brand ? ` (${p.brand})` : ''}
+            <ProductActions product={p} onDone={() => void find(search)} />
             {p.variants.map((v) => (
               <div key={v.id} data-variant={v.sku} data-status={v.status}>
                 {v.sku}{Object.keys(v.axisValues ?? {}).length > 0 ? ` (${Object.values(v.axisValues).join(' / ')})` : ''}:{' '}
