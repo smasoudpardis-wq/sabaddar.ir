@@ -1,0 +1,6 @@
+# Lint config for D07. Run: npx @redocly/cli@1.25.11 lint D07-API-OpenAPI.yaml
+extends:
+  - recommended-strict
+rules:
+  no-server-example.com: off          # placeholder server uses example.invalid until D11
+  info-license-url: off               # proprietary license, no public URL

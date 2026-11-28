@@ -1,0 +1,25 @@
+<Project>
+  <!-- D04 §5.1: shared build rules for every project -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <Deterministic>true</Deterministic>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <AssemblyName>RetailCloud.$(MSBuildProjectName)</AssemblyName>
+    <RootNamespace>RetailCloud.$(MSBuildProjectName)</RootNamespace>
+    <!-- CA1062 (null-check public args) is covered by nullable reference types; CA1515 (make types internal) does not fit libraries consumed across modules -->
+    <NoWarn>$(NoWarn);CA1062;CA1515</NoWarn>
+  </PropertyGroup>
+  <PropertyGroup Condition="$(MSBuildProjectName.EndsWith('.Tests'))">
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <!-- test naming (underscores) and fixtures -->
+    <NoWarn>$(NoWarn);CA1707;CA1515;CA2007;CA1861;CA1859;CA1068</NoWarn>
+  </PropertyGroup>
+</Project>

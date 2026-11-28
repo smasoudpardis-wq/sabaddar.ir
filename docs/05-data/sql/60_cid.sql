@@ -1,0 +1,177 @@
+SET ROLE rc_migrator;
+
+-- GLOBAL tables (no tenant_id). No RLS; access restricted by GRANT: only rc_app / rc_worker
+-- (code-level module boundary + DI-064). rc_reporting and rc_tax_signer get NOTHING here.
+CREATE TABLE cid.global_customer (
+  id          uuid PRIMARY KEY,
+  public_code text NOT NULL UNIQUE CHECK (public_code ~ '^CU-[0-9A-HJKMNP-TV-Z]{8}$'),  -- Crockford Base32
+  status      text NOT NULL DEFAULT 'Active' CHECK (status IN ('Active','Merged','Anonymized')),
+  merged_into uuid REFERENCES cid.global_customer(id),
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+-- DI-061: a public code is never reissued, even after rotation.
+CREATE TABLE cid.public_code_registry (
+  public_code text PRIMARY KEY,
+  global_customer_id uuid NOT NULL REFERENCES cid.global_customer(id),
+  issued_at  timestamptz NOT NULL DEFAULT now(),
+  retired_at timestamptz
+);
+
+CREATE TABLE cid.verified_contact (
+  id                 uuid PRIMARY KEY,
+  global_customer_id uuid NOT NULL REFERENCES cid.global_customer(id),
+  contact_type       text NOT NULL CHECK (contact_type IN ('Mobile','Email')),
+  value_enc          bytea NOT NULL,     -- envelope-encrypted E.164
+  lookup_hash        bytea NOT NULL,     -- HMAC-SHA256(blind-index key, normalized value)
+  status             text NOT NULL DEFAULT 'Active' CHECK (status IN ('Active','Removed')),
+  verified_at        timestamptz NOT NULL
+);
+CREATE UNIQUE INDEX ux_contact_active ON cid.verified_contact (lookup_hash) WHERE status = 'Active';  -- DI-060
+
+-- TENANT-scoped
+CREATE TABLE cid.tenant_customer_membership (
+  tenant_id          uuid NOT NULL,
+  id                 uuid NOT NULL,      -- = TenantCustomerId (the only id other modules see)
+  global_customer_id uuid NOT NULL REFERENCES cid.global_customer(id),
+  status             text NOT NULL DEFAULT 'Active' CHECK (status IN ('Active','Left')),
+  join_source        text NOT NULL CHECK (join_source IN ('StoreQr','Pos','Portal')),
+  joined_at          timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, id),
+  UNIQUE (tenant_id, global_customer_id)                                        -- DI-062
+);
+CALL core.enable_tenant_rls('cid.tenant_customer_membership');
+
+CREATE TABLE cid.consent_record (
+  tenant_id      uuid NOT NULL,
+  id             uuid NOT NULL,
+  membership_id  uuid NOT NULL,
+  purpose        text NOT NULL CHECK (purpose IN ('Operational','Marketing')),
+  channel        text NOT NULL CHECK (channel IN ('Sms','Bale','Email','Push')),
+  granted        boolean NOT NULL,
+  policy_version text NOT NULL,
+  source         text NOT NULL,
+  recorded_at    timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, id),
+  FOREIGN KEY (tenant_id, membership_id) REFERENCES cid.tenant_customer_membership (tenant_id, id)
+);
+-- Current consent = latest record per (membership, purpose, channel); history is append-only.
+CREATE INDEX ix_consent_latest ON cid.consent_record (tenant_id, membership_id, purpose, channel, recorded_at DESC);
+CALL core.enable_tenant_rls('cid.consent_record');
+CREATE TRIGGER tr_consent_append_only BEFORE UPDATE OR DELETE ON cid.consent_record
+  FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
+
+-- CUS-001 / TM-043 (US-141): one-time codes for phone verification. Global (a customer belongs to no store yet). The code and the
+-- phone are kept only as keyed hashes; a row doubles as the send log for the per-phone and per-address limits.
+CREATE TABLE cid.otp_challenge (
+  id         uuid PRIMARY KEY,
+  phone_hash bytea NOT NULL CHECK (octet_length(phone_hash) = 32),
+  ip_hash    bytea NOT NULL CHECK (octet_length(ip_hash) = 32),
+  code_hash  bytea NOT NULL CHECK (octet_length(code_hash) = 32),
+  phone_enc  bytea NOT NULL,                     -- envelope-encrypted E.164: needed once, to create the customer on success; purged with the row
+  created_at timestamptz NOT NULL DEFAULT now(),
+  expires_at timestamptz NOT NULL,
+  attempts   int NOT NULL DEFAULT 0 CHECK (attempts BETWEEN 0 AND 5),
+  status     text NOT NULL DEFAULT 'Pending' CHECK (status IN ('Pending','Verified','Failed')),
+  CHECK (expires_at > created_at AND expires_at <= created_at + interval '10 minutes')
+);
+CREATE INDEX ix_otp_phone ON cid.otp_challenge (phone_hash, created_at DESC);
+CREATE INDEX ix_otp_ip ON cid.otp_challenge (ip_hash, created_at DESC);
+-- a verified or failed challenge never changes again; only attempts and the final status move
+CREATE FUNCTION cid.otp_challenge_guard() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  IF (NEW.id, NEW.phone_hash, NEW.ip_hash, NEW.code_hash, NEW.created_at, NEW.expires_at)
+     IS DISTINCT FROM (OLD.id, OLD.phone_hash, OLD.ip_hash, OLD.code_hash, OLD.created_at, OLD.expires_at) THEN
+    RAISE EXCEPTION 'a challenge keeps its facts' USING ERRCODE = 'RC001';
+  END IF;
+  IF OLD.status <> 'Pending' AND (NEW.status <> OLD.status OR NEW.attempts <> OLD.attempts) THEN
+    RAISE EXCEPTION 'a finished challenge does not change' USING ERRCODE = 'RC001';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tr_otp_challenge_guard BEFORE UPDATE ON cid.otp_challenge FOR EACH ROW EXECUTE FUNCTION cid.otp_challenge_guard();
+
+-- CUS-005 (US-142): the store's counter QR. The URL carries a signed token (tenant, branch, invite, expiry); this row makes it revocable.
+CREATE TABLE cid.store_invite (
+  tenant_id  uuid NOT NULL,
+  id         uuid NOT NULL,
+  branch_id  uuid NOT NULL,
+  created_by uuid NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  expires_at timestamptz NOT NULL,
+  revoked_at timestamptz,
+  PRIMARY KEY (tenant_id, id),
+  FOREIGN KEY (tenant_id, branch_id) REFERENCES platform.branch (tenant_id, id),
+  CHECK (expires_at > created_at AND expires_at <= created_at + interval '366 days')
+);
+CALL core.enable_tenant_rls('cid.store_invite');
+
+-- CUS-005 (US-143): the customer's own QR, shown at the counter: opaque, 120 seconds, used once. The token holds only the jti; this row says whose.
+CREATE TABLE cid.qr_token (
+  jti                uuid PRIMARY KEY,
+  global_customer_id uuid NOT NULL REFERENCES cid.global_customer (id),
+  created_at         timestamptz NOT NULL DEFAULT now(),
+  expires_at         timestamptz NOT NULL,
+  used_at            timestamptz,
+  CHECK (expires_at > created_at AND expires_at <= created_at + interval '120 seconds')
+);
+CREATE INDEX ix_qr_token_customer ON cid.qr_token (global_customer_id, created_at DESC);
+
+-- UC-03: a customer who showed their QR but is not a member yet gets a request on their own device to accept with consents
+CREATE TABLE cid.join_request (
+  tenant_id          uuid NOT NULL,
+  id                 uuid NOT NULL,
+  global_customer_id uuid NOT NULL REFERENCES cid.global_customer (id),
+  created_at         timestamptz NOT NULL DEFAULT now(),
+  expires_at         timestamptz NOT NULL,
+  accepted_at        timestamptz,
+  PRIMARY KEY (tenant_id, id),
+  CHECK (expires_at > created_at AND expires_at <= created_at + interval '1 hour')
+);
+CALL core.enable_tenant_rls('cid.join_request');
+
+GRANT USAGE ON SCHEMA cid TO rc_app, rc_worker;
+GRANT SELECT, INSERT, UPDATE ON cid.global_customer, cid.public_code_registry, cid.verified_contact,
+                               cid.tenant_customer_membership TO rc_app;
+GRANT SELECT, INSERT ON cid.consent_record TO rc_app;
+GRANT SELECT, INSERT, UPDATE ON cid.otp_challenge TO rc_app;
+GRANT SELECT, INSERT ON cid.store_invite TO rc_app;
+GRANT SELECT, INSERT ON cid.qr_token, cid.join_request TO rc_app;
+GRANT UPDATE (used_at) ON cid.qr_token TO rc_app;
+GRANT UPDATE (accepted_at) ON cid.join_request TO rc_app;
+GRANT DELETE ON cid.qr_token TO rc_worker;   -- purge after a day
+GRANT UPDATE (revoked_at) ON cid.store_invite TO rc_app;
+GRANT DELETE ON cid.otp_challenge TO rc_worker;   -- purge after a day (data minimisation)
+GRANT SELECT ON ALL TABLES IN SCHEMA cid TO rc_worker;
+RESET ROLE;
+
+-- US-142: a customer's own stores across tenants, for the portal. Tenant-scoped rows cannot be listed across tenants by the application,
+-- so this narrow function (tenant directory, column grants only; fitness rule 5) returns the customer's memberships and nothing else.
+CREATE OR REPLACE FUNCTION cid.my_memberships(p_customer uuid)
+RETURNS TABLE (tenant_id uuid, membership_id uuid, store_name text, status text, joined_at timestamptz)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
+  SELECT m.tenant_id, m.id, t.legal_name, m.status, m.joined_at
+    FROM cid.tenant_customer_membership m JOIN platform.tenant t ON t.id = m.tenant_id
+   WHERE m.global_customer_id = p_customer AND m.status = 'Active' AND t.status <> 'Closed'
+   ORDER BY m.joined_at
+$$;
+GRANT USAGE ON SCHEMA cid TO rc_tenant_directory;
+GRANT SELECT (tenant_id, id, global_customer_id, status, joined_at) ON cid.tenant_customer_membership TO rc_tenant_directory;
+GRANT CREATE ON SCHEMA cid TO rc_tenant_directory;  -- a new owner needs CREATE on the schema; revoked at once (fitness 6)
+ALTER FUNCTION cid.my_memberships(uuid) OWNER TO rc_tenant_directory;
+REVOKE CREATE ON SCHEMA cid FROM rc_tenant_directory;
+REVOKE ALL ON FUNCTION cid.my_memberships(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION cid.my_memberships(uuid) TO rc_app;
+
+-- US-143: a join request is accepted by the customer in the portal, who has no tenant context: this narrow function (tenant directory;
+-- fitness rule 5) returns the store a pending request of THIS customer belongs to.
+CREATE OR REPLACE FUNCTION cid.pending_join_request_tenant(p_request uuid, p_customer uuid)
+RETURNS uuid LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
+  SELECT tenant_id FROM cid.join_request WHERE id = p_request AND global_customer_id = p_customer AND accepted_at IS NULL AND expires_at > now()
+$$;
+GRANT SELECT (tenant_id, id, global_customer_id, accepted_at, expires_at) ON cid.join_request TO rc_tenant_directory;
+GRANT CREATE ON SCHEMA cid TO rc_tenant_directory;  -- a new owner needs CREATE on the schema; revoked at once (fitness 6)
+ALTER FUNCTION cid.pending_join_request_tenant(uuid, uuid) OWNER TO rc_tenant_directory;
+REVOKE CREATE ON SCHEMA cid FROM rc_tenant_directory;
+REVOKE ALL ON FUNCTION cid.pending_join_request_tenant(uuid, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION cid.pending_join_request_tenant(uuid, uuid) TO rc_app;

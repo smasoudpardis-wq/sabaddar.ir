@@ -1,0 +1,158 @@
+using System.Text.Json;
+using Npgsql;
+using NpgsqlTypes;
+using RetailCloud.BuildingBlocks.Application;
+using RetailCloud.BuildingBlocks.Infrastructure;
+using RetailCloud.Merchandising.Application;
+
+namespace RetailCloud.Merchandising.Infrastructure;
+
+/// <summary>CAT-004 / CAT-005 on catalog.* (global, no RLS: reference data with no store fields).</summary>
+public sealed class PostgresGlobalCatalog : IGlobalCatalog
+{
+    public async Task<IReadOnlyList<CatalogCandidate>> ByGtinAsync(IUnitOfWorkScope scope, string gtin14, CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
+            "SELECT p.id, p.name, p.brand, p.category, p.net_content, p.image_url, p.verified_at FROM catalog.global_barcode b " +
+            "JOIN catalog.catalog_product p ON p.id = b.catalog_product_id WHERE b.gtin14 = $1 AND p.status = 'Published'");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = gtin14 });
+        var list = new List<CatalogCandidate>();
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await r.ReadAsync(cancellationToken))
+        {
+            list.Add(new CatalogCandidate("global", CandidateRules.GlobalConfidence, r.GetFieldValue<DateTimeOffset>(6), null, null,
+                new CandidateFields(r.GetString(1), Str(r, 2), Str(r, 3), Str(r, 4), Str(r, 5)), r.GetGuid(0)));
+        }
+
+        return list;
+    }
+
+    public async Task<bool> PublishedAsync(IUnitOfWorkScope scope, Guid catalogProductId, CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
+            "SELECT EXISTS (SELECT 1 FROM catalog.catalog_product WHERE id = $1 AND status = 'Published')");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = catalogProductId });
+        return (bool)(await cmd.ExecuteScalarAsync(cancellationToken))!;
+    }
+
+    public async Task<IReadOnlyList<ProviderRecord>> CachedAsync(IUnitOfWorkScope scope, string gtin14, DateTimeOffset notBefore,
+        CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
+            "SELECT source, found, fields, confidence, license, attribution, fetched_at FROM catalog.catalog_source_record WHERE gtin14 = $1 AND fetched_at >= $2");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = gtin14 });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = notBefore.UtcDateTime, NpgsqlDbType = NpgsqlDbType.TimestampTz });
+        var list = new List<ProviderRecord>();
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await r.ReadAsync(cancellationToken))
+        {
+            using JsonDocument f = JsonDocument.Parse(r.GetString(2));
+            string? F(string k) => f.RootElement.TryGetProperty(k, out JsonElement v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+            list.Add(new ProviderRecord(r.GetString(0), gtin14, r.GetBoolean(1), new CandidateFields(F("name"), F("brand"), F("category"), F("netContent"), F("imageUrl")),
+                r.GetDecimal(3), r.GetString(4), r.GetString(5), r.GetFieldValue<DateTimeOffset>(6)));
+        }
+
+        return list;
+    }
+
+    public async Task SaveAsync(IUnitOfWorkScope scope, ProviderRecord record, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        var fields = new Dictionary<string, string>();
+        void Put(string k, string? v)
+        {
+            if (v is not null)
+            {
+                fields[k] = v;
+            }
+        }
+
+        Put("name", record.Fields.Name);
+        Put("brand", record.Fields.Brand);
+        Put("category", record.Fields.Category);
+        Put("netContent", record.Fields.NetContent);
+        Put("imageUrl", record.Fields.ImageUrl);
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
+            "INSERT INTO catalog.catalog_source_record (source, gtin14, found, fields, confidence, license, attribution, fetched_at) " +
+            "VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, now()) ON CONFLICT (source, gtin14) DO UPDATE SET found = EXCLUDED.found, fields = EXCLUDED.fields, " +
+            "confidence = EXCLUDED.confidence, license = EXCLUDED.license, attribution = EXCLUDED.attribution, fetched_at = now()");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = record.Source });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = record.Gtin14 });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = record.Found });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = JsonSerializer.Serialize(fields) });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = record.Confidence });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = record.License });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = record.Attribution });
+        await cmd.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    public async Task<bool> SuggestAsync(IUnitOfWorkScope scope, string gtin14, string name, string? brand, string? category, byte[] sourceHash,
+        CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
+            "INSERT INTO catalog.catalog_suggestion (id, gtin14, name, brand, category, source_hash) VALUES ($1, $2, $3, $4, $5, $6) " +
+            "ON CONFLICT (gtin14, source_hash) DO NOTHING");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = Guid.CreateVersion7() });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = gtin14 });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = name });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)brand ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)category ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = sourceHash });
+        return await cmd.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
+    public async Task<(IReadOnlyList<PendingSuggestion> Items, string? NextCursor)> PendingAsync(IUnitOfWorkScope scope, string? cursor, int limit,
+        CancellationToken cancellationToken)
+    {
+        // ids are UUIDv7, so id order is submission order; the cursor is the last id seen
+        Guid? after = cursor is not null && Guid.TryParse(cursor, out Guid g) ? g : null;
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
+            "SELECT s.id, s.gtin14, s.name, s.brand, s.category, s.submitted_at, " +
+            "       (SELECT count(*) FROM catalog.catalog_suggestion o WHERE o.gtin14 = s.gtin14 AND o.status = 'Pending')::int, " +
+            "       p.id, p.name, p.brand, p.category, p.net_content, p.image_url, p.verified_at " +
+            "FROM catalog.catalog_suggestion s " +
+            "LEFT JOIN catalog.global_barcode b ON b.gtin14 = s.gtin14 LEFT JOIN catalog.catalog_product p ON p.id = b.catalog_product_id " +
+            "WHERE s.status = 'Pending' AND ($1::uuid IS NULL OR s.id > $1) ORDER BY s.id LIMIT $2");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)after ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Uuid });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = limit + 1 });
+        var list = new List<PendingSuggestion>();
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await r.ReadAsync(cancellationToken))
+        {
+            CatalogCandidate? existing = r.IsDBNull(7) ? null : new CatalogCandidate("global", CandidateRules.GlobalConfidence,
+                r.GetFieldValue<DateTimeOffset>(13), null, null, new CandidateFields(r.GetString(8), Str(r, 9), Str(r, 10), Str(r, 11), Str(r, 12)),
+                r.GetGuid(7));
+            list.Add(new PendingSuggestion(r.GetGuid(0), r.GetString(1), r.GetString(2), Str(r, 3), Str(r, 4), r.GetFieldValue<DateTimeOffset>(5),
+                r.GetInt32(6), existing));
+        }
+
+        if (list.Count <= limit)
+        {
+            return (list, null);
+        }
+
+        list.RemoveAt(limit);
+        return (list, list[^1].Id.ToString());
+    }
+
+    public async Task<(ModerationOutcome Outcome, Guid? CatalogProductId)> DecideAsync(IUnitOfWorkScope scope, Guid suggestionId, bool publish,
+        CandidateFields? edits, string reason, string moderator, CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
+            "SELECT outcome, catalog_product_id FROM catalog.decide_suggestion($1, $2, $3, $4, $5, $6, $7)");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = suggestionId });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = publish ? "Publish" : "Reject" });
+        foreach (string? v in new[] { edits?.Name, edits?.Brand, edits?.Category })
+        {
+            cmd.Parameters.Add(new NpgsqlParameter { Value = (object?)v ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text });
+        }
+
+        cmd.Parameters.Add(new NpgsqlParameter { Value = reason });
+        cmd.Parameters.Add(new NpgsqlParameter { Value = moderator });
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(cancellationToken);
+        await r.ReadAsync(cancellationToken);
+        return (Enum.Parse<ModerationOutcome>(r.GetString(0)), r.IsDBNull(1) ? null : r.GetGuid(1));
+    }
+
+    private static string? Str(NpgsqlDataReader r, int i) => r.IsDBNull(i) ? null : r.GetString(i);
+}

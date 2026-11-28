@@ -1,0 +1,171 @@
+# Interim CI on GitHub Actions (repository is on GitHub). Target per D-80 is self-hosted GitLab CI with internal
+# mirrors (ADR-010); this workflow mirrors the D10 §13 stage order and is portable to .gitlab-ci.yml (AQ-04).
+name: ci
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  design-docs:
+    name: design package checks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install pyyaml==6.0.2 openapi-spec-validator==0.7.1
+      - name: OpenAPI is generated from source and valid
+        run: |
+          python3 docs/04-api/tools/build_openapi.py
+          git diff --exit-code docs/04-api/D07-API-OpenAPI.yaml
+          python3 -c "from openapi_spec_validator import validate; from openapi_spec_validator.readers import read_from_filename as r; validate(r('docs/04-api/D07-API-OpenAPI.yaml')[0])"
+          python3 docs/04-api/tools/check_contract.py
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - run: npx --yes @redocly/cli@1.25.11 lint docs/04-api/D07-API-OpenAPI.yaml --config docs/04-api/redocly.yaml
+      - name: Test catalog, backlog, alerts, open-question register are consistent and committed
+        run: |
+          python3 docs/09-testing/tools/build_test_catalog.py
+          python3 docs/00-product/tools/build_backlog.py
+          python3 docs/00-product/tools/plan_sprints.py 40
+          python3 docs/07-operations/alerts/check_rules.py
+          python3 docs/tools/build_oq_register.py
+          git diff --exit-code docs/
+      - name: Mermaid diagrams render
+        run: |
+          mkdir -p /tmp/mm && cd /tmp/mm && npm init -y >/dev/null && npm i mermaid@11.4.1 playwright@1.48.2 >/dev/null
+          npx playwright install --with-deps chromium >/dev/null
+          cd "$GITHUB_WORKSPACE"
+          MERMAID_JS=/tmp/mm/node_modules/mermaid/dist/mermaid.min.js NODE_PATH=/tmp/mm/node_modules \
+            node docs/tools/check_mermaid.js $(grep -rl '```mermaid' docs)
+
+  database:
+    name: D05 schema, RLS, oracles, fitness
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_PASSWORD: postgres }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env: { PGHOST: localhost, PGPORT: "5432", PGUSER: postgres, PGPASSWORD: postgres }
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get install -y -qq postgresql-client
+      - run: docs/05-data/sql/tests/run_all.sh
+
+  backend:
+    name: backend build and tests
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_PASSWORD: postgres }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      RC_TEST_PG: Host=localhost;Port=5432;Database=rc_it;Username=rc_app_test;Password=rc_app_test
+      RC_TEST_S3: http://127.0.0.1:9000
+      DOTNET_NOLOGO: "1"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { global-json-file: src/backend/global.json }
+      - name: Start S3 test server (US-016; moto 5.2.5 — the MinIO image is no longer on Docker Hub)
+        run: |
+          python3 -m venv /tmp/moto && /tmp/moto/bin/pip install -q "moto[server]==5.2.5"
+          nohup /tmp/moto/bin/moto_server -H 127.0.0.1 -p 9000 >/tmp/moto.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:9000/ >/dev/null && break; sleep 1; done
+      - run: sudo apt-get install -y -qq postgresql-client
+      - run: src/backend/scripts/setup-test-db.sh rc_it
+      - run: dotnet build src/backend/RetailCloud.sln -c Release
+      - name: US-004 migrations (non-superuser Migrator = reference DDL, fitness clean, idempotent)
+        run: src/backend/scripts/check-migrations.sh
+      - name: Tests (unit, property, architecture, integration — integration must not skip in CI)
+        run: |
+          dotnet test src/backend/RetailCloud.sln -c Release --no-build --logger "trx;LogFileName=results.trx" 2>&1 | tee test.log
+          ! grep -E "Skipped: [1-9]" test.log
+
+  identity:
+    name: SP-01 Keycloak realm checks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - name: Start Keycloak with realm-as-code
+        run: |
+          docker run -d --name rc-kc -p 8080:8080 -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
+            -v "$GITHUB_WORKSPACE/src/backend/dev/keycloak:/opt/keycloak/data/import:ro" keycloak/keycloak:26.0 start-dev --import-realm
+          for i in $(seq 1 90); do curl -sf http://127.0.0.1:8080/realms/platform/.well-known/openid-configuration >/dev/null && break; sleep 2; done
+      - name: Run identity checks (browser login via Playwright)
+        run: |
+          mkdir -p /tmp/pw && cd /tmp/pw && npm init -y >/dev/null && npm i playwright@1.48.2 >/dev/null && npx playwright install --with-deps chromium >/dev/null
+          cd "$GITHUB_WORKSPACE/src/backend/dev/keycloak" && KC=http://127.0.0.1:8080 NODE_PATH=/tmp/pw/node_modules node spike-sp01.js
+      - name: US-022 level-of-authentication checks (TOTP enrolment, step-up, passkey via virtual authenticator)
+        run: cd "$GITHUB_WORKSPACE/src/backend/dev/keycloak" && KC=http://127.0.0.1:8080 NODE_PATH=/tmp/pw/node_modules node mfa-checks.js
+
+  web-e2e:
+    name: US-021/022 BFF login + MFA end-to-end (Keycloak + API + BFF + Valkey + browser)
+    runs-on: ubuntu-24.04
+    services:
+      valkey:
+        image: valkey/valkey:8.0
+        ports: ["6379:6379"]
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_PASSWORD: postgres }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      RC_TEST_PG: Host=localhost;Port=5432;Database=rc_it;Username=rc_app_test;Password=rc_app_test
+      DOTNET_NOLOGO: "1"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      NEXT_TELEMETRY_DISABLED: "1"
+      VALKEY_URL: redis://127.0.0.1:6379
+      RC_E2E_S3: "1"                     # X02: the export downloads from MinIO through its presigned link
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { global-json-file: src/backend/global.json }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22", cache: npm, cache-dependency-path: src/web/apps/merchant-admin/package-lock.json }
+      - name: Start S3 test server (US-016; moto 5.2.5 — the MinIO image is no longer on Docker Hub)
+        run: |
+          python3 -m venv /tmp/moto && /tmp/moto/bin/pip install -q "moto[server]==5.2.5"
+          nohup /tmp/moto/bin/moto_server -H 127.0.0.1 -p 9000 >/tmp/moto.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:9000/ >/dev/null && break; sleep 1; done
+      - name: Start Keycloak with realm-as-code
+        run: |
+          docker run -d --name rc-kc -p 8080:8080 -e KC_BOOTSTRAP_ADMIN_USERNAME=admin -e KC_BOOTSTRAP_ADMIN_PASSWORD=admin \
+            -v "$GITHUB_WORKSPACE/src/backend/dev/keycloak:/opt/keycloak/data/import:ro" keycloak/keycloak:26.0 start-dev --import-realm
+      - run: sudo apt-get install -y -qq postgresql-client
+      - run: src/backend/scripts/setup-test-db.sh rc_it
+      - run: dotnet build src/backend/Hosts/RetailCloud.Api -c Debug
+      - name: Build BFF
+        working-directory: src/web/apps/merchant-admin
+        run: npm ci --no-audit --no-fund && npm run typecheck && npm run build
+      - name: Install Playwright
+        run: mkdir -p /tmp/pw && cd /tmp/pw && npm init -y >/dev/null && npm i playwright@1.48.2 >/dev/null && npx playwright install --with-deps chromium >/dev/null
+      - name: Wait for Keycloak
+        run: for i in $(seq 1 90); do curl -sf http://127.0.0.1:8080/realms/merchant/.well-known/openid-configuration >/dev/null && break; sleep 2; done
+      - name: End-to-end checks
+        run: NODE_PATH=/tmp/pw/node_modules LOGS=/tmp src/web/apps/merchant-admin/e2e/run-e2e.sh

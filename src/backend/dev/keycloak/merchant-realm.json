@@ -1,0 +1,406 @@
+{
+  "realm": "merchant",
+  "enabled": true,
+  "displayName": "RetailCloud merchant",
+  "sslRequired": "external",
+  "accessTokenLifespan": 600,
+  "revokeRefreshToken": true,
+  "refreshTokenMaxReuse": 0,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 43200,
+  "passwordPolicy": "length(12) and notUsername and notEmail",
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "failureFactor": 10,
+  "waitIncrementSeconds": 60,
+  "maxFailureWaitSeconds": 900,
+  "maxDeltaTimeSeconds": 900,
+  "otpPolicyType": "totp",
+  "otpPolicyAlgorithm": "HmacSHA1",
+  "otpPolicyDigits": 6,
+  "otpPolicyPeriod": 30,
+  "webAuthnPolicyUserVerificationRequirement": "required",
+  "loginWithEmailAllowed": true,
+  "registrationAllowed": false,
+  "resetPasswordAllowed": true,
+  "internationalizationEnabled": true,
+  "supportedLocales": [
+    "fa",
+    "en"
+  ],
+  "defaultLocale": "fa",
+  "clientScopes": [
+    {
+      "name": "basic",
+      "protocol": "openid-connect",
+      "description": "Subject and auth_time (built-in in Keycloak 25+; realm-as-code must declare it explicitly)",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "sub",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-sub-mapper",
+          "config": {
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "auth_time",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usersessionmodel-note-mapper",
+          "config": {
+            "user.session.note": "AUTH_TIME",
+            "claim.name": "auth_time",
+            "jsonType.label": "long",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "profile",
+      "protocol": "openid-connect",
+      "description": "Display name only (PRIV: no email/phone in tokens)",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "full name",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-full-name-mapper",
+          "config": {
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "merchant-api-audience",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "merchant-api audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "merchant-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    },
+    {
+      "name": "acr",
+      "protocol": "openid-connect",
+      "description": "acr claim from the level of authentication (US-022)",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "acr loa level",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-acr-mapper",
+          "config": {
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "rc-bff-merchant",
+      "name": "Web BFF (confidential)",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "dev-only-secret-change-me",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://127.0.0.1:3000/auth/callback"
+      ],
+      "webOrigins": [],
+      "frontchannelLogout": true,
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://127.0.0.1:3000/*"
+      },
+      "defaultClientScopes": [
+        "basic",
+        "acr",
+        "profile",
+        "merchant-api-audience"
+      ],
+      "optionalClientScopes": [
+        "offline_access"
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "owner@spike.test",
+      "email": "owner@spike.test",
+      "emailVerified": true,
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Spike-Passw0rd-1",
+          "temporary": false
+        }
+      ],
+      "firstName": "Spike",
+      "lastName": "owner"
+    },
+    {
+      "username": "bruteforce@spike.test",
+      "email": "bruteforce@spike.test",
+      "emailVerified": true,
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Spike-Passw0rd-1",
+          "temporary": false
+        }
+      ],
+      "firstName": "Spike",
+      "lastName": "bruteforce"
+    },
+    {
+      "username": "cashier@spike.test",
+      "email": "cashier@spike.test",
+      "emailVerified": true,
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Spike-Passw0rd-1",
+          "temporary": false
+        }
+      ],
+      "firstName": "صندوق‌دار",
+      "lastName": "آزمایشی"
+    },
+    {
+      "username": "passkey@spike.test",
+      "email": "passkey@spike.test",
+      "emailVerified": true,
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Spike-Passw0rd-1",
+          "temporary": false
+        }
+      ],
+      "firstName": "کاربر",
+      "lastName": "کلید عبور",
+      "requiredActions": [
+        "webauthn-register"
+      ]
+    },
+    {
+      "username": "newowner@spike.test",
+      "email": "newowner@spike.test",
+      "emailVerified": true,
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "Spike-Passw0rd-1",
+          "temporary": false
+        }
+      ],
+      "firstName": "مالک",
+      "lastName": "تازه"
+    }
+  ],
+  "authenticationFlows": [
+    {
+      "alias": "browser-loa",
+      "description": "US-022: password = LoA 1 (acr=pwd); TOTP or WebAuthn = LoA 2 (acr=mfa). The API decides who needs LoA 2.",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "requirement": "ALTERNATIVE",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "authenticator": "auth-cookie",
+          "authenticatorFlow": false,
+          "autheticatorFlow": false
+        },
+        {
+          "requirement": "ALTERNATIVE",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "flowAlias": "browser-loa-forms",
+          "authenticatorFlow": true,
+          "autheticatorFlow": true
+        }
+      ]
+    },
+    {
+      "alias": "browser-loa-forms",
+      "description": "Level-of-authentication steps",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "requirement": "CONDITIONAL",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "flowAlias": "browser-loa-level-1",
+          "authenticatorFlow": true,
+          "autheticatorFlow": true
+        },
+        {
+          "requirement": "CONDITIONAL",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "flowAlias": "browser-loa-level-2",
+          "authenticatorFlow": true,
+          "autheticatorFlow": true
+        }
+      ]
+    },
+    {
+      "alias": "browser-loa-level-1",
+      "description": "Password",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "authenticator": "conditional-level-of-authentication",
+          "authenticatorFlow": false,
+          "autheticatorFlow": false,
+          "authenticatorConfig": "loa-1-password"
+        },
+        {
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "authenticator": "auth-username-password-form",
+          "authenticatorFlow": false,
+          "autheticatorFlow": false
+        }
+      ]
+    },
+    {
+      "alias": "browser-loa-level-2",
+      "description": "Second factor",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "authenticator": "conditional-level-of-authentication",
+          "authenticatorFlow": false,
+          "autheticatorFlow": false,
+          "authenticatorConfig": "loa-2-mfa"
+        },
+        {
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "flowAlias": "browser-loa-second-factor",
+          "authenticatorFlow": true,
+          "autheticatorFlow": true
+        }
+      ]
+    },
+    {
+      "alias": "browser-loa-second-factor",
+      "description": "Passkey (WebAuthn) if registered, otherwise TOTP; a user with neither is sent to TOTP enrolment (IAM-003)",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "requirement": "ALTERNATIVE",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "authenticator": "webauthn-authenticator",
+          "authenticatorFlow": false,
+          "autheticatorFlow": false
+        },
+        {
+          "requirement": "ALTERNATIVE",
+          "priority": 20,
+          "userSetupAllowed": false,
+          "flowAlias": "browser-loa-totp",
+          "authenticatorFlow": true,
+          "autheticatorFlow": true
+        }
+      ]
+    },
+    {
+      "alias": "browser-loa-totp",
+      "description": "TOTP; REQUIRED so that a user without TOTP gets the CONFIGURE_TOTP required action",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false,
+          "authenticator": "auth-otp-form",
+          "authenticatorFlow": false,
+          "autheticatorFlow": false
+        }
+      ]
+    }
+  ],
+  "authenticatorConfig": [
+    {
+      "alias": "loa-1-password",
+      "config": {
+        "loa-condition-level": "1",
+        "loa-max-age": "43200"
+      }
+    },
+    {
+      "alias": "loa-2-mfa",
+      "config": {
+        "loa-condition-level": "2",
+        "loa-max-age": "0"
+      }
+    }
+  ],
+  "browserFlow": "browser-loa",
+  "attributes": {
+    "acr.loa.map": "{\"pwd\": 1, \"mfa\": 2}"
+  }
+}

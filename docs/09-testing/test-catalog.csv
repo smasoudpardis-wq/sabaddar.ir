@@ -1,0 +1,286 @@
+﻿id,source,objective,priority,method,layer,gate,p0_scenario,automation
+AT-001,TEN-001.1,پس از ثبت‌نام: شعبه اول، انبار اول، صندوق اول، شجره حساب پیش‌فرض صنف و دوره مالی جاری خودکار ساخته می‌شوند.,P0,T,API-Integration,B,,automated
+AT-002,TEN-002,Tenant می‌تواند چند شعبه داشته باشد. هر شعبه ≥۱ انبار و ≥۱ صندوق دارد و کاربران با Scope شعبه به آن دسترسی دارند.,P0,T,API-Integration,B,,automated
+AT-003,TEN-002.1,ثبت Terminal: دستگاه با کد جفت‌سازی یک‌بارمصرف (۱۰ دقیقه) که مدیر شعبه صادر می‌کند به یک شعبه متصل می‌شود و DeviceId می‌گیرد. دستگاه قابل ابطال است.,P0,T,API-Integration,B,,automated
+AT-004,TEN-003,اشتراک: Trial (مدت قابل تنظیم)، پلن با Entitlement سمت سرور (حداکثر شعبه، کاربر، صندوق). عبور از سقف در API با 403 entitlement-exceeded رد می‌شود.,P0,T,API-Integration,B,,automated
+AT-005,TEN-004,تعلیق یا انقضا: Tenant **Read-Only** می‌شود (فروش، رسید و سند جدید ممنوع؛ خواندن، گزارش و Export مجاز). هیچ داده‌ای حذف نمی‌شود. ارسال صورتحساب‌های Pending به مؤدیان **ادامه می‌یابد** تا تعهد قانونی فروش‌های قبلی معطل نماند.,P0,T,API-Integration,B,,automated
+AT-006,TEN-005,Export کامل داده‌های اصلی (کالا، مشتریان عضو، فاکتورها، گردش انبار، اسناد) به CSV/JSON به‌صورت Job ناهمگام با لینک امن و منقضی‌شونده. هر Export ممیزی می‌شود.,P0,T,API-Integration,B,,automated
+AT-007,TEN-005.1,لغو اشتراک: داده هر دسته تا پایان مدت RetentionPolicy (BR-087) نگهداری و سپس حذف یا ناشناس می‌شود. تنظیم Policy (پلتفرم و Tenant) و Job اجرای آن در MVP هستند.,P0,T,API-Integration,B,,automated
+AT-010,IAM-001,کاربر Merchant با دعوت ایمیل/پیامکی وارد می‌شود. یک شخص می‌تواند عضو چند Tenant باشد و پس از ورود Tenant فعال را انتخاب می‌کند.,P0,T,API-Integration,B,,automated
+AT-011,IAM-002,احراز هویت با OIDC (Authorization Code + PKCE) از طریق BFF. Session در HttpOnly Secure SameSite Cookie نگه داشته می‌شود و Token در JavaScript در دسترس نیست.,P0,T+I,API-Integration,B,,automated
+AT-012,IAM-003,MFA اجباری برای TenantOwner، TenantAdmin، Accountant و همه نقش‌های Platform. روش‌ها: TOTP (پیش‌فرض) و WebAuthn/Passkey (توصیه‌شده). OTP پیامکی **فقط** برای ورود صندوق‌دار و انباردار مجاز است.,P0,T,API-Integration,B,,automated
+AT-013,IAM-004,ورود سریع صندوق‌دار روی Terminal ثبت‌شده: پس از ورود کامل اولیه در روز، با PIN ۴ تا ۶ رقمی قفل و بازگشایی می‌شود. پس از ۵ خطا PIN قفل می‌شود.,P0,T,Integration-Concurrency,B,,automated
+AT-014,IAM-005,Session: عمر Access Token کوتاه (≤ ۱۰ دقیقه)، Refresh Rotation با تشخیص استفاده مجدد، Idle Timeout قابل تنظیم (پیش‌فرض POS: ۱۲ ساعت با قفل PIN پس از ۵ دقیقه؛ Admin: ۳۰ دقیقه)، «خروج از همه دستگاه‌ها» و فهرست Sessionها.,P0,T,Integration-Concurrency,B,,automated
+AT-015,IAM-006,مجوزدهی: Permission + Scope (بخش 3.2). هر Endpoint یک Policy صریح دارد و پیش‌فرض Deny است.,P0,T+I,API-Integration,B,,automated
+AT-016,IAM-007,Approval لحظه‌ای: برای عملیاتی که در 3.2 علامت دارند، مدیر روی همان دستگاه با PIN+MFA یا از دستگاه خود با Push/لینک تأیید می‌کند. تأییدکننده، درخواست‌کننده، دلیل و زمان ممیزی می‌شوند. درخواست‌کننده نمی‌تواند خودش تأیید کند.,P0,T,API-Integration,B,,automated
+AT-017,IAM-008,دسترسی پشتیبانی (JIT): Support درخواست دسترسی زمان‌دار (حداکثر ۴ ساعت) با دلیل می‌دهد. TenantOwner آن را تأیید می‌کند. در این مدت داده PII و مالی Masked است و همه اقدام‌ها با برچسب Support ممیزی می‌شوند.,P0,T,API-Integration,B,,automated
+AT-018,IAM-009,غیرفعال‌سازی کاربر بلافاصله همه Sessionهای او را باطل می‌کند (≤ ۶۰ ثانیه تا اثر کامل).,P0,T,API-Integration,B,,automated
+AT-020,CAT-001,مدل کالا: TenantProduct (نام، برند، دسته، واحد پایه، شناسه کالا/خدمت مالیاتی، نرخ مالیات) ← TenantVariant (SKU، ویژگی‌ها، وضعیت) ← TenantProductBarcode.,P0,T,API-Integration,C,,automated
+AT-021,CAT-002,هر Variant صفر یا چند بارکد دارد، هر بارکد با packagingUnit (عدد/بسته/کارتن) و ضریب. تاریخچه افزودن و حذف بارکد نگهداری می‌شود.,P0,T,API-Integration,C,,automated
+AT-022,CAT-002.1,"یک بارکد فعال در یک Tenant فقط به **یک** (variant, packagingUnit) اشاره می‌کند: Unique (tenant_id, barcode) WHERE active.",P0,T,API-Integration,C,,automated
+AT-023,CAT-003,اعتبارسنجی EAN-8، EAN-13، UPC-A و GTIN-14 با Check Digit. UPC-A به GTIN-13 نرمال می‌شود (پیشوند 0). همه بارکدها به **GTIN-14 نرمال‌شده** ذخیره می‌شوند و فرم اصلی هم نگه داشته می‌شود.,P0,T,API-Integration,C,,automated
+AT-024,CAT-003.1,بارکد داخلی فروشگاه: کدهای با پیشوند محدوده داخلی GS1 (02، 20–29) یا کد آزاد بدون Check Digit، فقط داخل همان Tenant معتبرند و هرگز به Global Catalog نمی‌روند.,P0,T,API-Integration,C,,automated
+AT-025,CAT-004.1,آستانه Confidence: کاندید با confidence < 0.8 یا کاندیدهای متعارض (بیش از یک کاندید با اختلاف نام/برند) فقط پیشنهاد هستند و تأیید صریح کاربر را لازم دارند [DEC D-17]. حتی بالای آستانه هم ذخیره نهایی کالا یک عمل «تأیید» کاربر می‌خواهد.,P0,T,API-Integration,C,,automated
+AT-026,CAT-005,Global Catalog هیچ فیلد قیمت، بهای خرید، تأمین‌کننده، موجودی یا سود ندارد. هیچ داده Tenant بدون فرایند Moderation و بدون حذف فیلدهای خصوصی وارد آن نمی‌شود.,P0,T+I,API-Integration,C,,automated
+AT-027,CAT-005.1,پیشنهاد کالا به Global Catalog (اختیاری و با Opt-in Tenant): فقط نام، برند، بارکد عمومی (غیرداخلی)، دسته و تصویر مجاز برای CatalogModerator ارسال می‌شود.,P0,T,API-Integration,C,,automated
+AT-028,CAT-006,ثبت بارکدی که در Tenant وجود دارد، خطای 409 barcode-already-assigned با پیوند به کالای موجود می‌دهد. Merge دو کالا: انتقال بارکدها و ارجاع‌ها به کالای مقصد، غیرفعال‌شدن کالای مبدأ (نه حذف) و ثبت ممیزی. Merge فقط وقتی ممکن است که دو کالا واحد پایه یکسان داشته باشند.,P0,T,API-Integration,C,,automated
+AT-029,CAT-007,Profile بارکد وزنی (هر Tenant ≥۰ Profile): prefix، itemCodeLength، valueType (Weight|Price)، valueLength، decimals، hasInnerCheckDigit. Decode بارکد وزنی، Variant و مقدار یا مبلغ را برمی‌گرداند.,P0,T,API-Integration,C,,automated
+AT-030,CAT-007.1,"برچسب با مبلغ (Price-embedded): مقدار = round(price ÷ unitPrice, 3). اختلاف گردکردن باعث نمی‌شود مبلغ قلم با مبلغ برچسب فرق کند، یعنی مبلغ برچسب مرجع است.",P0,T,API-Integration,C,,automated
+AT-031,CAT-008,Variant Matrix: تعریف Axisها (رنگ، سایز) و تولید Variantها از حاصل‌ضرب آن‌ها، با امکان غیرفعال‌کردن ترکیب‌ها. هر Variant SKU، بارکد، قیمت (اختیاری؛ پیش‌فرض قیمت محصول) و موجودی مستقل دارد.,P0,T,API-Integration,C,,automated
+AT-032,CAT-009,Price List: هر شعبه یک Price List فعال دارد (پیش‌فرض: Price List سراسری Tenant). قیمت هر Variant validFrom دارد. تغییر قیمت ممیزی می‌شود و BR-041 روی آن اعمال می‌شود.,P0,T,API-Integration,C,,automated
+AT-033,CAT-010,تخفیف: (الف) دستی خطی و سندی (درصد یا مبلغ) طبق BR-021؛ (ب) قاعده ساده خودکار: درصد روی کالا یا دسته در بازه زمانی. ترکیب چند قاعده خودکار در MVP: **فقط بیشترین تخفیف** اعمال می‌شود، نه جمع آن‌ها [DEC D-18].,P0,T,API-Integration,C,,automated
+AT-034,CAT-011,جستجوی کالا در POS: با بارکد (دقیق)، SKU (دقیق)، و نام (پیشوندی، فارسی نرمال‌شده: یکسان‌سازی «ي/ی» و «ك/ک»، حذف اعراب و نیم‌فاصله).,P0,T,API-Integration,C,,automated
+AT-040,INV-001,موجودی فقط از StockMovement مشتق می‌شود. StockBalance در **همان تراکنش** هر Movement به‌روز می‌شود و یک Job شبانه آن را با Ledger مقایسه می‌کند. هر Drift هشدار می‌دهد و با فرمان مدیریتی قابل بازسازی است.,P0,T,API-Integration,C,,automated
+AT-041,INV-002,انواع سند: GoodsReceipt، Adjustment (با دلیل از فهرست: آسیب، انقضا، سرقت، خطای شمارش، سایر+توضیح)، SaleIssue (خودکار)، SaleReturnReceipt (خودکار)، TransferOut/TransferIn، CountAdjustment. هر Movement ارجاع به سند مبدأ دارد (BR-032).,P0,T,API-Integration,C,,automated
+AT-042,INV-003,Policy موجودی منفی طبق BR-040. در حالت Forbid، Finalize یا حواله‌ای که موجودی را منفی کند با 409 insufficient-stock و فهرست اقلام کمبود رد می‌شود.,P0,T,API-Integration,C,,automated
+AT-043,INV-004,جلوگیری از Oversell: در Finalize، ردیف‌های StockBalance اقلام سبد به ترتیب variant_id قفل می‌شوند (SELECT … FOR UPDATE). کنترل موجودی بعد از Lock انجام می‌شود.,P0,T,Integration-Concurrency,C,P0-2,automated
+AT-044,INV-004.1,Reservation: فقط برای پرداخت آنلاین. یک StockReservation با TTL **۱۵ دقیقه** [DEC D-19] هنگام ساخت PaymentIntent ایجاد می‌شود و «قابل فروش» را کم می‌کند. Finalize آن را مصرف می‌کند و انقضا آن را آزاد می‌کند.,P0,T,API-Integration,C,,automated
+AT-045,INV-005,واحدها و تبدیل‌ها طبق BR-012 و BR-044. رسید با واحد کارتن ثبت می‌شود و Ledger به واحد پایه است.,P0,T,API-Integration,C,,automated
+AT-046,INV-006,WAC طبق BR-042 و BR-043. هر Movement خروجی unitCost (WAC لحظه) و totalCost را ذخیره می‌کند.,P0,T+A,API-Integration,C,,automated
+AT-047,INV-008,انتقال بین انبارها (MVP تک‌مرحله‌ای): یک تراکنش TransferOut از مبدأ و TransferIn به مقصد با همان WAC مبدأ ثبت می‌کند. مدل داده وضعیت InTransit را برای P1 پیش‌بینی کرده است.,P0,T,API-Integration,C,,automated
+AT-048,INV-010,موجودی کم: هر Variant در هر انبار reorderPoint اختیاری دارد. گزارش و اعلان داخلی (درون‌برنامه‌ای) ارائه می‌شود.,P0,T,API-Integration,C,,automated
+AT-050,PRC-001,تأمین‌کننده: نام، شناسه ملی یا کد اقتصادی (اختیاری)، تلفن، حساب طرف‌حساب در دفاتر.,P0,T,API-Integration,C,,automated
+AT-051,PRC-003,پرداخت به تأمین‌کننده (نقد یا بانک) با سند «بدهکار پرداختنی / بستانکار صندوق یا بانک».,P0,T,API-Integration,C,,automated
+AT-052,PRC-004,برگشت از خرید: خروج کالا با بهای WAC جاری و کاهش بدهی تأمین‌کننده به مبلغ توافقی. اختلاف به حساب «اختلاف بهای برگشت از خرید» می‌رود.,P0,T,API-Integration,C,,automated
+AT-060,SAL-002,اسکن با دوربین در PWA (HTTPS و مجوز کاربر) به‌صورت پیوسته. ورود دستی کد همیشه در دسترس است. Keyboard Wedge در هر صفحه POS بدون نیاز به فوکوس روی فیلد پذیرفته می‌شود.,P0,T+D,E2E,D,,automated
+AT-061,SAL-002.1,جلوگیری از اسکن دوباره ناخواسته: اسکن یک کد تکراری در کمتر از ۱٫۵ ثانیه نادیده گرفته می‌شود (قابل تنظیم).,P0,T,API-Integration,D,,automated
+AT-062,SAL-004,وضعیت‌های فروش طبق جدول گذار 6.1.,P0,T,API-Integration,D,,automated
+AT-063,SAL-005,"Snapshot قلم در Finalize: productName, variantAttributes, barcode, unit, unitFactor, unitPrice, discounts[], taxCode, taxRate, taxableAmount, taxAmount, lineTotal, costAtSale (WAC).",P0,T,API-Integration,D,,automated
+AT-064,SAL-005.1,قیمت در سبد Draft «پیش‌نمایش» است. Finalize قیمت را **دوباره روی سرور** محاسبه می‌کند. اگر با expectedTotal کلاینت فرق کند، 409 price-changed با جزئیات جدید برمی‌گردد و صندوق‌دار تأیید مجدد می‌کند.,P0,T,API-Integration,D,,automated
+AT-065,SAL-006,پرداخت‌ها طبق 5.7. یک فروش می‌تواند چند پرداخت داشته باشد. Finalize فقط وقتی مجاز است که Σ پرداخت‌های تأییدشده + بخش نسیه (که در همان تراکنش طبق BR-082 تأیید می‌شود) = جمع فاکتور.,P0,T,API-Integration,D,,automated
+AT-066,SAL-006.1,پرداخت نقد: «مبلغ دریافتی» و «باقیمانده» محاسبه و نمایش داده می‌شوند. فقط مبلغ خالص (جمع − باقیمانده) به صندوق شیفت اضافه می‌شود.,P0,T,API-Integration,D,,automated
+AT-067,SAL-007,Finalize اتمی و Idempotent طبق UC-02 و BR-030 تا BR-032 و BR-056.,P0,T,API-Integration,D,P0-3,automated
+AT-068,SAL-010,"هر فروش و هر Movement این‌ها را دارد: cashierUserId, branchId, registerId, shiftId, terminalDeviceId, channel (POS|Admin|API).",P0,T,API-Integration,D,,automated
+AT-069,SAL-011,Hold: سبد Draft قابل نگهداری با نام یا یادداشت است و می‌تواند بعداً روی همان شعبه، حتی روی صندوق دیگر، باز شود. Draft و Held بعد از **۲۴ ساعت** بی‌فعالیت خودکار Cancelled می‌شوند [ASM].,P0,T,API-Integration,D,,automated
+AT-070,SAL-012,چاپ/نمایش فاکتور: PDF یا چاپ مرورگر (۸۰mm و A4) بر اساس ReceiptTemplate صنف و Tenant (BR-086). QR لینک فاکتور دیجیتال روی چاپ می‌آید. متن قانونی و فیلدهای اجباری از قالب صنف می‌آیند و قابل حذف نیستند. فاکتور نسیه مبلغ نسیه، سررسید و مانده حساب مشتری پس از این فاکتور را نشان می‌دهد.,P0,T+D,E2E,D,,automated
+AT-071,SAL-013,Offline: در قطعی، سبد Draft روی دستگاه نگهداری می‌شود و جستجوی Cache کار می‌کند. دکمه Finalize و پرداخت **غیرفعال** است و بنر وضعیت آفلاین دیده می‌شود. پس از اتصال، سبد با clientDraftId یکتا به سرور Sync می‌شود و تکراری نمی‌سازد.,P0,T,API-Integration,D,P0-9,automated
+AT-080,PAY-001,روش‌ها: Cash، ExternalCardTerminal، OnlineGateway، **CustomerCredit (نسیه — CRD)** و StoreCredit (مصرف مانده بستانکار مشتری — BR-084). چند روش در یک فروش مجاز است.,P0,T,API-Integration,D,,automated
+AT-081,PAY-002,**کارتخوان مستقل:** صندوق‌دار مبلغ را روی دستگاه بانک می‌زند، سپس در POS «شماره پیگیری/مرجع» (و اختیاری ۴ رقم آخر کارت و شماره ترمینال) را وارد می‌کند. پرداخت در وضعیت ConfirmedManual ثبت می‌شود.,P0,T,API-Integration,D,,automated
+AT-082,PAY-002.1,"یکتایی شماره مرجع: (tenant, terminalNo, referenceNo, date) یکتاست. تکرار آن 409 duplicate-reference می‌گیرد و فقط با Override مدیر (ممیزی‌شده) قابل عبور است.",P0,T,API-Integration,D,,automated
+AT-083,PAY-002.2,پرداخت‌های ConfirmedManual در گزارش «مغایرت کارتخوان» با فایل یا گزارش تسویه بانک قابل تطبیق‌اند. MVP: Import دستی CSV تسویه و تطبیق بر اساس مرجع و مبلغ.,P0,T,API-Integration,D,,automated
+AT-084,PAY-003.1,Verify کنترل می‌کند: مبلغ = مبلغ Intent، شناسه سفارش = Intent، مرجع PSP قبلاً برای Intent دیگری ثبت نشده باشد، و وضعیت PSP موفق باشد. هر ناهمخوانی ← NeedsReview؛ اگر PSP از Reverse پشتیبانی کند، Reverse خودکار.,P0,T,API-Integration,D,P0-5,automated
+AT-085,PAY-003.2,Return URL یا Callback به‌تنهایی پرداخت را تأیید **نمی‌کند**. پرداخت فقط پس از Verify تأیید می‌شود.,P0,T,API-Integration,D,,automated
+AT-086,PAY-003.3,اگر PSP مرحله Settle جدا داشته باشد، Settle **پس از** Commit فروش انجام می‌شود. اگر Finalize ناممکن شود (مثلاً موجودی تمام شده)، Reverse یا Refund خودکار با وضعیت NeedsReview و اطلاع به مدیر.,P0,T,API-Integration,D,,automated
+AT-087,PAY-003.4,Timeout: Intentی که در **۱۵ دقیقه** Verify نشود Expired می‌شود و Reservation آزاد می‌شود. Job تطبیق، Intentهای Expired را یک بار دیگر از PSP استعلام می‌کند (Inquiry) تا پرداخت موفق دیررس گم نشود.,P0,T,API-Integration,D,,automated
+AT-088,PAY-004,"IPaymentGateway Adapter با عملیات CreatePayment, Verify, Settle?, Reverse?, Refund?, Inquiry?. قابلیت‌های اختیاری هر PSP در GatewayCapabilities اعلام می‌شوند و UI بر اساس آن رفتار می‌کند.",P0,I+T,API-Integration,D,,automated
+AT-089,PAY-005,اعتبارنامه PSP (Merchant ID، Terminal ID، کلید) **به ازای Tenant** در Vault ذخیره می‌شود. نمایش آن پس از ثبت فقط Masked است. پلتفرم وجه نگه نمی‌دارد (D-12).,P0,I+T,API-Integration,D,,automated
+AT-090,PAY-007,Webhook یا Callback PSP از Inbox عبور می‌کند (Dedup با مرجع PSP) و Rate Limit دارد. Payload بیش از ۶۴KB رد می‌شود.,P0,T,API-Integration,D,,automated
+AT-100,ACC-001,شجره حساب سه‌سطحی (گروه، کل، معین) و تفصیلی (طرف‌حساب: مشتری، تأمین‌کننده، شعبه) پیش‌فرض بر اساس صنف. حساب‌های سیستمی (مثل موجودی، فروش، مالیات فروش، صندوق) حذف‌شدنی نیستند و فقط تغییر نام می‌پذیرند.,P0,T,API-Integration,D,,automated
+AT-101,ACC-001.1,سال مالی و دوره‌های ماهانه شمسی (BR-023). وضعیت دوره: Open، Closed و (P1) Locked.,P0,T,Integration-Concurrency,D,,automated
+AT-102,ACC-002,تراز: Σ debit = Σ credit برای هر سند، هم در JournalEntry.Post() و هم با **Deferred Constraint Trigger** در DB. هر سطر یا بدهکار است یا بستانکار و مبلغش > ۰ است. سند Posted ≥ ۲ سطر دارد.,P0,T,API-Integration,D,P0-4,automated
+AT-103,ACC-003,سند Posted قابل UPDATE یا DELETE نیست (Trigger DB + Domain). اصلاح فقط با سند معکوس (Reversal، با ارجاع) یا سند اصلاحی انجام می‌شود.,P0,T,API-Integration,D,,automated
+AT-104,ACC-004,Posting خودکار با PostingRule نسخه‌دار برای رویدادهای جدول 5.8.1. Mapping حساب‌ها برای Tenant قابل تنظیم است.,P0,T,API-Integration,D,,automated
+AT-105,ACC-005,قواعد محاسبه: BR-013 تا BR-017.,P0,T,API-Integration,D,,automated
+AT-106,ACC-006,سند فروش در همان تراکنش Finalize ساخته و Posted می‌شود (D-04). سند دستی و اصلاحی از UI با accounting.journal.post ثبت می‌شود.,P0,T,API-Integration,D,,automated
+AT-107,ACC-007,گزارش‌ها: دفتر روزنامه، دفتر کل و معین، گردش حساب تفصیلی، تراز آزمایشی (۲ و ۴ ستونی)، تراز صندوق و شیفت. همه گزارش‌ها فیلتر بازه شمسی دارند و خروجی Excel/PDF.,P0,T+D,E2E,D,,automated
+AT-108,ACC-008,ارز و تقویم طبق BR-010، BR-011، BR-020 و BR-023.,P0,T,API-Integration,D,,automated
+AT-109,ACC-009,بستن دوره: پس از بستن، ثبت سند با تاریخ مؤثر در آن دوره ممنوع است (هم سند خودکار و هم دستی). رویدادهای دیررس (مثلاً برگشت) به دوره باز جاری با «تاریخ مؤثر = امروز» می‌روند و به سند اصلی ارجاع می‌دهند.,P0,T,API-Integration,D,,automated
+AT-120,CUS-001,تأیید شماره با OTP پیامکی ۶ رقمی: اعتبار **۲ دقیقه**، حداکثر **۵** تلاش، فاصله ارسال مجدد ≥ ۶۰ ثانیه، حداکثر **۵** ارسال در ساعت و **۱۰** در روز برای هر شماره، به‌علاوه سقف به ازای IP و دستگاه [REC]. OTP به‌صورت Hash ذخیره می‌شود و یک‌بارمصرف است.,P0,T,API-Integration,E,,automated
+AT-121,CUS-002,GlobalCustomerId (UUID داخلی، هرگز نمایش داده نمی‌شود) و PublicCustomerCode = CU- + ۸ نویسه Crockford Base32 (~۴۰ بیت) از CSPRNG. Lookup با کد Rate Limit دارد: ۳۰ در دقیقه برای هر کاربر و دستگاه، و هشدار Enumeration پس از ۱۰ خطای پیاپی.,P0,T,API-Integration,E,,automated
+AT-122,CUS-002.1,مشتری می‌تواند کد عمومی خود را **باطل و تعویض** کند. کد قدیمی بلافاصله نامعتبر می‌شود.,P0,T,API-Integration,E,,automated
+AT-123,CUS-003,Membership با TenantCustomerId مستقل، تاریخ عضویت، منبع (QR پیشخوان، POS، Portal) و رضایت‌های همان Tenant.,P0,T,API-Integration,E,,automated
+AT-124,CUS-004,ایجاد Membership جدید برای مشتری موجود در POS فقط با **Proof of Possession** ممکن است: (الف) مشتری QR مشتری خود را نشان دهد (که فقط با ورود در Portal صادر می‌شود)، یا (ب) OTP به شماره او ارسال و توسط او اعلام شود. گفتن کد عمومی به‌تنهایی کافی نیست.,P0,T,API-Integration,E,,automated
+AT-125,CUS-005,QR مشتری: Token امضاشده با aud=customer-link، sub=globalCustomerId (opaque)، jti، exp ≤ 120s، یک‌بارمصرف. QR پیشخوان: URL HTTPS حاوی StoreInviteToken امضاشده با tenantId، branchId، exp (پیش‌فرض ۹۰ روز، قابل ابطال). QR فاکتور: Receipt Link (CUS-009). این سه هرگز به جای هم پذیرفته نمی‌شوند.,P0,T,API-Integration,E,,automated
+AT-126,CUS-006,اتصال فاکتور Draft یا Finalized به TenantCustomerId (Finalized فقط تا ۲۴ ساعت بعد و فقط یک بار، ممیزی‌شده). POS هرگز فاکتورهای Tenant دیگر را نشان نمی‌دهد. سابقه فاکتورهای همان Tenant فقط با customers.lookup و بدون شماره کامل دیده می‌شود.,P0,T,API-Integration,E,P0-6,automated
+AT-127,CUS-007,رضایت‌ها طبق BR-063. لغو در Portal، از طریق لینک لغو در پیام یا دستور در بله فوراً اعمال می‌شود (≤ ۶۰ ثانیه برای صف ارسال).,P0,T,API-Integration,E,,automated
+AT-128,CUS-008,Merge مشتری: فقط وقتی دو GlobalCustomer هر دو شماره‌ای دارند که مالک واحد با OTP روی هر دو اثبات کرده است. Membershipها ادغام می‌شوند و نگاشت قدیم→جدید برای ارجاع‌ها ثبت و ممیزی می‌شود.,P0,T,API-Integration,E,,automated
+AT-129,CUS-009,Receipt Link: https://<domain>/r/<token> با Token تصادفی ≥ ۱۲۸ بیت، اعتبار پیش‌فرض **۹۰ روز** [ASM]، قابل ابطال توسط Tenant و مشتری. نمایش: نام فروشگاه، اقلام، مبالغ، تاریخ و شماره فاکتور؛ **بدون** شماره مشتری. دسترسی‌ها ممیزی می‌شوند و Rate Limit دارند.,P0,T,API-Integration,E,,automated
+AT-130,CUS-010,Customer Portal: ورود OTP، کد و QR من، فروشگاه‌های من (لغو عضویت)، فاکتورهای من (فقط فاکتورهای متصل به Membershipهای خودش)، رضایت‌ها و کانال‌ها، اتصال یا قطع بله.,P0,T+D,E2E,E,,automated
+AT-131,CUS-011,Guest: فروش بدون مشتری مجاز است. ارسال فاکتور دیجیتال به Guest فقط با شماره‌ای که همان لحظه با OTP تأیید شود ممکن است، و این کار یک GlobalCustomer **بدون Membership** می‌سازد مگر مشتری عضویت را بپذیرد.,P0,T,API-Integration,E,,automated
+AT-140,NOT-001,"NotificationGateway با INotificationChannel (ValidateRecipient, SendAsync, QueryStatusIfSupported, HandleCallback). پیاده‌سازی‌های MVP: SmsChannel و BaleBotChannel (مشروط به Verification).",P0,I+T,API-Integration,E,,automated
+AT-141,NOT-002,ارسال فاکتور: پیام حاوی نام فروشگاه، مبلغ و Receipt Link است، **بدون** فهرست اقلام.,P0,T,API-Integration,E,,automated
+AT-142,NOT-003,بله: (الف) اتصال حساب با Deep Link ble.ir/<bot>?start=<linkToken> (linkToken یک‌بارمصرف و ۱۰ دقیقه‌ای صادرشده از Portal پس از ورود OTP)؛ (ب) پس از Start، chatId به GlobalCustomer متصل می‌شود؛ (ج) ارسال فقط به chatIdهای متصل. همه این‌ها پس از Verification در Sandbox.,P0,T,API-Integration,E,,automated
+AT-143,NOT-004,chatId هرگز از شماره حدس زده یا جستجو نمی‌شود.,P0,I,Inspection,E,,review
+AT-144,NOT-005,"Retry با Backoff نمایی (۳۰ ثانیه، ۲ دقیقه، ۱۰ دقیقه، ۱ ساعت، ۶ ساعت)، حداکثر ۵ تلاش، سپس Dead Letter. کلید Idempotency ارسال (notificationId, channel, attemptNo) است.",P0,T,API-Integration,E,,automated
+AT-145,NOT-006,وضعیت‌ها: Queued → Sending → Sent → Delivered | Failed | Undeliverable. Delivered فقط با رسید Provider.,P0,T,API-Integration,E,,automated
+AT-146,NOT-008,انتخاب کانال: بر اساس رضایت عملیاتی و اولویت مشتری (پیش‌فرض: بله در صورت اتصال، وگرنه SMS). اگر بله ناموفق شود و رضایت SMS باشد، Fallback به SMS.,P0,T,API-Integration,E,P0-7,automated
+AT-147,NOT-009,Template: متن فارسی نسخه‌دار به ازای Tenant (فقط فیلدهای مجاز قابل ویرایش‌اند: نام فروشگاه و امضا). متن پیامک با الزامات خط خدماتی Provider سازگار است.,P0,T,API-Integration,E,,automated
+AT-148,NOT-007,پیام بازاریابی در MVP ارسال **نمی‌شود**، ولی مدل رضایت آن آماده است: هیچ مسیر کدی Notification با purpose=Marketing نمی‌سازد، حتی با رضایت ثبت‌شده.,P0,I+T,API-Integration,E,,automated
+AT-160,TAX-001,پروفایل مالیاتی Tenant: نوع شخص، شناسه ملی، کد اقتصادی، و به ازای هر شعبه یا واحد صدور، شناسه حافظه مالیاتی. فعال‌سازی ارسال فقط پس از تکمیل پروفایل و **تست اتصال** موفق ممکن است.,P0,T,API-Integration,D,,automated
+AT-161,TAX-002,کلید: «تولید کلید» در HSM یا KMS ← دانلود CSR یا کلید عمومی ← مالک آن را در کارپوشه ثبت می‌کند ← شناسه حافظه را وارد می‌کند ← تست اتصال. کلید خصوصی قابل دانلود نیست. چرخش کلید: کلید جدید موازی ساخته می‌شود و کلید قدیمی پس از تأیید ثبت کلید جدید غیرفعال می‌شود.,P0,T,Integration-Concurrency,D,,automated
+AT-162,TAX-003,هر Variant شناسه کالا/خدمت مالیاتی دارد (یا از Product ارث می‌برد). Finalize فاکتور **بدون** شناسه کالا برای Tenantی که ارسال فعال دارد مجاز است، ولی صورتحساب NeedsReview می‌شود و هشدار پیش از Finalize نمایش داده می‌شود [DEC D-21].,P0,T,API-Integration,D,,automated
+AT-163,TAX-004,ساخت صورتحساب از Snapshot فاکتور (BR-073) با انتخاب الگو و نوع بر اساس نوع خریدار (مصرف‌کننده نهایی بی‌نام یا خریدار دارای شناسه). اگر خریدار شناسه ملی یا اقتصادی بدهد، در فاکتور ثبت می‌شود (اختیاری در POS).,P0,T,API-Integration,D,,automated
+AT-164,TAX-006,برگشت از فروش ← صورتحساب برگشتی یا اصلاحی متناظر (BR-072).,P0,T,API-Integration,D,,automated
+AT-165,TAX-007,داشبورد: تعداد صورتحساب در هر وضعیت، قدیمی‌ترین Pending، Rejectedها با کد خطا و راهنمای اصلاح، و **زمان باقیمانده تا مهلت دوره** طبق TaxSubmissionPolicy (BR-075/BR-076). Platform Admin می‌تواند Policy را با validFrom آینده تغییر دهد.,P0,T+D,E2E,D,,automated
+AT-166,TAX-008,ممیزی هر امضا: tenantId، taxInvoiceId، hash محتوا، شناسه کلید، زمان، عامل (Worker). سرویس امضا فقط محتوایی را امضا می‌کند که hash آن با صورتحساب ثبت‌شده در DB یکی باشد.,P0,T,API-Integration,D,,automated
+AT-167,TAX-009,مدیریت TaxSubmissionPolicy در Platform Admin (نسخه‌دار، با ممیزی؛ تغییر روی صورتحساب‌هایی که دوره‌شان هنوز باز است اعمال می‌شود).,P0,T,API-Integration,D,,automated
+AT-170,RPT-001,فروش روزانه به تفکیک شعبه، صندوق، صندوق‌دار و کالا/دسته؛ تعداد فاکتور، مبلغ ناخالص، تخفیف، مالیات و خالص.,P0,T,API-Integration,F,,automated
+AT-171,RPT-001.1,موجودی لحظه‌ای و ارزش آن (Σ qty×WAC) به تفکیک انبار؛ موجودی کم؛ گردش یک کالا (کاردکس).,P0,T,API-Integration,F,,automated
+AT-172,RPT-001.2,برگشتی‌ها به تفکیک دلیل و صندوق‌دار.,P0,T,API-Integration,F,,automated
+AT-173,RPT-001.3,سود ناخالص = فروش خالص − Σ costAtSale، با توضیح مبنا («بر اساس میانگین موزون در لحظه فروش»). اقلامی که در لحظه فروش بهای صفر یا نامعتبر داشتند جدا علامت‌گذاری می‌شوند.,P0,T,API-Integration,F,,automated
+AT-174,RPT-002,گزارش‌ها از Read Model یا Replica خوانده می‌شوند. هیچ گزارشی تراکنش POS را قفل نمی‌کند. تأخیر داده گزارش ≤ ۶۰ ثانیه است و زمان آخرین به‌روزرسانی نمایش داده می‌شود.,P0,T,Integration-Concurrency,F,,automated
+AT-175,RPT-003,Export Excel/CSV برای همه گزارش‌ها، با ممیزی و محدودیت حجم (بیش از ۱۰۰٬۰۰۰ ردیف ← Job ناهمگام).,P0,T,API-Integration,F,,automated
+AT-180,INT-001,"API عمومی /api/v1 با OpenAPI 3.1. Integration Key به ازای Tenant با Scope (catalog.read, inventory.read در MVP)، انقضا، ابطال و Rate Limit.",P0,T,API-Integration,F,,automated
+AT-181,INT-002,Adapterهای MVP: Open Food Facts (پس از تأیید ODbL)، PSPها (دو PSP اول — OQ-08)، SMS، Bale، سامانه مؤدیان. هر Adapter Timeout، Retry، Circuit Breaker، Bulkhead و Metric دارد.,P0,T,API-Integration,F,,automated
+AT-190,AUD-001,رویدادهای ممیزی: ورود و خروج، خطای ورود، تغییر نقش و مجوز، Approvalها، Finalize، Cancel، Return، Refund، تعدیل موجودی، تغییر قیمت، تغییر تنظیمات مالی و مالیاتی، ثبت و بستن سند و دوره، نمایش PII، Export، دسترسی Support، امضای مالیاتی، تغییر کلید یا اعتبارنامه.,P0,T,API-Integration,B,,automated
+AT-191,AUD-001.1,"هر رکورد: who (userId, role, impersonatedBy?), what (action, resourceType, resourceId), when, where (tenant, branch, device, ip), why (reason?), before/after (فقط فیلدهای غیرحساس، یا Hash آن‌ها).",P0,T,API-Integration,B,,automated
+AT-192,AUD-002,ذخیره append-only با **زنجیره Hash** به ازای Tenant (hash = H(prevHash ‖ record)). Job روزانه تمامیت زنجیره را وارسی می‌کند و Hash سر زنجیره را در ذخیره‌ساز جدا (WORM یا Object Lock) ثبت می‌کند.,P0,T,Integration-Concurrency,B,,automated
+AT-193,AUD-003,ممیزی شامل OTP، Token، رمز، کلید، شماره کامل کارت یا محتوای کامل PII نیست.,P0,T+I,API-Integration,B,,automated
+AT-200,UC-01,Given کدی با Check Digit نادرست، When resolve، Then 422 و هیچ فراخوانی Provider انجام نشود.,P0,T,API-Integration,C,,automated
+AT-201,UC-01,Given کاندیدی با confidence=0.6، When کاربر بدون عمل «تأیید» ذخیره را صدا بزند، Then 422 confirmation-required.,P0,T,API-Integration,C,,automated
+AT-202,UC-01,Given Tenant A کالایی با قیمت ۱۰۰٬۰۰۰ ریال برای بارکد X دارد، When Tenant B همان بارکد را resolve کند، Then پاسخ هیچ قیمت، موجودی یا شناسه‌ای از Tenant A نداشته باشد.,P0,T,API-Integration,C,P0-8,automated
+AT-203,UC-01,Given همه Providerها Down هستند، When resolve، Then پاسخ در ≤ ۵ ثانیه با candidates=[] و degraded=true برگردد.,P0,T,API-Integration,C,,automated
+AT-210,UC-02,Given ۱۰۰ درخواست هم‌زمان Finalize با یک Idempotency-Key، Then دقیقاً ۱ فاکتور، ۱ مجموعه Movement و ۱ سند وجود داشته باشد و همه پاسخ‌ها شماره فاکتور یکسان داشته باشند.,P0,T,Integration-Concurrency,D,P0-3,automated
+AT-211,UC-02,Given دو صندوق که آخرین واحد کالا را هم‌زمان Finalize می‌کنند و Policy Forbid است، Then یکی موفق شود و دیگری insufficient-stock بگیرد.,P0,T,Integration-Concurrency,D,P0-2,automated
+AT-212,UC-02,Given SMS Provider Down است، When Finalize، Then 200 برگردد و Notification در Retrying باشد.,P0,T,API-Integration,D,P0-7,automated
+AT-213,UC-02,Given هر فاکتور Finalized، Then سند Posted مرتبط متوازن باشد و Σ Movementهای فروش = Σ اقلام.,P0,T,API-Integration,D,,automated
+AT-214,UC-02,Given فاکتور Finalized، When قیمت کالا تغییر کند، Then نمایش فاکتور همان مبالغ اصلی را نشان دهد.,P0,T,API-Integration,D,,automated
+AT-220,UC-03,Given QR مشتری که یک بار استفاده شده، When اسکن دوباره، Then 401.,P0,T,API-Integration,E,,automated
+AT-221,UC-03,Given کد عمومی مشتری‌ای که در Tenant B عضو است ولی در Tenant A نه، When صندوق‌دار A Lookup کند، Then فقط «عضو نیست» برگردد، بدون نام، شماره یا هیچ اطلاعاتی از B.,P0,T,API-Integration,E,P0-6,automated
+AT-222,UC-03,Given QR پیشخوان Tenant A که tenantId آن دستکاری شده، Then امضا نامعتبر و 400.,P0,T,API-Integration,E,,automated
+AT-223,UC-03,Given مشتری رضایت فاکتور را لغو کرده، When Finalize، Then هیچ Notification عملیاتی برای او Queue نشود.,P0,T,API-Integration,E,,automated
+AT-230,UC-04,Given فاکتوری با ۳ واحد و یک برگشت ۲ واحدی قبلی، When برگشت ۲ واحد، Then 422.,P0,T,API-Integration,D,,automated
+AT-231,UC-04,Given دو برگشت هم‌زمان برای آخرین واحد، Then فقط یکی موفق شود.,P0,T,Integration-Concurrency,D,,automated
+AT-232,UC-04,Given فاکتور با تخفیف سندی، When برگشت همه اقلام در چند مرحله، Then Σ مبالغ برگشتی = جمع فاکتور، نه بیشتر.,P0,T,API-Integration,D,,automated
+AT-233,UC-04,Given برگشت، Then سند معکوس متوازن باشد و بهای برگشتی = costAtSale همان اقلام.,P0,T,API-Integration,D,,automated
+AT-240,UC-05,**AC:** Given موجودی ۱۰ عدد با WAC ۱۰۰ و رسید ۱۰ عدد با بها ۲۰۰، Then WAC = ۱۵۰ و سند: موجودی ۲٬۰۰۰ بدهکار / پرداختنی ۲٬۰۰۰ بستانکار.,P0,T,API-Integration,C,,automated
+AT-250,UC-06,**AC:** Given شیفتی با افتتاحیه ۱٬۰۰۰٬۰۰۰، فروش نقد ۵٬۰۰۰٬۰۰۰ و بازپرداخت ۲۰۰٬۰۰۰، When شمارش ۵٬۷۰۰٬۰۰۰، Then مغایرت = −۱۰۰٬۰۰۰ و سند «کسری صندوق» ثبت شود. . Given Register با شیفت Open، When باز کردن شیفت دوم، Then 409.,P0,T,API-Integration,D,,automated
+AT-251,UC-06,**AC:** Given شیفتی با افتتاحیه ۱٬۰۰۰٬۰۰۰، فروش نقد ۵٬۰۰۰٬۰۰۰ و بازپرداخت ۲۰۰٬۰۰۰، When شمارش ۵٬۷۰۰٬۰۰۰، Then مغایرت = −۱۰۰٬۰۰۰ و سند «کسری صندوق» ثبت شود. . Given Register با شیفت Open، When باز کردن شیفت دوم، Then 409.,P0,T,API-Integration,D,,automated
+AT-260,UC-07,Given سامانه مؤدیان Down است، When ۱۰۰ فروش Finalize شود، Then همه موفق باشند و ۱۰۰ صورتحساب در Pending بمانند و پس از بازگشت سامانه ارسال شوند.,P0,T,API-Integration,D,,automated
+AT-261,UC-07,Given صورتحسابی Sent است، When Worker دو بار پیام را مصرف کند، Then فقط یک ارسال انجام شود.,P0,T,API-Integration,D,,automated
+AT-262,UC-07,Given درخواست امضا با hash متفاوت از DB، Then سرویس امضا رد کند و Alert امنیتی ثبت شود.,P0,T,API-Integration,D,,automated
+AT-263,UC-07,Given برگشت جزئی از فاکتوری که Accepted است، Then صورتحساب برگشتی مرتبط با مبالغ دقیق BR-054 ساخته شود.,P0,T,API-Integration,D,,automated
+AT-270,UC-08,Given Callback با مرجع PSPی که Verify ناموفق دارد، Then هیچ پرداخت Confirmed و هیچ فاکتور Finalized ساخته نشود.,P0,T,API-Integration,D,P0-5,automated
+AT-271,UC-08,Given ۵ Callback یکسان، Then یک Verify و یک انتقال وضعیت.,P0,T,API-Integration,D,,automated
+AT-272,UC-08,Given Intent Expired و Inquiry دیررس موفق، Then یا فروش Finalize شود یا Reverse و NeedsReview، و هرگز پول بدون فاکتور یا Refund رها نشود.,P0,T,API-Integration,D,,automated
+AT-280,UC-09,**AC:** Given Snapshot = ۱۰، فروش ۲ واحد حین شمارش و شمارش فیزیکی ۸، Then اختلاف = ۰.,P0,T,API-Integration,C,,automated
+AT-290,UC-10,**AC:** Given Owner بدون فعال‌سازی MFA، When دسترسی به تنظیمات مالی، Then 403 mfa-required.,P0,T,API-Integration,B,,automated
+AT-300,CRD-001,ایجاد حساب اعتباری برای مشتری عضو: تکمیل هویت اعتباری (BR-080)، سقف، مهلت پرداخت و وضعیت. هر تغییر ممیزی می‌شود.,P0,T,API-Integration,D,,automated
+AT-301,CRD-003,دفتر معین دریافتنی append-only: Charge (فروش نسیه)، Collection (دریافت)، CreditNote (برگشت)، WriteOff، Adjustment. هر ورودی Unique به سند مبدأ است (BR-032).,P0,T,API-Integration,D,,automated
+AT-302,CRD-004,دریافت از مشتری (Collection) با تخصیص FIFO یا دستی (BR-084)؛ رسید دریافت برای مشتری از کانال مجاز.,P0,T,API-Integration,D,,automated
+AT-303,CRD-005,لینک پرداخت آنلاین مانده برای مشتری: Receipt Link یا Portal، با PaymentIntent به مبلغ انتخابی ≤ مانده. پس از Verify، Collection خودکار ثبت می‌شود.,P0,T,API-Integration,D,,automated
+AT-304,CRD-006,گزارش‌ها: مانده مشتریان، **سنی مطالبات (Aging)** در بازه‌های ۰–۳۰، ۳۱–۶۰، ۶۱–۹۰ و بیش از ۹۰ روز، صورت‌حساب مشتری (Statement) به تفکیک بازه شمسی، و فاکتورهای سررسیدگذشته.,P0,T,API-Integration,D,,automated
+AT-305,CRD-007,یادآوری سررسید به مشتری (عملیاتی، با رضایت عملیاتی) X روز قبل و بعد از سررسید؛ قابل تنظیم و پیش‌فرض خاموش [ASM].,P0,T,API-Integration,D,,automated
+AT-306,CRD-008,مسدودسازی خودکار حساب وقتی سررسید از N روز (Tenant) بگذرد؛ رفع مسدودی با credit.account.manage.,P0,T,API-Integration,D,,automated
+AT-307,CRD-009,مشتری در Portal مانده، فاکتورهای باز و سررسیدها را **فقط برای همان فروشگاه** می‌بیند و می‌تواند آنلاین پرداخت کند.,P0,T,API-Integration,D,,automated
+AT-308,CRD-010,سوخت مطالبات (WriteOff) با Approval و سند «هزینه مطالبات مشکوک‌الوصول / دریافتنی».,P0,T,API-Integration,D,,automated
+AT-309,CRD-011,صورتحساب مالیاتی فروش نسیه با «روش تسویه» نسیه یا ترکیبی طبق الگوی سامانه (Verification Required).,P0,T,API-Integration,D,,automated
+AT-310,UC-11,Given سقف ۱۰٬۰۰۰٬۰۰۰ و مانده ۸٬۰۰۰٬۰۰۰، When دو فروش نسیه هم‌زمان ۱٬۵۰۰٬۰۰۰، Then یکی موفق و دیگری credit-limit-exceeded.,P0,T,Integration-Concurrency,D,,automated
+AT-311,UC-11,Given دریافت ۳٬۰۰۰٬۰۰۰ برای دو فاکتور باز ۲٬۰۰۰٬۰۰۰ (قدیمی) و ۲٬۰۰۰٬۰۰۰، Then فاکتور اول تسویه و فاکتور دوم ۱٬۰۰۰٬۰۰۰ مانده داشته باشد.,P0,T,API-Integration,D,,automated
+AT-312,UC-11,Given پایان روز، Then Σ مانده دفتر معین = مانده حساب کنترل دریافتنی در دفترکل.,P0,T,API-Integration,D,,automated
+AT-313,UC-11,Given مشتری با حساب در Tenant A، When در Portal فروشگاه B را ببیند، Then هیچ اطلاعاتی از اعتبار یا مانده A نمایش داده نشود.,P0,T,API-Integration,D,,automated
+SEC-T-001,TM-001,Token در مرورگر نیست (BFF)؛ Cookie HttpOnly; Secure; SameSite=Lax؛ CSP سخت (nonce، بدون unsafe-inline)؛ React Escaping؛ Sanitization ورودی‌های متنی که در HTML یا PDF فاکتور رندر می‌شوند (نام کالا، یادداشت),P0,T,Security-Automated,B,,automated
+SEC-T-002,TM-001,Token در مرورگر نیست (BFF)؛ Cookie HttpOnly; Secure; SameSite=Lax؛ CSP سخت (nonce، بدون unsafe-inline)؛ React Escaping؛ Sanitization ورودی‌های متنی که در HTML یا PDF فاکتور رندر می‌شوند (نام کالا، یادداشت),P0,T,Security-Automated,B,,automated
+SEC-T-003,TM-002,SameSite=Lax + CSRF Token (Double-submit) برای همه درخواست‌های تغییر وضعیت؛ بررسی Origin,P0,T,Security-Automated,B,,automated
+SEC-T-004,TM-003,داده حساس در Cache مرورگر یا IndexedDB (دستگاه مشترک صندوق),P0,T,Security-Automated,B,,automated
+SEC-T-005,TM-004,دستکاری قیمت یا مبلغ در کلاینت,P0,T,Security-Automated,B,,automated
+SEC-T-006,TM-006,Session Fixation یا عدم چرخش پس از ورود و MFA,P0,T,Security-Automated,B,,automated
+SEC-T-010,TM-010,**BOLA:** دستکاری saleId، customerId، exportId و … برای دسترسی به منبع Tenant دیگر,P0,T,Security-Automated,B,,automated
+SEC-T-011,TM-011,**BOLA درون Tenant:** صندوق‌دار شعبه ۱ فاکتور شعبه ۲ را برمی‌گرداند,P0,T,Security-Automated,B,,automated
+SEC-T-012,TM-012,**BFLA:** صندوق‌دار Endpoint مدیریتی را صدا می‌زند (تعدیل، Mapping حساب، Export),P0,T,Security-Automated,B,,automated
+SEC-T-013,TM-013,**Mass Assignment / BOPLA:** ارسال status، invoiceNo، costAtSale، creditLimit، tenantId در بدنه,P0,T,Security-Automated,B,,automated
+SEC-T-014,TM-014,**BOPLA خواندن:** پاسخ شامل فیلدهای حساس (بهای خرید برای صندوق‌دار، شماره کامل مشتری),P0,T,Security-Automated,B,,automated
+SEC-T-015,TM-015,**مصرف بی‌حد منابع:** Export بزرگ، صفحه‌بندی بی‌سقف، سبد ۱۰٬۰۰۰ قلمی,P0,T,Security-Automated,B,,automated
+SEC-T-016,TM-018,نشت اطلاعات در خطا (Stack Trace، SQL),P0,T,Security-Automated,B,,automated
+SEC-T-017,TM-019,تزریق SQL در Queryهای دست‌نویس (Dapper),P0,T,Security-Automated,B,,automated
+SEC-T-030,TM-030,**Callback جعلی PSP** («پرداخت موفق»),P0,T,Security-Automated,B,,automated
+SEC-T-031,TM-032,Webhook جعلی بله (اتصال chatId مهاجم به مشتری),P0,T,Security-Automated,B,,automated
+SEC-T-032,TM-033,Rate Limit جدا؛ پاسخ سریع و پردازش در Worker؛ سقف Payload ۶۴KB,P0,T,Security-Automated,B,,automated
+SEC-T-040,TM-040,**SSRF** از URL تصویر کالا یا Provider کاتالوگ,P0,T,Security-Automated,B,,automated
+SEC-T-041,TM-041,پاسخ مخرب Provider (HTML یا Script در نام کالا),P0,T,Security-Automated,B,,automated
+SEC-T-042,TM-042,Worker بدون Tenant Context داده همه Tenantها را پردازش کند,P0,T,Security-Automated,B,,automated
+SEC-T-043,TM-043,**SMS Pumping / Toll Fraud** از طریق OTP مشتری,P0,T,Security-Automated,B,,automated
+SEC-T-044,TM-044,افشای شماره مشتری در Log یا Trace یا Metric,P0,T,Security-Automated,B,,automated
+SEC-T-050,TM-050,**امضای دلخواه با کلید Tenant** پس از نفوذ به Api یا Workers,P0,T,Security-Automated,B,,automated
+SEC-T-051,TM-051,نفوذ هم‌زمان به DB و Workers ← درج صورتحساب جعلی در DB و درخواست امضا,P0,T,Security-Automated,B,,automated
+SEC-T-052,TM-052,exportable=false؛ Policy OpenBao؛ Unseal با Shamir 3/5؛ Audit Device OpenBao؛ Break-glass دونفره,P0,T,Security-Automated,B,,automated
+SEC-T-060,TM-060,**نشت Context Tenant در Connection Pool**,P0,T,Security-Automated,B,,automated
+SEC-T-061,D06 §12,Pool Context Leak، Fitness، Field Encryption، Trigger تغییرناپذیری، Backup، Cache Key، Presigned URL,P0,T,Security-Automated,B,,automated
+SEC-T-062,TM-062,DBA یا مدیر زیرساخت داده را مستقیم می‌خواند (TA-06),P0,T,Security-Automated,B,,automated
+SEC-T-063,TM-063,دستکاری مستقیم اسناد مالی یا ممیزی در DB,P0,T,Security-Automated,B,,automated
+SEC-T-064,TM-064,Backup بدون رمز یا در دسترس عموم,P0,T,Security-Automated,B,,automated
+SEC-T-065,TM-065,Cache Key بدون Tenant (نشت قیمت یا کالا),P0,T,Security-Automated,B,,automated
+SEC-T-066,TM-066,Object Storage: دسترسی به PDF فاکتور یا Export با حدس کلید,P0,T,Security-Automated,B,,automated
+SEC-T-070,TM-070,Credential Stuffing روی ورود Merchant,P0,T,Security-Automated,B,,automated
+SEC-T-071,TM-071,Token یک Realm در Realm دیگر,P0,T,Security-Automated,B,,automated
+SEC-T-072,TM-072,Mirror داخلی با Allowlist؛ Lockfile؛ SCA؛ تأخیر ۱۴ روزه برای نسخه‌های جدید (Quarantine) [DEC D-43]؛ مجوزها (AQ-03),P0,T,Security-Automated,B,,automated
+SEC-T-073,TM-073,Image آلوده یا جایگزینی Image در Registry,P0,T,Security-Automated,B,,automated
+SEC-T-074,TM-074,OIDC کوتاه‌عمر به OpenBao (بدون Secret ثابت در CI)؛ Runner جدا برای Production با تأیید دستی؛ Branch Protection,P0,T,Security-Automated,B,,automated
+SEC-T-075,TM-075,دسترسی Admin به Kubernetes بدون کنترل,P0,T,Security-Automated,B,,automated
+SEC-T-080,AUTH-11,Step-up,P0,T,Security-Automated,D,,automated
+SEC-T-081,AUTH-12,صادرشده توسط CustomerIdentity پس از OTP (نه Keycloak؛ ADR-003 بند ۶)؛ Session مات در BFF پورتال؛ Token داخلی aud=customer-api ≤ ۱۰ دقیقه؛ Session کوتاه (۳۰ دقیقه Idle)؛ بدون «مرا به خاطر بسپار» برای عملیات حساس (اتصال بله، تغییر شماره),P0,T,Security-Automated,D,,automated
+SEC-T-082,AUTH-13,دامنه جدا، IP Allowlist، WebAuthn اجباری، Session ۳۰ دقیقه,P0,T,Security-Automated,D,,automated
+SEC-T-090,V12 Secure Communication,TLS 1.3، mTLS داخلی,P0,T,Security-Automated,D,,automated
+SEC-T-101,AB-01,**تخفیف بی‌مجوز** به آشنا — سقف تخفیف نقش (BR-021) + Approval لحظه‌ای با هویت مدیر (IAM-007),P0,T,Security-Automated,E,,automated
+SEC-T-102,AB-02,**برگشت جعلی** (بدون کالای واقعی، و برداشتن نقد),P0,T,Security-Automated,E,,automated
+SEC-T-103,AB-03,**Void یا Cancel پس از دریافت نقد** (فروش بدون ثبت),P0,T,Security-Automated,E,,automated
+SEC-T-104,AB-05,**تعدیل موجودی برای پوشاندن سرقت**,P0,T,Security-Automated,E,,automated
+SEC-T-105,AB-06,**تغییر قیمت موقت** (کم کردن، فروش، برگرداندن),P0,T,Security-Automated,E,,automated
+SEC-T-106,AB-07,**سوءاستفاده از نسیه** (حساب برای مشتری ساختگی),P0,T,Security-Automated,E,,automated
+SEC-T-107,AB-11,**QR پیشخوان جعلی** (برچسب روی QR فروشگاه ← فیشینگ OTP),P0,T,Security-Automated,E,,automated
+SEC-T-108,AB-12,**Scraping لینک فاکتور** — Token ۱۲۸ بیتی، Rate Limit و ممیزی (CUS-009)؛ عدم نمایش PII,P0,T,Security-Automated,E,,automated
+SEC-T-109,AB-15,**سرکوب ارسال به مؤدیان** (Tenant می‌خواهد فروش را گزارش نکند),P0,T,Security-Automated,E,,automated
+SEC-T-110,AB-16,**Export انبوه داده مشتریان** پیش از ترک شرکت,P0,T,Security-Automated,E,,automated
+SEC-T-111,AB-18,**CSV Injection** در Export (فرمول در نام کالا),P0,T,Security-Automated,E,,automated
+T01,D05,tenant B sees no rows of tenant A,P0,T,"DB-Integration (automated, passing)",B,,automated
+T02,D05,tenant B cannot write a row for tenant A,P0,T,"DB-Integration (automated, passing)",B,,automated
+T03,D05,tenant B cannot reference tenant A branch (composite FK),P0,T,"DB-Integration (automated, passing)",B,,automated
+T04,D05,tenant B cannot update tenant A sale (0 rows -> no change),P0,T,"DB-Integration (automated, passing)",B,,automated
+T05,D05,no tenant context -> zero rows everywhere,P0,T,"DB-Integration (automated, passing)",B,,automated
+T06,D05,no tenant context -> insert rejected,P0,T,"DB-Integration (automated, passing)",B,,automated
+T07,D05,app role cannot read a partition directly,P0,T,"DB-Integration (automated, passing)",B,,automated
+T10,D05,duplicate active barcode in a tenant (DI-080),P0,T,"DB-Integration (automated, passing)",C,,automated
+T11,D05,overlapping price validity (DI-083),P0,T,"DB-Integration (automated, passing)",C,,automated
+T12,D05,negative available stock rejected by DB (DI-031),P0,T,"DB-Integration (automated, passing)",C,,automated
+T13,D05,same source document cannot post stock twice (BR-032),P0,T,"DB-Integration (automated, passing)",C,,automated
+T14,D05,stock movement is append-only for the app role,P0,T,"DB-Integration (automated, passing)",C,,automated
+T15,D05,movement for another tenant via parent rejected,P0,T,"DB-Integration (automated, passing)",C,,automated
+T20,D05,second open shift on the same register (DI-008),P0,T,"DB-Integration (automated, passing)",D,,automated
+T21,D05,finalized sale must have invoice number,P0,T,"DB-Integration (automated, passing)",D,,automated
+T22,D05,finalized sale is immutable (DI-003),P0,T,"DB-Integration (automated, passing)",D,,automated
+T23,D05,return bookkeeping still allowed on finalized sale,P0,T,"DB-Integration (automated, passing)",D,,automated
+T24,D05,finalized line price is immutable,P0,T,"DB-Integration (automated, passing)",D,,automated
+T25,D05,cannot add a line to a finalized sale,P0,T,"DB-Integration (automated, passing)",D,,automated
+T26,D05,returned qty cannot exceed sold qty (DI-005),P0,T,"DB-Integration (automated, passing)",D,,automated
+T27,D05,returned qty may increase up to qty,P0,T,"DB-Integration (automated, passing)",D,,automated
+T28,D05,line_total must equal net + tax (DI-001),P0,T,"DB-Integration (automated, passing)",D,,automated
+T29,D05,duplicate client draft id (DI-010),P0,T,"DB-Integration (automated, passing)",D,,automated
+T30,D05,unbalanced posted journal rejected at commit (DI-040),P0,T,"DB-Integration (automated, passing)",D,,automated
+T31,D05,a line cannot be both debit and credit,P0,T,"DB-Integration (automated, passing)",D,,automated
+T32,D05,balanced journal commits,P0,T,"DB-Integration (automated, passing)",D,,automated
+T33,D05,posted journal line is immutable (DI-041),P0,T,"DB-Integration (automated, passing)",D,,automated
+T34,D05,posted journal header is immutable,P0,T,"DB-Integration (automated, passing)",D,,automated
+T35,D05,same source cannot be posted twice (DI-044),P0,T,"DB-Integration (automated, passing)",D,,automated
+T36,D05,posting into a closed period (DI-042),P0,T,"DB-Integration (automated, passing)",D,,automated
+T37,D05,effective date outside the period span,P0,T,"DB-Integration (automated, passing)",D,,automated
+T38,D05,receivable line without customer detail (DI-043),P0,T,"DB-Integration (automated, passing)",D,,automated
+T39,D05,overlapping fiscal periods,P0,T,"DB-Integration (automated, passing)",D,,automated
+T40,D05,charge open amount cannot exceed amount (DI-053),P0,T,"DB-Integration (automated, passing)",D,,automated
+T41,D05,allocation may decrease open amount,P0,T,"DB-Integration (automated, passing)",D,,automated
+T42,D05,open amount cannot increase back,P0,T,"DB-Integration (automated, passing)",D,,automated
+T43,D05,receivable amount is immutable,P0,T,"DB-Integration (automated, passing)",D,,automated
+T50,D05,verified phone belongs to at most one active customer (DI-060),P0,T,"DB-Integration (automated, passing)",E,,automated
+T51,D05,"public code format (no ambiguous letters I, L, O, U)",P0,T,"DB-Integration (automated, passing)",E,,automated
+T52,D05,one membership per customer per tenant (DI-062),P0,T,"DB-Integration (automated, passing)",E,,automated
+T53,D05,consent history is append-only,P0,T,"DB-Integration (automated, passing)",E,,automated
+T54,D05,tenant B cannot see tenant A membership of the same global customer,P0,T,"DB-Integration (automated, passing)",E,,automated
+T55,D05,reporting role cannot read global customer data,P0,T,"DB-Integration (automated, passing)",E,,automated
+T56,D05,reporting role cannot read tax payload column,P0,T,"DB-Integration (automated, passing)",E,,automated
+T60,D05,content_hash must match payload,P0,T,"DB-Integration (automated, passing)",E,,automated
+T61,D05,signed tax invoice content is frozen (DI-071),P0,T,"DB-Integration (automated, passing)",E,,automated
+T62,D05,one live original invoice per sale (DI-070),P0,T,"DB-Integration (automated, passing)",E,,automated
+T70,D05,audit seq assigned by DB (1..3),P0,T,"DB-Integration (automated, passing)",E,,automated
+T71,D05,audit is append-only,P0,T,"DB-Integration (automated, passing)",E,,automated
+T72,D05,app role cannot touch chain head,P0,T,"DB-Integration (automated, passing)",E,,automated
+T73,D05,intact chain verifies,P0,T,"DB-Integration (automated, passing)",E,,automated
+T74,D05,tampering detected at seq 2,P0,T,"DB-Integration (automated, passing)",E,,automated
+T80,D05,my_memberships returns the caller,P0,T,"DB-Integration (automated, passing)",E,,automated
+T81,D05,without a tenant context the membership table itself stays hidden (RLS),P0,T,"DB-Integration (automated, passing)",E,,automated
+T82,D05,suspended membership is not returned; other users,P0,T,"DB-Integration (automated, passing)",E,,automated
+T83,D05,no user context returns nothing,P0,T,"DB-Integration (automated, passing)",E,,automated
+T84,D05,a membership cannot be written for another tenant,P0,T,"DB-Integration (automated, passing)",E,,automated
+T85,D05,my_memberships returns each membership,P0,T,"DB-Integration (automated, passing)",E,,automated
+T86,D05,an unknown role is rejected,P0,T,"DB-Integration (automated, passing)",E,,automated
+T87,D05,the same key is independent per tenant and invisible to other tenants,P0,T,"DB-Integration (automated, passing)",E,,automated
+T88,D05,a malformed key is rejected,P0,T,"DB-Integration (automated, passing)",E,,automated
+T89,D05,"Completed needs a 2xx response status (only successes are stored, D-34)",P0,T,"DB-Integration (automated, passing)",E,,automated
+T90,D05,"the application cannot delete idempotency records (retention, D-14; purge is the worker",P0,T,"DB-Integration (automated, passing)",E,,automated
+T91,D05,the application writes events but cannot read or change the outbox,P0,T,"DB-Integration (automated, passing)",E,,automated
+T92,D05,a module can only emit events with its own prefix (sales.* from Sales),P0,T,"DB-Integration (automated, passing)",E,,automated
+T93,D05,the application cannot write the inbox (consumers run in Workers),P0,T,"DB-Integration (automated, passing)",E,,automated
+T94,D05,without a tenant context the worker sees no outbox rows (TM-042),P0,T,"DB-Integration (automated, passing)",E,,automated
+T95,D05,outbox_due_tenants lists only tenant ids with due messages,P0,T,"DB-Integration (automated, passing)",E,,automated
+T96,D05,with the tenant context the worker sees that tenant,P0,T,"DB-Integration (automated, passing)",E,,automated
+T97,D05,tenant-wide roles cannot be narrowed to a branch,P0,T,"DB-Integration (automated, passing)",E,,automated
+T98,D05,the last TenantOwner cannot be removed,P0,T,"DB-Integration (automated, passing)",E,,automated
+T99,D05,role assignments are immutable (remove and re-add),P0,T,"DB-Integration (automated, passing)",E,,automated

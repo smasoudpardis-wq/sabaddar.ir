@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+  <PropertyGroup>
+    <AssemblyName>RetailCloud.Workers</AssemblyName>
+    <RootNamespace>RetailCloud.Workers</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <ProjectReference Include="../../BuildingBlocks/BuildingBlocks.Infrastructure/BuildingBlocks.Infrastructure.csproj" />
+    <ProjectReference Include="../../Modules/IdentityAccess/IdentityAccess.Infrastructure/IdentityAccess.Infrastructure.csproj" />
+    <ProjectReference Include="../../Modules/Inventory/Inventory.Infrastructure/Inventory.Infrastructure.csproj" />
+    <ProjectReference Include="../../Modules/Accounting/Accounting.Infrastructure/Accounting.Infrastructure.csproj" />
+    <ProjectReference Include="../../Modules/Platform/Platform.Infrastructure/Platform.Infrastructure.csproj" />
+    <ProjectReference Include="../../Modules/Notifications/Notifications.Infrastructure/Notifications.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

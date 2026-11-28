@@ -1,0 +1,18 @@
+/* US-185 / NFR-UX-001..002: touch targets of at least 44 px (WCAG 2.2 · 2.5.5/2.5.8), readable text, visible focus and no sideways
+   page scroll at phone width (wide tables scroll inside the content area, WCAG 1.4.10). */
+input:not([type='checkbox']):not([type='radio']):not([type='hidden']), select, textarea, button {
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 16px;
+}
+input[type='checkbox'], input[type='radio'] { width: 24px; height: 24px; vertical-align: middle; }
+a { padding: 2px 0; }
+:focus-visible { outline: 3px solid #1d4ed8; outline-offset: 2px; }
+main { overflow-x: auto; }
+table { border-collapse: collapse; }
+th, td { text-align: start; padding: 6px 8px; }
+.skip-link { position: absolute; inset-inline-start: 8px; top: -60px; background: #fff; padding: 8px 12px; z-index: 10; }
+.skip-link:focus { top: 8px; }
+main:focus { outline: none; }

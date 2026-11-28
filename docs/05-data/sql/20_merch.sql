@@ -1,0 +1,255 @@
+SET ROLE rc_migrator;
+
+-- CAT-011: Persian search key — Arabic yeh/kaf to Persian, digits to ASCII, lower case; ZWNJ, tatweel and diacritics
+-- (U+064B..U+065F fathatan..wavy hamza, U+0670 superscript alef) removed; runs of spaces collapsed.
+CREATE OR REPLACE FUNCTION merch.normalize_fa(p text) RETURNS text
+LANGUAGE sql IMMUTABLE PARALLEL SAFE SET search_path = pg_catalog AS $$
+  SELECT btrim(regexp_replace(
+           translate(lower(p), 'يكىۀةأإآ٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹' || chr(8204) || chr(1600)
+                               || (SELECT string_agg(chr(c), '') FROM generate_series(1611, 1631) c) || chr(1648),
+                     'یکیههاا' || 'ا' || '01234567890123456789'),
+           '\s+', ' ', 'g'))
+$$;
+
+CREATE TABLE merch.tenant_product (
+  tenant_id        uuid NOT NULL,
+  id               uuid NOT NULL,
+  name             text NOT NULL CHECK (length(btrim(name)) BETWEEN 1 AND 200),
+  name_normalized  text GENERATED ALWAYS AS (merch.normalize_fa(name)) STORED,
+  brand            text CHECK (length(brand) <= 100),
+  base_unit_code   text NOT NULL CHECK (base_unit_code ~ '^[A-Z0-9]{1,10}$'),
+  tax_code         text,                    -- شناسه کالا/خدمت مالیاتی (TAX-003)
+  tax_rate_bp      int  NOT NULL DEFAULT 0 CHECK (tax_rate_bp BETWEEN 0 AND 10000),
+  catalog_product_id uuid,                  -- reference only (no FK into Global catalog)
+  axes             text[] NOT NULL DEFAULT '{}' CHECK (axes <@ ARRAY['color','size','model'] AND cardinality(axes) <= 3),   -- CAT-008
+  status           text NOT NULL DEFAULT 'Active' CHECK (status IN ('Active','Inactive','Merged')),
+  merged_into_id   uuid,
+  version          int NOT NULL DEFAULT 1,
+  PRIMARY KEY (tenant_id, id),
+  CHECK (status <> 'Merged' OR merged_into_id IS NOT NULL)
+);
+CALL core.enable_tenant_rls('merch.tenant_product');
+
+CREATE TABLE merch.tenant_variant (
+  tenant_id   uuid NOT NULL,
+  id          uuid NOT NULL,
+  product_id  uuid NOT NULL,
+  sku         text NOT NULL CHECK (sku ~ '^[A-Za-z0-9._/-]{1,64}$'),
+  axis_values jsonb NOT NULL DEFAULT '{}'::jsonb,   -- {"color":"red","size":"42"}
+  status      text NOT NULL DEFAULT 'Active' CHECK (status IN ('Active','Inactive')),
+  PRIMARY KEY (tenant_id, id),
+  UNIQUE (tenant_id, sku),
+  UNIQUE (tenant_id, product_id, axis_values),         -- DI-081
+  FOREIGN KEY (tenant_id, product_id) REFERENCES merch.tenant_product (tenant_id, id)
+);
+CALL core.enable_tenant_rls('merch.tenant_variant');
+
+-- CAT-008: a product with axes (a matrix) has variants that name exactly those axes, each with a value; the axes of a
+-- product never change once it has variants (its variants were built from them).
+CREATE OR REPLACE FUNCTION merch.variant_axes() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+DECLARE
+  want text[];
+BEGIN
+  SELECT axes INTO want FROM merch.tenant_product WHERE tenant_id = NEW.tenant_id AND id = NEW.product_id;
+  IF cardinality(want) > 0 AND (
+       ARRAY(SELECT k FROM jsonb_object_keys(NEW.axis_values) k ORDER BY k) IS DISTINCT FROM ARRAY(SELECT a FROM unnest(want) a ORDER BY a)
+       OR EXISTS (SELECT 1 FROM jsonb_each(NEW.axis_values) e WHERE jsonb_typeof(e.value) <> 'string' OR length(btrim(e.value #>> '{}')) = 0)) THEN
+    RAISE EXCEPTION 'variant % must have a value for exactly the axes %', NEW.sku, want USING ERRCODE = 'RC024';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER variant_axes BEFORE INSERT OR UPDATE OF axis_values, product_id ON merch.tenant_variant
+  FOR EACH ROW EXECUTE FUNCTION merch.variant_axes();
+
+CREATE OR REPLACE FUNCTION merch.product_axes_fixed() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  IF NEW.axes IS DISTINCT FROM OLD.axes AND EXISTS (SELECT 1 FROM merch.tenant_variant WHERE tenant_id = OLD.tenant_id AND product_id = OLD.id) THEN
+    RAISE EXCEPTION 'the axes of product % are fixed once it has variants', OLD.id USING ERRCODE = 'RC024';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER product_axes_fixed BEFORE UPDATE OF axes ON merch.tenant_product FOR EACH ROW EXECUTE FUNCTION merch.product_axes_fixed();
+
+CREATE TABLE merch.tenant_product_barcode (
+  tenant_id        uuid NOT NULL,
+  id               uuid NOT NULL,
+  variant_id       uuid NOT NULL,
+  code_normalized  text NOT NULL,            -- GTIN-14 for standard codes; raw for internal
+  code_original    text NOT NULL,
+  is_internal      boolean NOT NULL DEFAULT false,
+  packaging_unit   text NOT NULL DEFAULT 'EA' CHECK (packaging_unit ~ '^[A-Z0-9]{1,10}$'),
+  unit_factor      numeric(18,6) NOT NULL DEFAULT 1 CHECK (unit_factor > 0),
+  active           boolean NOT NULL DEFAULT true,
+  added_at         timestamptz NOT NULL DEFAULT now(),
+  removed_at       timestamptz,
+  PRIMARY KEY (tenant_id, id),
+  FOREIGN KEY (tenant_id, variant_id) REFERENCES merch.tenant_variant (tenant_id, id),
+  CHECK (is_internal OR code_normalized ~ '^[0-9]{14}$'),
+  CHECK (NOT is_internal OR code_normalized ~ '^[A-Za-z0-9-]{1,32}$'),
+  CHECK (active = (removed_at IS NULL))
+);
+-- DI-080 / CAT-002.1: one active assignment per barcode per tenant.
+CREATE UNIQUE INDEX ux_barcode_active ON merch.tenant_product_barcode (tenant_id, code_normalized) WHERE active;
+CALL core.enable_tenant_rls('merch.tenant_product_barcode');
+
+-- CAT-002: the history of a barcode is kept — a row is only ever deactivated (with removed_at), never edited or revived.
+CREATE OR REPLACE FUNCTION merch.barcode_history() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  IF NOT (OLD.active AND NOT NEW.active)
+     OR (NEW.variant_id, NEW.code_normalized, NEW.code_original, NEW.is_internal, NEW.packaging_unit, NEW.unit_factor, NEW.added_at)
+        IS DISTINCT FROM (OLD.variant_id, OLD.code_normalized, OLD.code_original, OLD.is_internal, OLD.packaging_unit, OLD.unit_factor, OLD.added_at) THEN
+    RAISE EXCEPTION 'barcode % can only be deactivated', OLD.id USING ERRCODE = 'RC016';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER barcode_history BEFORE UPDATE ON merch.tenant_product_barcode FOR EACH ROW EXECUTE FUNCTION merch.barcode_history();
+CREATE INDEX ix_product_name ON merch.tenant_product (tenant_id, name_normalized);
+-- CAT-011 word-prefix search: each query term is also matched as '%term%', which this trigram index serves (D05)
+CREATE INDEX ix_product_name_trgm ON merch.tenant_product USING gin (name_normalized public.gin_trgm_ops);
+
+CREATE TABLE merch.price_list (
+  tenant_id  uuid NOT NULL,
+  id         uuid NOT NULL,
+  name       text NOT NULL CHECK (length(btrim(name)) BETWEEN 1 AND 100),
+  is_default boolean NOT NULL DEFAULT false,   -- CAT-009: a branch without its own list sells from the tenant's default
+  PRIMARY KEY (tenant_id, id)
+);
+CREATE UNIQUE INDEX ux_price_list_default ON merch.price_list (tenant_id) WHERE is_default;
+CALL core.enable_tenant_rls('merch.price_list');
+
+CREATE TABLE merch.price_list_item (
+  tenant_id     uuid NOT NULL,
+  id            uuid NOT NULL,
+  price_list_id uuid NOT NULL,
+  variant_id    uuid NOT NULL,
+  unit_price    bigint NOT NULL CHECK (unit_price >= 0),     -- IRR
+  valid         tstzrange NOT NULL CHECK (NOT isempty(valid) AND lower(valid) IS NOT NULL),
+  created_by    uuid,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  reason        text CHECK (length(reason) <= 200),
+  PRIMARY KEY (tenant_id, id),
+  FOREIGN KEY (tenant_id, price_list_id) REFERENCES merch.price_list (tenant_id, id),
+  FOREIGN KEY (tenant_id, variant_id)    REFERENCES merch.tenant_variant (tenant_id, id),
+  -- DI-083: no overlapping validity for the same variant in the same list.
+  EXCLUDE USING gist (tenant_id WITH =, price_list_id WITH =, variant_id WITH =, valid WITH &&)
+);
+CALL core.enable_tenant_rls('merch.price_list_item');
+CREATE INDEX ix_price_item_variant ON merch.price_list_item (tenant_id, price_list_id, variant_id, lower(valid));
+
+-- CAT-009 / AB-06: a price version is history. What applied is never rewritten: the only change is ending a version
+-- (bringing its end forward, never into the past) or correcting a version that has not started yet. Rows are never
+-- deleted (no grant).
+CREATE OR REPLACE FUNCTION merch.price_history() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+DECLARE
+  t timestamptz := statement_timestamp() - interval '1 minute';   -- clock skew between app servers
+BEGIN
+  IF (NEW.tenant_id, NEW.id, NEW.price_list_id, NEW.variant_id, lower(NEW.valid), NEW.created_by, NEW.created_at)
+     IS DISTINCT FROM (OLD.tenant_id, OLD.id, OLD.price_list_id, OLD.variant_id, lower(OLD.valid), OLD.created_by, OLD.created_at)
+     OR (NEW.unit_price, NEW.reason) IS DISTINCT FROM (OLD.unit_price, OLD.reason) AND lower(OLD.valid) <= t
+     OR upper(NEW.valid) IS DISTINCT FROM upper(OLD.valid)
+        AND (upper(NEW.valid) IS NULL OR upper(NEW.valid) < t OR upper(OLD.valid) IS NOT NULL AND upper(NEW.valid) > upper(OLD.valid)) THEN
+    RAISE EXCEPTION 'price version % is history', OLD.id USING ERRCODE = 'RC023';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER price_history BEFORE UPDATE ON merch.price_list_item FOR EACH ROW EXECUTE FUNCTION merch.price_history();
+
+-- CAT-010 / D-18: automatic discount rules (percent on a product or category over a time window, optionally for some
+-- branches). When several apply, only the largest counts. A rule is ended, never edited or deleted (history).
+CREATE TABLE merch.discount_rule (
+  tenant_id   uuid NOT NULL,
+  id          uuid NOT NULL,
+  name        text NOT NULL CHECK (length(btrim(name)) BETWEEN 1 AND 100),
+  target_kind text NOT NULL CHECK (target_kind IN ('Product','Category')),
+  target_id   uuid NOT NULL,
+  percent_bp  int  NOT NULL CHECK (percent_bp BETWEEN 1 AND 10000),
+  valid       tstzrange NOT NULL CHECK (NOT isempty(valid) AND lower(valid) IS NOT NULL),
+  branch_ids  uuid[] NOT NULL DEFAULT '{}',     -- empty: every branch
+  created_by  uuid,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, id)
+);
+CREATE INDEX ix_discount_rule_target ON merch.discount_rule (tenant_id, target_kind, target_id);
+CALL core.enable_tenant_rls('merch.discount_rule');
+
+CREATE OR REPLACE FUNCTION merch.discount_rule_history() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  -- the only change: end the rule, now or later, never earlier than now (what was granted stays granted)
+  IF (NEW.tenant_id, NEW.id, NEW.name, NEW.target_kind, NEW.target_id, NEW.percent_bp, lower(NEW.valid), NEW.branch_ids, NEW.created_by, NEW.created_at)
+     IS DISTINCT FROM (OLD.tenant_id, OLD.id, OLD.name, OLD.target_kind, OLD.target_id, OLD.percent_bp, lower(OLD.valid), OLD.branch_ids, OLD.created_by, OLD.created_at)
+     OR upper(NEW.valid) IS NULL OR upper(NEW.valid) < statement_timestamp() - interval '1 minute'
+     OR (upper(OLD.valid) IS NOT NULL AND upper(NEW.valid) > upper(OLD.valid)) THEN
+    RAISE EXCEPTION 'discount rule % can only be ended', OLD.id USING ERRCODE = 'RC025';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER discount_rule_history BEFORE UPDATE ON merch.discount_rule FOR EACH ROW EXECUTE FUNCTION merch.discount_rule_history();
+
+-- BR-021: the manual discount a role may give without approval (basis points). No row: Cashier 0, BranchManager and
+-- above 10000 (the defaults live in the application, D02).
+CREATE TABLE merch.manual_discount_cap (
+  tenant_id  uuid NOT NULL,
+  role       text NOT NULL CHECK (role IN ('TenantOwner','TenantAdmin','BranchManager','Cashier')),
+  cap_bp     int  NOT NULL CHECK (cap_bp BETWEEN 0 AND 10000),
+  changed_by uuid,
+  changed_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, role)
+);
+CALL core.enable_tenant_rls('merch.manual_discount_cap');
+
+-- CAT-007: weighted barcode profiles (an EAN-13 starting with 2: prefix, item code, [price check digit], value,
+-- check digit). A tenant edits its profiles as one set (PUT) guarded by weighted_barcode_settings.version.
+CREATE TABLE merch.weighted_barcode_settings (
+  tenant_id uuid PRIMARY KEY,
+  version   int NOT NULL DEFAULT 1 CHECK (version >= 1)
+);
+CALL core.enable_tenant_rls('merch.weighted_barcode_settings');
+
+CREATE TABLE merch.weighted_barcode_profile (
+  tenant_id             uuid NOT NULL,
+  id                    uuid NOT NULL,
+  prefix                text NOT NULL CHECK (prefix ~ '^2[0-9]{0,2}$'),     -- GS1 restricted circulation (20-29)
+  item_code_length      int  NOT NULL CHECK (item_code_length BETWEEN 1 AND 6),
+  value_type            text NOT NULL CHECK (value_type IN ('Weight','Price')),
+  value_length          int  NOT NULL CHECK (value_length BETWEEN 3 AND 6),
+  decimals              int  NOT NULL CHECK (decimals BETWEEN 0 AND 3),   -- Weight: digits after the point (kg)
+  has_inner_check_digit boolean NOT NULL DEFAULT false,                   -- GS1 price/weight check digit (4 or 5 digits)
+  PRIMARY KEY (tenant_id, id),
+  CHECK (length(prefix) + item_code_length + value_length + has_inner_check_digit::int = 12),
+  CHECK (NOT has_inner_check_digit OR value_length IN (4, 5)),
+  CHECK (value_type = 'Weight' OR decimals = 0)                            -- a price is whole rials
+);
+CALL core.enable_tenant_rls('merch.weighted_barcode_profile');
+
+-- DI-084: one tenant's prefixes never overlap (neither equal nor one starting the other), so a code decodes one way.
+CREATE OR REPLACE FUNCTION merch.weighted_prefix_disjoint() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended('rc-weighted-prefix:' || NEW.tenant_id, 0));
+  IF EXISTS (SELECT 1 FROM merch.weighted_barcode_profile p
+             WHERE p.tenant_id = NEW.tenant_id AND p.id <> NEW.id
+               AND (starts_with(p.prefix, NEW.prefix) OR starts_with(NEW.prefix, p.prefix))) THEN
+    RAISE EXCEPTION 'weighted barcode prefix % overlaps another profile', NEW.prefix USING ERRCODE = 'RC022';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER weighted_prefix_disjoint BEFORE INSERT OR UPDATE ON merch.weighted_barcode_profile
+  FOR EACH ROW EXECUTE FUNCTION merch.weighted_prefix_disjoint();
+
+-- BR-086 / DI-085 (US-172): what a store may change on its receipts — only these parts; the industry's legal text and
+-- locked fields come from platform.receipt_template_industry and cannot be overridden (there is nowhere to put them).
+CREATE TABLE merch.receipt_template_override (
+  tenant_id       uuid PRIMARY KEY,
+  footer_text     text CHECK (char_length(footer_text) BETWEEN 1 AND 300),
+  signature       text CHECK (char_length(signature) BETWEEN 1 AND 100),
+  logo_object_key text CHECK (logo_object_key ~ '^tenants/[0-9a-f-]{36}/logos/[A-Za-z0-9._-]{1,100}$'),
+  version         int  NOT NULL DEFAULT 1,
+  updated_by      uuid NOT NULL,
+  updated_at      timestamptz NOT NULL DEFAULT now()
+);
+CALL core.enable_tenant_rls('merch.receipt_template_override');
+
+GRANT USAGE ON SCHEMA merch TO rc_app, rc_worker, rc_reporting;
+GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA merch TO rc_app;
+GRANT SELECT ON ALL TABLES IN SCHEMA merch TO rc_worker, rc_reporting;
+GRANT DELETE ON merch.weighted_barcode_profile TO rc_app;   -- the set is replaced as a whole
+RESET ROLE;

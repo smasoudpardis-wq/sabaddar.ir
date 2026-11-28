@@ -1,0 +1,671 @@
+'use client';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { csrf, MESSAGES } from '@/lib/client';
+
+type Register = { id: string; code: string; mayOpenShift: boolean; shift: { id: string; status: string; mine: boolean } | null };
+type Context = { terminalId: string; branchId: string; registers: Register[] };
+type Line = { lineNo: number; name: string; sku: string; qty: string; unit: string; weighted: boolean; unitPrice: string; lineTotal: string;
+  discounts: { amount: string }[] };
+type Tender = { seq: number; method: string; amount: string; status: string; reference: string | null; tendered: string | null; change: string | null;
+  voidReason: string | null };
+type Sale = { id: string; version: number; status: string; invoiceNo: string | null; lines: Line[]; tenders: Tender[];
+  totals: { gross: string; discount: string; tax: string; total: string; paid: string; remaining: string; change: string } };
+
+/** SAL-002.1 / AT-061: the same code again within this window is a double read, not a second item (configurable later). */
+const DUPLICATE_MS = 1500;
+const UNITS = ['EA', 'PK', 'CT', 'KG'];
+const rial = (v: string) => Number(v).toLocaleString('fa-IR');
+const latin = (v: string) => v.replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d))).replace(/[٫]/g, '.').trim();
+
+const ERRORS: Record<string, string> = {
+  'barcode-not-found': 'کالا یافت نشد. آن را در «کالاها» تعریف کنید یا با نام جستجو کنید.',
+  'invalid-barcode': 'بارکد معتبر نیست؛ دوباره اسکن کنید.',
+  'price-missing': 'این کالا هنوز قیمت ندارد.',
+  'not-sellable': 'این کالا غیرفعال است.',
+  'unknown-unit': 'این واحد برای کالا تعریف نشده است.',
+  'weighted-line': 'مقدار کالای وزنی از برچسب خوانده می‌شود؛ حذف و دوباره اسکن کنید.',
+  'version-conflict': 'سبد هم‌زمان تغییر کرد؛ دوباره امتحان کنید.',
+  'shift-not-open': 'شیفت باز نیست.',
+  'terminal-not-registered': 'این دستگاه صندوق ثبت‌شده این شعبه نیست.',
+  'sale-has-payments': 'برای این فاکتور پرداخت ثبت شده است؛ اقلام دیگر تغییر نمی‌کنند.',
+  'amount-exceeds-remaining': 'مبلغ از باقیمانده فاکتور بیشتر است.',
+  'duplicate-reference': 'این شماره پیگیری امروز برای همین کارتخوان ثبت شده است.',
+  'price-changed': 'قیمت تغییر کرده است؛ جمع تازه را با مشتری تأیید کنید.',
+  'payment-incomplete': 'پرداخت‌ها هنوز جمع فاکتور را پوشش نمی‌دهند.',
+  'insufficient-stock': 'موجودی کافی نیست؛ اقلام را اصلاح کنید.',
+  'in-progress': 'در حال ثبت؛ چند لحظه دیگر دوباره امتحان می‌شود.',
+  'sale-not-held': 'این سبد دیگر نگه‌داشته نیست.',
+};
+
+// SAL-013 (US-084): what the register keeps on the device while the network is down. Only names and prices of the store's
+// products and the offline cart's codes and quantities: no customer data, no tokens (SEC-T-004).
+type OfflineLine = { code: string; qty: number; name: string; price: number | null };
+type OfflineCart = { clientDraftId: string; lines: OfflineLine[]; parked: { id: string; version: number } | null };
+const CATALOG = 'rc-pos-catalog';
+const gtin14 = (code: string) => (/^\d{8}$|^\d{12,13}$/.test(code) ? code.padStart(14, '0') : code);
+
+const store = {
+  get: (k: string) => { try { return localStorage.getItem(k); } catch { return null; } },
+  set: (k: string, v: string | null) => { try { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch { /* private mode */ } },
+};
+
+/**
+ * US-082 / SAL-001 / SAL-002: the register screen. A barcode reader that types like a keyboard (keyboard wedge) is read
+ * on this page wherever the focus is; a code can also be typed by hand, or read by the camera where the browser can.
+ * Prices, discounts and tax come from the server; the cart is a draft until payment (EP-07).
+ * US-084 / SAL-013: without network the register keeps scanning into a cart held on the device (cached names, approximate
+ * prices, no payment); when the network returns the cart is sent once with its clientDraftId and priced by the server.
+ */
+export default function PosPage() {
+  const [context, setContext] = useState<Context | null>(null);
+  const [registerId, setRegisterId] = useState('');
+  const [opening, setOpening] = useState('0');
+  const [sale, setSale] = useState<Sale | null>(null);
+  const [manual, setManual] = useState('');
+  const [error, setError] = useState('');
+  const [ignored, setIgnored] = useState(0);
+  const [camera, setCamera] = useState(false);
+  const [pay, setPay] = useState({ cash: '', tendered: '', card: '', reference: '', terminalNo: '', last4: '' });
+  const [override, setOverride] = useState<{ approvalId: string; body: Record<string, unknown> } | null>(null);
+  const [finalKey, setFinalKey] = useState<string | null>(null);   // kept until it succeeds: a retry is the same request (UC-02 6a)
+  const [pendingFinal, setPendingFinal] = useState(false);
+  const [voiding, setVoiding] = useState<{ seq: number; reason: string } | null>(null);
+  const [held, setHeld] = useState<{ id: string; holdNote: string | null; total: string; lines: number; version: number }[]>([]);
+  const [aside, setAside] = useState<{ kind: 'hold' | 'cancel'; text: string } | null>(null);
+  const last = useRef<{ code: string; at: number } | null>(null);
+  const buffer = useRef({ text: '', at: 0 });
+  const busy = useRef<Promise<void>>(Promise.resolve());
+  const video = useRef<HTMLVideoElement | null>(null);
+  const [offline, setOffline] = useState(false);
+  const [off, setOff] = useState<OfflineCart | null>(null);
+  const [syncNote, setSyncNote] = useState('');
+  const offRef = useRef<OfflineCart | null>(null);
+  const current = useRef<Sale | null>(null);   // queued scans see the latest cart, not the render they were queued in
+  useEffect(() => { current.current = sale; }, [sale]);
+
+  const load = useCallback(async () => {
+    const r = await fetch('/bff/pos/context', { cache: 'no-store' });
+    if (!r.ok) {
+      const p = await r.json().catch(() => null) as { code?: string } | null;
+      setError(p?.code ?? `http-${r.status}`);
+      return;
+    }
+    const c: Context = await r.json();
+    setContext(c);
+    const mine = c.registers.find((x) => x.shift?.mine) ?? c.registers.find((x) => !x.shift && x.mayOpenShift);
+    if (mine) setRegisterId((id) => id || mine.id);
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+
+  const register = context?.registers.find((r) => r.id === registerId);
+  const draftKey = `rc-pos-draft-${registerId}`;
+
+  // the cart of this register survives a reload: its clientDraftId is kept on the device (DI-010)
+  useEffect(() => {
+    const kept = registerId ? store.get(draftKey) : null;
+    if (!kept || !register?.shift?.mine) return;
+    void (async () => {
+      const r = await fetch('/bff/pos/sales', {
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf() },
+        body: JSON.stringify({ registerId, clientDraftId: kept }),
+      });
+      const s = r.ok ? await r.json() : null;
+      if (s?.status === 'Draft') setSale(s); else store.set(draftKey, null);
+    })();
+  }, [registerId, register?.shift?.mine, draftKey]);
+
+  // SAL-013: the offline cart of this register, and the product cache that lets a scan show a name while offline
+  const offlineKey = `rc-pos-offline-${registerId}`;
+  const keepOffline = useCallback((c: OfflineCart | null) => {
+    offRef.current = c;
+    setOff(c);
+    store.set(offlineKey, c ? JSON.stringify(c) : null);
+  }, [offlineKey]);
+  useEffect(() => {
+    if (!registerId) return;
+    try { const kept = store.get(offlineKey); keepOffline(kept ? JSON.parse(kept) : null); } catch { keepOffline(null); }
+  }, [registerId, offlineKey, keepOffline]);
+  useEffect(() => {
+    setOffline(!navigator.onLine);
+    const down = () => setOffline(true);
+    const up = () => setOffline(false);
+    window.addEventListener('offline', down);
+    window.addEventListener('online', up);
+    return () => { window.removeEventListener('offline', down); window.removeEventListener('online', up); };
+  }, []);
+  useEffect(() => {
+    if (!context || offline) return;
+    void (async () => {
+      const r = await fetch('/bff/products?limit=200', { cache: 'no-store' }).catch(() => null);
+      if (!r?.ok) return;
+      const items: { name: string; variants: { sku: string; unitPrice: string | null; barcodes: { code: string; codeNormalized: string }[] }[] }[] = (await r.json()).items;
+      const map: Record<string, { name: string; price: number | null }> = {};
+      for (const p of items) {
+        for (const v of p.variants) {
+          const entry = { name: p.name, price: v.unitPrice === null ? null : Number(v.unitPrice) };
+          map[v.sku] = entry;
+          for (const b of v.barcodes) { map[b.code] = entry; map[b.codeNormalized] = entry; }
+        }
+      }
+      store.set(CATALOG, JSON.stringify(map));
+    })();
+  }, [context, offline]);
+
+  function addOffline(code: string) {
+    let cart = offRef.current;
+    if (!cart) {
+      const open = current.current;
+      // a cart already on the server is put aside when the connection returns, so nothing is lost or mixed
+      cart = { clientDraftId: crypto.randomUUID(), lines: [], parked: open && open.lines.length > 0 ? { id: open.id, version: open.version } : null };
+      current.current = null;
+      setSale(null);
+    }
+    let cached: Record<string, { name: string; price: number | null }> = {};
+    try { cached = JSON.parse(store.get(CATALOG) ?? '{}'); } catch { /* no cache yet */ }
+    const hit = cached[code] ?? cached[gtin14(code)];
+    const lines = cart.lines.some((l) => l.code === code)
+      ? cart.lines.map((l) => (l.code === code ? { ...l, qty: l.qty + 1 } : l))
+      : [...cart.lines, { code, qty: 1, name: hit?.name ?? 'کالای ناشناس (پس از اتصال بررسی می‌شود)', price: hit?.price ?? null }];
+    keepOffline({ ...cart, lines });
+  }
+
+  // back online: the offline cart is sent once with its clientDraftId; a repeated send returns the same cart (DI-010)
+  const sync = useCallback(async () => {
+    const cart = offRef.current;
+    if (!cart || !registerId) return;
+    try {
+      if (cart.parked) {
+        await fetch(`/bff/pos/sales/${cart.parked.id}/hold`, {
+          method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf() },
+          body: JSON.stringify({ expectedVersion: cart.parked.version, note: 'پیش از قطعی اینترنت' }),
+        });
+      }
+      const r = await fetch('/bff/pos/sales', {
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf() },
+        body: JSON.stringify({ registerId, clientDraftId: cart.clientDraftId, lines: cart.lines.map((l) => ({ barcode: l.code, qty: String(l.qty) })) }),
+      });
+      const p = await r.json().catch(() => null);
+      if (!r.ok) { setError(p?.code ?? `http-${r.status}`); return; }
+      const rejected: { index: number }[] = p.rejectedLines ?? [];
+      setSyncNote(rejected.length === 0 ? 'سبد آفلاین با سرور هماهنگ شد؛ قیمت‌ها از سرور آمد.'
+        : `سبد آفلاین هماهنگ شد؛ این اقلام اضافه نشدند: ${rejected.map((x) => cart.lines[x.index]?.code).join('، ')}`);
+      store.set(draftKey, cart.clientDraftId);
+      keepOffline(null);
+      current.current = p;
+      setSale(p);
+      void loadHeld();
+    } catch {
+      setOffline(true);   // still no network: try again on the next "online"
+    }
+  }, [registerId, draftKey, keepOffline]);
+  useEffect(() => { if (!offline && off && register?.shift?.mine) void sync(); }, [offline, off, register?.shift?.mine, sync]);
+
+  async function openShift(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    const r = await fetch('/bff/shifts', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf(), 'idempotency-key': crypto.randomUUID() },
+      body: JSON.stringify({ registerId, openingCash: latin(opening).replace(/[,٬]/g, '') }),
+    });
+    if (!r.ok) return setError((await r.json().catch(() => null))?.code ?? `http-${r.status}`);
+    void load();
+  }
+
+  async function ensureSale(): Promise<Sale | null> {
+    if (current.current) return current.current;
+    const draft = store.get(draftKey) ?? crypto.randomUUID();
+    const r = await fetch('/bff/pos/sales', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf() },
+      body: JSON.stringify({ registerId, clientDraftId: draft }),
+    });
+    if (!r.ok) { setError((await r.json().catch(() => null))?.code ?? `http-${r.status}`); return null; }
+    store.set(draftKey, draft);
+    const s: Sale = await r.json();
+    current.current = s;
+    setSale(s);
+    return s;
+  }
+
+  async function addCode(code: string) {
+    setError('');
+    if (offline || offRef.current) { addOffline(code); return; }
+    const s = await ensureSale().catch(() => undefined);
+    if (s === undefined) { setOffline(true); addOffline(code); return; }
+    if (!s) return;
+    const r = await fetch(`/bff/pos/sales/${s.id}/lines`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf() }, body: JSON.stringify({ barcode: code, qty: '1' }),
+    }).catch(() => null);
+    if (!r) { setOffline(true); addOffline(code); return; }   // the network went down mid-scan
+    const body = await r.json().catch(() => null);
+    if (r.ok) { current.current = body; setSale(body); } else setError(body?.code ?? `http-${r.status}`);
+  }
+
+  // every read goes through here: keyboard wedge, manual entry and camera alike; scans are applied in order
+  const onScan = useCallback((raw: string) => {
+    const code = latin(raw);
+    if (!code) return;
+    const now = Date.now();
+    if (last.current && last.current.code === code && now - last.current.at < DUPLICATE_MS) {
+      setIgnored((n) => n + 1);
+      return;
+    }
+    last.current = { code, at: now };
+    busy.current = busy.current.then(() => addCode(code));
+  }, [registerId]);
+
+  // SAL-002: a keyboard-wedge reader types the code and Enter; read it wherever the focus is (not inside another field)
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const t = e.target as HTMLElement | null;
+      if (t && ['INPUT', 'SELECT', 'TEXTAREA'].includes(t.tagName)) return;
+      if (!register?.shift?.mine) return;
+      const now = Date.now();
+      if (now - buffer.current.at > 300) buffer.current.text = '';
+      buffer.current.at = now;
+      if (e.key === 'Enter') {
+        const text = buffer.current.text;
+        buffer.current.text = '';
+        if (text.length >= 3) { e.preventDefault(); onScan(text); }
+      } else if (e.key.length === 1) {
+        buffer.current.text += e.key;
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onScan, register?.shift?.mine]);
+
+  // SAL-002: continuous camera reading where the browser has BarcodeDetector (HTTPS and the user's permission; SP-06)
+  useEffect(() => {
+    if (!camera) return;
+    let stream: MediaStream | null = null;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    void (async () => {
+      try {
+        const Detector = (window as unknown as { BarcodeDetector?: new (o: { formats: string[] }) => { detect: (v: HTMLVideoElement) => Promise<{ rawValue: string }[]> } }).BarcodeDetector;
+        if (!Detector) { setError('camera-unsupported'); setCamera(false); return; }
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        if (video.current) { video.current.srcObject = stream; await video.current.play(); }
+        const detector = new Detector({ formats: ['ean_13', 'ean_8', 'upc_a', 'code_128'] });
+        timer = setInterval(async () => {
+          if (!video.current) return;
+          for (const c of await detector.detect(video.current).catch(() => [])) onScan(c.rawValue);
+        }, 300);
+      } catch {
+        setError('camera-denied');
+        setCamera(false);
+      }
+    })();
+    return () => { if (timer) clearInterval(timer); stream?.getTracks().forEach((t) => t.stop()); };
+  }, [camera, onScan]);
+
+  async function change(line: Line, patch: { qty?: string; unit?: string }) {
+    if (!sale) return;
+    setError('');
+    const r = await fetch(`/bff/pos/sales/${sale.id}/lines/${line.lineNo}`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf() },
+      body: JSON.stringify({ expectedVersion: sale.version, ...patch }),
+    });
+    const body = await r.json().catch(() => null);
+    if (r.ok) setSale(body); else setError(body?.code ?? `http-${r.status}`);
+  }
+
+  async function remove(line: Line) {
+    if (!sale) return;
+    setError('');
+    const r = await fetch(`/bff/pos/sales/${sale.id}/lines/${line.lineNo}?expectedVersion=${sale.version}`, {
+      method: 'DELETE', headers: { 'x-csrf-token': csrf() },
+    });
+    const body = await r.json().catch(() => null);
+    if (r.ok) setSale(body); else setError(body?.code ?? `http-${r.status}`);
+  }
+
+  // US-101: one payment at a time; a repeated card slip waits for a manager and is then sent again with the approval
+  async function tender(body: Record<string, unknown>) {
+    if (!sale) return;
+    setError('');
+    const r = await fetch(`/bff/pos/sales/${sale.id}/tenders`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf(), 'idempotency-key': crypto.randomUUID() },
+      body: JSON.stringify(body),
+    });
+    const p = await r.json().catch(() => null);
+    if (r.ok) {
+      current.current = p;
+      setSale(p);
+      setOverride(null);
+      setPay({ cash: '', tendered: '', card: '', reference: '', terminalNo: '', last4: '' });
+      return;
+    }
+    if (p?.code === 'price-changed') {   // SAL-005.1: the cart now shows the new prices
+      const fresh = await fetch(`/bff/pos/sales/${sale.id}`, { cache: 'no-store' });
+      if (fresh.ok) { const f = await fresh.json(); current.current = f; setSale(f); }
+    }
+    if (p?.code === 'duplicate-reference' && p.context?.approvalRequestId) {
+      setOverride({ approvalId: p.context.approvalRequestId, body: { ...body, approvalId: undefined } });
+      if (body.approvalId) setError('approval-not-yet');
+      else setError('duplicate-reference');
+      return;
+    }
+    setError(p?.code ?? `http-${r.status}`);
+  }
+  const money = (v: string) => latin(v).replace(/[,٬]/g, '');
+
+  // US-091: never shown as done until the server says so; a lost answer is retried with the same key
+  async function finalize() {
+    if (!sale) return;
+    setError('');
+    const key = finalKey ?? crypto.randomUUID();
+    setFinalKey(key);
+    setPendingFinal(true);
+    for (let attempt = 0; attempt < 5; attempt++) {
+      let r: Response;
+      try {
+        r = await fetch(`/bff/sales/${sale.id}/finalize`, {
+          method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf(), 'idempotency-key': key },
+          body: JSON.stringify({ expectedVersion: sale.version, expectedTotal: sale.totals.total }),
+        });
+      } catch {
+        await new Promise((ok) => setTimeout(ok, 1000 * 2 ** attempt));
+        continue;
+      }
+      const p = await r.json().catch(() => null);
+      if (r.ok) {
+        current.current = p;
+        setSale(p);
+        setPendingFinal(false);
+        setFinalKey(null);
+        store.set(draftKey, null);
+        return;
+      }
+      if (p?.code === 'in-progress') { await new Promise((ok) => setTimeout(ok, 1000)); continue; }
+      setPendingFinal(false);
+      setFinalKey(null);   // a business error is not stored: the next attempt is a new request (D-34)
+      if (p?.code === 'price-changed') {
+        const fresh = await fetch(`/bff/pos/sales/${sale.id}`, { cache: 'no-store' });
+        if (fresh.ok) { const f = await fresh.json(); current.current = f; setSale(f); }
+      }
+      return setError(p?.code ?? `http-${r.status}`);
+    }
+    setPendingFinal(false);
+    setError('finalize-unknown');
+  }
+
+  // a payment taken back before Finalize: the money goes back to the customer (or the card is reversed on the bank terminal)
+  async function voidTender(e: React.FormEvent) {
+    e.preventDefault();
+    if (!sale || !voiding) return;
+    setError('');
+    const r = await fetch(`/bff/pos/sales/${sale.id}/tenders/${voiding.seq}/void`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf(), 'idempotency-key': crypto.randomUUID() },
+      body: JSON.stringify({ expectedVersion: sale.version, reason: voiding.reason }),
+    });
+    const p = await r.json().catch(() => null);
+    if (r.ok) { current.current = p; setSale(p); setVoiding(null); } else setError(p?.code ?? `http-${r.status}`);
+  }
+
+  // US-083 / SAL-011: put the cart aside with a note, or cancel it with a reason; held carts of the branch can be resumed here
+  async function loadHeld() {
+    const r = await fetch('/bff/pos/held-sales', { cache: 'no-store' });
+    if (r.ok) setHeld((await r.json()).items);
+  }
+  useEffect(() => { if (register?.shift?.mine) void loadHeld(); }, [register?.shift?.mine]);
+
+  async function putAside(e: React.FormEvent) {
+    e.preventDefault();
+    if (!sale || !aside) return;
+    setError('');
+    const r = await fetch(`/bff/pos/sales/${sale.id}/${aside.kind}`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf() },
+      body: JSON.stringify(aside.kind === 'hold' ? { expectedVersion: sale.version, note: aside.text.trim() || undefined }
+        : { expectedVersion: sale.version, reason: aside.text }),
+    });
+    const p = await r.json().catch(() => null);
+    if (!r.ok) return setError(p?.code ?? `http-${r.status}`);
+    setAside(null);
+    nextSale();
+    void loadHeld();
+  }
+
+  async function resume(id: string, version: number) {
+    setError('');
+    const r = await fetch(`/bff/pos/sales/${id}/resume`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf() },
+      body: JSON.stringify({ expectedVersion: version, registerId }),
+    });
+    const p = await r.json().catch(() => null);
+    if (!r.ok) return setError(p?.code ?? `http-${r.status}`);
+    current.current = p;
+    setSale(p);
+    store.set(draftKey, p.clientDraftId);
+    void loadHeld();
+  }
+
+  function nextSale() {
+    current.current = null;
+    setSale(null);
+    setError('');
+    store.set(draftKey, null);
+  }
+
+  if (!context) {
+    return (
+      <section>
+        <h1>صندوق فروش</h1>
+        {error && <p role="alert" data-testid="pos-error">{ERRORS[error] ?? MESSAGES[error] ?? error}</p>}
+        {error === 'terminal-not-registered' && <p><a href="/terminals">ثبت این دستگاه به‌عنوان صندوق</a></p>}
+        <p><a href="/">بازگشت</a></p>
+      </section>
+    );
+  }
+
+  const step = (q: string, d: number) => String(Math.max(0, Number(q) + d));
+  return (
+    <section>
+      <h1>صندوق فروش</h1>
+      <label>صندوق{' '}
+        <select value={registerId} onChange={(e) => { setRegisterId(e.target.value); setSale(null); }} data-testid="pos-register">
+          {context.registers.map((r) => (
+            <option key={r.id} value={r.id}>{r.code}{r.shift ? (r.shift.mine ? ' (شیفت شما)' : ' (شیفت دیگری)') : ''}</option>
+          ))}
+        </select>
+      </label>
+      {register && !register.shift && (
+        <form onSubmit={(e) => void openShift(e)} data-testid="pos-open-shift">
+          <label>نقد ابتدای شیفت (ریال) <input value={opening} onChange={(e) => setOpening(e.target.value)} dir="ltr" inputMode="numeric" size={10}
+            data-testid="pos-opening" /></label>{' '}
+          <button type="submit" style={{ minHeight: 44 }} data-testid="pos-open-submit" disabled={!register.mayOpenShift}>باز کردن شیفت</button>
+        </form>
+      )}
+      {register?.shift && !register.shift.mine && <p role="status">شیفت این صندوق مال کاربر دیگری است.</p>}
+
+      {register?.shift?.mine && (
+        <>
+          {offline && (
+            <p role="status" data-testid="pos-offline" style={{ background: '#5B3A8C', color: '#fff', padding: 8 }}>
+              اتصال اینترنت قطع است. اسکن ادامه دارد و سبد روی همین دستگاه نگه داشته می‌شود؛ پرداخت و صدور فاکتور پس از اتصال.
+            </p>
+          )}
+          {syncNote && <p role="status" data-testid="pos-synced">{syncNote}</p>}
+          <p data-testid="pos-ready">بارکدخوان آماده است؛ کافی است اسکن کنید.</p>
+          <form onSubmit={(e) => { e.preventDefault(); onScan(manual); setManual(''); }}>
+            <label>ورود دستی کد <input value={manual} onChange={(e) => setManual(e.target.value)} dir="ltr" size={16} inputMode="numeric"
+              data-testid="pos-manual" /></label>{' '}
+            <button type="submit" style={{ minHeight: 44 }} data-testid="pos-manual-submit">افزودن</button>{' '}
+            <button type="button" style={{ minHeight: 44 }} onClick={() => setCamera(!camera)}>{camera ? 'خاموش کردن دوربین' : 'اسکن با دوربین'}</button>
+          </form>
+          {camera && <video ref={video} muted playsInline style={{ maxWidth: '100%', maxHeight: 240 }} />}
+          {ignored > 0 && <p role="status" data-testid="pos-ignored" data-count={ignored}>اسکن تکراری (کمتر از ۱٫۵ ثانیه) نادیده گرفته شد.</p>}
+          {off && (
+            <div data-testid="pos-offline-cart">
+              <h2>سبد آفلاین (قیمت‌ها تقریبی است؛ قیمت نهایی را سرور تعیین می‌کند)</h2>
+              <table data-testid="pos-offline-lines">
+                <thead><tr><th>کالا</th><th>کد</th><th>مقدار</th><th>فی تقریبی</th></tr></thead>
+                <tbody>
+                  {off.lines.map((l) => (
+                    <tr key={l.code} data-code={l.code} data-qty={l.qty}>
+                      <td>{l.name}</td><td dir="ltr">{l.code}</td><td>{l.qty.toLocaleString('fa-IR')}</td><td>{l.price === null ? '—' : rial(String(l.price))}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p>جمع تقریبی: {rial(String(off.lines.reduce((t, l) => t + (l.price ?? 0) * l.qty, 0)))} ریال</p>
+            </div>
+          )}
+          <table data-testid="pos-lines">
+            <thead><tr><th>کالا</th><th>مقدار</th><th>واحد</th><th>فی</th><th>تخفیف</th><th>جمع</th><th /></tr></thead>
+            <tbody>
+              {(sale?.lines ?? []).map((l) => (
+                <tr key={l.lineNo} data-sku={l.sku} data-qty={l.qty}>
+                  <td>{l.name}</td>
+                  <td>
+                    {l.weighted || (sale?.tenders.length ?? 0) > 0 ? Number(l.qty).toLocaleString('fa-IR') : (
+                      <>
+                        <button type="button" style={{ minHeight: 44, minWidth: 44 }} aria-label="یکی کمتر" disabled={Number(l.qty) <= 1}
+                          onClick={() => void change(l, { qty: step(l.qty, -1) })}>−</button>{' '}
+                        {Number(l.qty).toLocaleString('fa-IR')}{' '}
+                        <button type="button" style={{ minHeight: 44, minWidth: 44 }} aria-label="یکی بیشتر" data-testid={`pos-plus-${l.sku}`}
+                          onClick={() => void change(l, { qty: step(l.qty, 1) })}>+</button>
+                      </>
+                    )}
+                  </td>
+                  <td>
+                    {l.weighted || (sale?.tenders.length ?? 0) > 0 ? l.unit : (
+                      <select value={l.unit} onChange={(e) => void change(l, { unit: e.target.value })} aria-label="واحد">
+                        {[...new Set([l.unit, ...UNITS])].map((u) => <option key={u} value={u}>{u}</option>)}
+                      </select>
+                    )}
+                  </td>
+                  <td>{rial(l.unitPrice)}</td>
+                  <td>{l.discounts.length > 0 ? rial(l.discounts[0].amount) : '—'}</td>
+                  <td>{rial(l.lineTotal)}</td>
+                  <td>{(sale?.tenders.length ?? 0) === 0 && (
+                    <button type="button" style={{ minHeight: 44 }} onClick={() => void remove(l)} data-testid={`pos-remove-${l.sku}`}>حذف</button>)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {sale && (
+            <p data-testid="pos-total" data-total={sale.totals.total}>
+              جمع: {rial(sale.totals.gross)} · تخفیف: {rial(sale.totals.discount)} · مالیات: {rial(sale.totals.tax)} ·{' '}
+              <strong>قابل پرداخت: {rial(sale.totals.total)} ریال</strong>
+            </p>
+          )}
+          {!offline && sale && sale.status === 'Draft' && sale.lines.length > 0 && sale.tenders.every((t) => t.status === 'Voided') && (
+            aside ? (
+              <form onSubmit={(e) => void putAside(e)} data-testid="pos-aside-form">
+                <label>{aside.kind === 'hold' ? 'نام یا یادداشت (اختیاری)' : 'دلیل لغو'}{' '}
+                  <input value={aside.text} required={aside.kind === 'cancel'} minLength={aside.kind === 'cancel' ? 3 : undefined} maxLength={aside.kind === 'hold' ? 100 : 200}
+                    onChange={(e) => setAside({ ...aside, text: e.target.value })} data-testid="pos-aside-text" /></label>{' '}
+                <button type="submit" style={{ minHeight: 44 }} data-testid="pos-aside-submit">{aside.kind === 'hold' ? 'نگه‌داشتن' : 'لغو سبد'}</button>{' '}
+                <button type="button" style={{ minHeight: 44 }} onClick={() => setAside(null)}>انصراف</button>
+              </form>
+            ) : (
+              <p>
+                <button type="button" style={{ minHeight: 44 }} onClick={() => setAside({ kind: 'hold', text: '' })} data-testid="pos-hold">نگه‌داشتن سبد</button>{' '}
+                <button type="button" style={{ minHeight: 44 }} onClick={() => setAside({ kind: 'cancel', text: '' })} data-testid="pos-cancel">لغو سبد</button>
+              </p>
+            )
+          )}
+          {held.length > 0 && (
+            <div>
+              <h2>سبدهای نگه‌داشته‌شده</h2>
+              <ul data-testid="pos-held">
+                {held.map((h) => (
+                  <li key={h.id} data-note={h.holdNote ?? ''}>
+                    {h.holdNote ?? 'بدون نام'} · {h.lines.toLocaleString('fa-IR')} قلم · {rial(h.total)} ریال{' '}
+                    <button type="button" style={{ minHeight: 44 }} disabled={!!sale && sale.lines.length > 0 && sale.status === 'Draft'}
+                      onClick={() => void resume(h.id, h.version)} data-testid={`pos-resume-${h.id}`}>ادامه</button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {!offline && !off && sale && sale.lines.length > 0 && (
+            <div data-testid="pos-pay" data-remaining={sale.totals.remaining}>
+              <h2>پرداخت</h2>
+              <ul data-testid="pos-tenders">
+                {sale.tenders.map((t) => (
+                  <li key={t.seq} data-method={t.method} data-status={t.status} style={t.status === 'Voided' ? { textDecoration: 'line-through' } : undefined}>
+                    {t.method === 'Cash' ? 'نقد' : 'کارتخوان'}: {rial(t.amount)} ریال
+                    {t.reference ? ` (پیگیری ${t.reference})` : ''}
+                    {t.change && t.change !== '0' ? ` · دریافتی ${rial(t.tendered ?? '0')} · باقیمانده به مشتری ${rial(t.change)}` : ''}
+                    {t.status === 'Voided' && ` (باطل: ${t.voidReason})`}
+                    {t.status !== 'Voided' && sale.status !== 'Finalized' && (voiding?.seq === t.seq ? (
+                      <form style={{ display: 'inline' }} onSubmit={(e) => void voidTender(e)}>
+                        {' '}<input required minLength={3} maxLength={200} value={voiding.reason} placeholder="دلیل" aria-label="دلیل باطل کردن"
+                          onChange={(e) => setVoiding({ ...voiding, reason: e.target.value })} data-testid={`pos-void-reason-${t.seq}`} />{' '}
+                        <button type="submit" style={{ minHeight: 44 }} data-testid={`pos-void-submit-${t.seq}`}>تأیید باطل</button>
+                      </form>
+                    ) : (
+                      <>{' '}<button type="button" style={{ minHeight: 44 }} onClick={() => setVoiding({ seq: t.seq, reason: '' })}
+                        data-testid={`pos-void-${t.seq}`}>باطل کردن</button></>
+                    ))}
+                  </li>
+                ))}
+              </ul>
+              <p>پرداخت‌شده: {rial(sale.totals.paid)} · <strong data-testid="pos-remaining">مانده: {rial(sale.totals.remaining)} ریال</strong></p>
+              {sale.totals.remaining !== '0' ? (
+                <>
+                  <form onSubmit={(e) => {
+                    e.preventDefault();
+                    const amount = money(pay.cash) || sale.totals.remaining;
+                    void tender({ method: 'Cash', amount, tendered: money(pay.tendered) || amount });
+                  }} data-testid="pos-cash-form">
+                    <label>نقد (ریال) <input value={pay.cash} placeholder={rial(sale.totals.remaining)} onChange={(e) => setPay({ ...pay, cash: e.target.value })}
+                      dir="ltr" inputMode="numeric" size={10} data-testid="pos-cash-amount" /></label>{' '}
+                    <label>مبلغ دریافتی <input value={pay.tendered} onChange={(e) => setPay({ ...pay, tendered: e.target.value })} dir="ltr" inputMode="numeric"
+                      size={10} data-testid="pos-cash-tendered" /></label>{' '}
+                    {pay.tendered && (
+                      <span data-testid="pos-change-preview">باقیمانده به مشتری: {rial(String(Math.max(0,
+                        Number(money(pay.tendered)) - Number(money(pay.cash) || sale.totals.remaining))))}</span>
+                    )}{' '}
+                    <button type="submit" style={{ minHeight: 44 }} data-testid="pos-cash-submit">ثبت نقد</button>
+                  </form>
+                  <form onSubmit={(e) => {
+                    e.preventDefault();
+                    void tender({
+                      method: 'ExternalCardTerminal', amount: money(pay.card) || sale.totals.remaining, referenceNo: latin(pay.reference),
+                      terminalNo: latin(pay.terminalNo) || undefined, cardLast4: latin(pay.last4) || undefined,
+                    });
+                  }} data-testid="pos-card-form">
+                    <label>کارتخوان (ریال) <input value={pay.card} placeholder={rial(sale.totals.remaining)} onChange={(e) => setPay({ ...pay, card: e.target.value })}
+                      dir="ltr" inputMode="numeric" size={10} data-testid="pos-card-amount" /></label>{' '}
+                    <label>شماره پیگیری <input required value={pay.reference} onChange={(e) => setPay({ ...pay, reference: e.target.value })} dir="ltr" size={14}
+                      data-testid="pos-card-reference" /></label>{' '}
+                    <label>شماره پایانه <input value={pay.terminalNo} onChange={(e) => setPay({ ...pay, terminalNo: e.target.value })} dir="ltr" size={8} /></label>{' '}
+                    <label>۴ رقم آخر کارت <input value={pay.last4} onChange={(e) => setPay({ ...pay, last4: e.target.value })} dir="ltr" size={4} inputMode="numeric" /></label>{' '}
+                    <button type="submit" style={{ minHeight: 44 }} data-testid="pos-card-submit">ثبت کارتخوان</button>
+                  </form>
+                  {override && (
+                    <p role="status" data-testid="pos-override">
+                      برای ثبت دوباره این شماره پیگیری، تأیید مدیر لازم است (<a href="/approvals">تأییدها</a>).{' '}
+                      <button type="button" style={{ minHeight: 44 }} onClick={() => void tender({ ...override.body, approvalId: override.approvalId })}>
+                        ثبت پس از تأیید</button>
+                    </p>
+                  )}
+                </>
+              ) : sale.status === 'Finalized' ? (
+                <p role="status" data-testid="pos-finalized" data-invoice={sale.invoiceNo ?? ''}>
+                  فاکتور {sale.invoiceNo} صادر شد.{' '}
+                  <a href={`/receipt/${sale.id}?format=80mm`} target="_blank" rel="noopener" data-testid="pos-print-80">چاپ فاکتور (۸۰ میلی‌متری)</a>{' '}
+                  <a href={`/receipt/${sale.id}?format=A4`} target="_blank" rel="noopener" data-testid="pos-print-a4">چاپ A4</a>{' '}
+                  <button type="button" style={{ minHeight: 44 }} onClick={nextSale} data-testid="pos-next">فروش بعدی</button>
+                </p>
+              ) : (
+                <p role="status" data-testid="pos-paid">
+                  مبلغ فاکتور کامل پرداخت شد.{' '}
+                  <button type="button" style={{ minHeight: 44 }} onClick={() => void finalize()} disabled={pendingFinal} data-testid="pos-finalize">
+                    {pendingFinal ? 'در انتظار تأیید…' : 'نهایی‌سازی و صدور فاکتور'}</button>
+                </p>
+              )}
+            </div>
+          )}
+        </>
+      )}
+      {error && <p role="alert" data-testid="pos-error">{ERRORS[error] ?? MESSAGES[error] ?? (error === 'camera-unsupported'
+        ? 'این مرورگر خواندن بارکد با دوربین را پشتیبانی نمی‌کند؛ از بارکدخوان یا ورود دستی استفاده کنید.'
+        : error === 'camera-denied' ? 'اجازه دوربین داده نشد.'
+          : error === 'finalize-unknown' ? 'پاسخ سرور نرسید؛ فاکتور ممکن است ثبت شده باشد. دوباره «نهایی‌سازی» بزنید (تکرار امن است).' : error)}</p>}
+      <p><a href="/">بازگشت</a></p>
+    </section>
+  );
+}

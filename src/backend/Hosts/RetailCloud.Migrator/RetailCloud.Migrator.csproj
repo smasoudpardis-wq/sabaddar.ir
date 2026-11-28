@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- US-004 / D05 §11: the only component that changes the schema. Api and Workers never reference it (architecture test R11). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>RetailCloud.Migrator</AssemblyName>
+    <RootNamespace>RetailCloud.Migrator</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Npgsql" />
+  </ItemGroup>
+  <!-- The migration set ships with the binary (the default SQL directory is ./sql), so a release applies exactly what it was built with. -->
+  <ItemGroup>
+    <Content Include="../../../../docs/05-data/sql/*.sql;../../../../docs/05-data/sql/migrations.json" Link="sql/%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
