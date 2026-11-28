@@ -91,11 +91,46 @@ BEGIN
 END $$;
 CREATE TRIGGER tr_otp_challenge_guard BEFORE UPDATE ON cid.otp_challenge FOR EACH ROW EXECUTE FUNCTION cid.otp_challenge_guard();
 
+-- CUS-005 (US-142): the store's counter QR. The URL carries a signed token (tenant, branch, invite, expiry); this row makes it revocable.
+CREATE TABLE cid.store_invite (
+  tenant_id  uuid NOT NULL,
+  id         uuid NOT NULL,
+  branch_id  uuid NOT NULL,
+  created_by uuid NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  expires_at timestamptz NOT NULL,
+  revoked_at timestamptz,
+  PRIMARY KEY (tenant_id, id),
+  FOREIGN KEY (tenant_id, branch_id) REFERENCES platform.branch (tenant_id, id),
+  CHECK (expires_at > created_at AND expires_at <= created_at + interval '366 days')
+);
+CALL core.enable_tenant_rls('cid.store_invite');
+
 GRANT USAGE ON SCHEMA cid TO rc_app, rc_worker;
 GRANT SELECT, INSERT, UPDATE ON cid.global_customer, cid.public_code_registry, cid.verified_contact,
                                cid.tenant_customer_membership TO rc_app;
 GRANT SELECT, INSERT ON cid.consent_record TO rc_app;
 GRANT SELECT, INSERT, UPDATE ON cid.otp_challenge TO rc_app;
+GRANT SELECT, INSERT ON cid.store_invite TO rc_app;
+GRANT UPDATE (revoked_at) ON cid.store_invite TO rc_app;
 GRANT DELETE ON cid.otp_challenge TO rc_worker;   -- purge after a day (data minimisation)
 GRANT SELECT ON ALL TABLES IN SCHEMA cid TO rc_worker;
 RESET ROLE;
+
+-- US-142: a customer's own stores across tenants, for the portal. Tenant-scoped rows cannot be listed across tenants by the application,
+-- so this narrow function (tenant directory, column grants only; fitness rule 5) returns the customer's memberships and nothing else.
+CREATE OR REPLACE FUNCTION cid.my_memberships(p_customer uuid)
+RETURNS TABLE (tenant_id uuid, membership_id uuid, store_name text, status text, joined_at timestamptz)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
+  SELECT m.tenant_id, m.id, t.legal_name, m.status, m.joined_at
+    FROM cid.tenant_customer_membership m JOIN platform.tenant t ON t.id = m.tenant_id
+   WHERE m.global_customer_id = p_customer AND m.status = 'Active' AND t.status <> 'Closed'
+   ORDER BY m.joined_at
+$$;
+GRANT USAGE ON SCHEMA cid TO rc_tenant_directory;
+GRANT SELECT (tenant_id, id, global_customer_id, status, joined_at) ON cid.tenant_customer_membership TO rc_tenant_directory;
+GRANT CREATE ON SCHEMA cid TO rc_tenant_directory;  -- a new owner needs CREATE on the schema; revoked at once (fitness 6)
+ALTER FUNCTION cid.my_memberships(uuid) OWNER TO rc_tenant_directory;
+REVOKE CREATE ON SCHEMA cid FROM rc_tenant_directory;
+REVOKE ALL ON FUNCTION cid.my_memberships(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION cid.my_memberships(uuid) TO rc_app;

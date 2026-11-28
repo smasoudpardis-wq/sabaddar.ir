@@ -56,6 +56,8 @@ builder.Services.AddSingleton<IRetention, RetailCloud.Platform.Infrastructure.Po
         builder.Services.AddSingleton<IContactProtector>(RetailCloud.CustomerIdentity.Infrastructure.AesContactProtector.FromBase64(encKey, idxKey));
         builder.Services.AddSingleton<IOtpChallenges, RetailCloud.CustomerIdentity.Infrastructure.PostgresOtpChallenges>();
         builder.Services.AddSingleton<ICustomers, RetailCloud.CustomerIdentity.Infrastructure.PostgresCustomers>();
+        builder.Services.AddSingleton<IStoreInvites, RetailCloud.CustomerIdentity.Infrastructure.PostgresStoreInvites>();
+        builder.Services.AddSingleton<IMemberships, RetailCloud.CustomerIdentity.Infrastructure.PostgresMemberships>();
         if (builder.Configuration["Notifications:Sms:BaseUrl"] is { Length: > 0 } smsUrl)
         {
             builder.Services.AddSingleton<IOtpSender>(_ => new RetailCloud.Api.SmsOtpSender(
@@ -785,7 +787,165 @@ customerApi.MapPost("/me/public-code/rotate", async (IUnitOfWork uow, HttpContex
     })
     .RequireAuthorization(ServiceCollectionExtensions.CustomerPolicy);
 
+// A counter QR: the signature, the expiry and the revocation are checked; every failure answers the same (no oracle for stores or branches).
+async Task<(StoreInviteToken.Parsed Token, InviteView View)?> ActiveInviteAsync(string inviteToken, IUnitOfWork uow, HttpContext http, CancellationToken ct)
+{
+    if (http.RequestServices.GetService<IContactProtector>() is not { } protector || http.RequestServices.GetService<IStoreInvites>() is not { } invites) return null;
+    if (!StoreInviteToken.TryRead(protector, inviteToken, out StoreInviteToken.Parsed? t) || t.ExpiresAt <= DateTimeOffset.UtcNow) return null;
+    InviteView? view = await uow.ExecuteAsync(new FixedTenantContext(new TenantId(t.TenantId)), (s, c) => invites.ActiveAsync(s, t.InviteId, DateTimeOffset.UtcNow, c), ct);
+    return view is null || view.BranchId != t.BranchId ? null : (t, view);
+}
+
+IResult InvalidInvite(HttpContext http) => Problems.Create(http, StatusCodes.Status400BadRequest, "invalid-invite", "This store QR is not valid any more");
+
+customerApi.MapGet("/join/{inviteToken}", async (string inviteToken, IUnitOfWork uow, HttpContext http, CancellationToken ct) =>
+    {
+        if (http.RequestServices.GetService<IContactProtector>() is null) return CustomerAuthOff(http);
+        return await ActiveInviteAsync(inviteToken, uow, http, ct) is { } active
+            ? Results.Ok(new { storeName = active.View.StoreName, branchName = active.View.BranchName, expiresAt = active.View.ExpiresAt })
+            : InvalidInvite(http);
+    })
+    .AllowAnonymous().RequireRateLimiting(RateLimits.ReceiptLink);
+
+customerApi.MapPost("/join/{inviteToken}", async (string inviteToken, PortalJoinInput body, IUnitOfWork uow, HttpContext http, CancellationToken ct) =>
+    {
+        if (http.RequestServices.GetService<IMemberships>() is not { } memberships) return CustomerAuthOff(http);
+        if (!Guid.TryParse(http.User.FindFirst("sub")?.Value, out Guid customerId)) return Problems.Create(http, StatusCodes.Status401Unauthorized, "invalid-token", "Not signed in");
+        IReadOnlyList<ConsentChoice> choices = [.. (body.Consents ?? []).Select(c => new ConsentChoice(c.Purpose ?? "", c.Channel ?? "", c.Granted ?? false))];
+        if (ConsentRules.Problem(body.Consents is null ? [] : choices, body.PolicyVersion) is { } problem)
+        {
+            return Problems.Validation(http, new Dictionary<string, string[]> { [problem.Split(':')[0]] = [problem] });
+        }
+
+        if (await ActiveInviteAsync(inviteToken, uow, http, ct) is not { } active) return InvalidInvite(http);
+        (JoinOutcome outcome, MembershipView view) = await uow.ExecuteAsync(new FixedTenantContext(new TenantId(active.Token.TenantId)), async (s, c) =>
+        {
+            var result = await memberships.JoinAsync(s, customerId, "StoreQr", choices, body.PolicyVersion!.Trim(), DateTimeOffset.UtcNow, c);
+            if (result.Outcome == JoinOutcome.Joined)
+            {
+                await Audit(http, s, CustomerActor(http), new AuditEntry("customers.membership.joined", "Membership", result.Membership.MembershipId.ToString(),
+                    Details: new { branchId = active.Token.BranchId, consents = choices.Count(x => x.Granted) }), c);
+            }
+
+            return result;
+        }, ct);
+        return outcome == JoinOutcome.AlreadyMember
+            ? Problems.Create(http, StatusCodes.Status409Conflict, "already-member", "You are already a member of this store")
+            : Results.Created($"/api/v1/c/memberships/{view.MembershipId}", MembershipJson(view));
+    })
+    .RequireAuthorization(ServiceCollectionExtensions.CustomerPolicy);
+
+customerApi.MapGet("/memberships", async (IUnitOfWork uow, HttpContext http, CancellationToken ct) =>
+    {
+        if (http.RequestServices.GetService<IMemberships>() is not { } memberships) return CustomerAuthOff(http);
+        if (!Guid.TryParse(http.User.FindFirst("sub")?.Value, out Guid customerId)) return Problems.Create(http, StatusCodes.Status401Unauthorized, "invalid-token", "Not signed in");
+        IReadOnlyList<MembershipRef> mine = await uow.ExecuteWithoutTenantAsync(null, (s, c) => memberships.ListAsync(s, customerId, c), ct);
+        var items = new List<object>();
+        foreach (MembershipRef m in mine)
+        {
+            MembershipView? v = await uow.ExecuteAsync(new FixedTenantContext(new TenantId(m.TenantId)), (s, c) => memberships.GetAsync(s, m.MembershipId, customerId, c), ct);
+            if (v is not null) items.Add(MembershipJson(v));
+        }
+
+        return Results.Ok(new { items });
+    })
+    .RequireAuthorization(ServiceCollectionExtensions.CustomerPolicy);
+
+customerApi.MapPut("/memberships/{membershipId:guid}/consents", async (Guid membershipId, PortalConsentsInput body, IUnitOfWork uow, HttpContext http, CancellationToken ct) =>
+    {
+        if (http.RequestServices.GetService<IMemberships>() is not { } memberships) return CustomerAuthOff(http);
+        if (!Guid.TryParse(http.User.FindFirst("sub")?.Value, out Guid customerId)) return Problems.Create(http, StatusCodes.Status401Unauthorized, "invalid-token", "Not signed in");
+        IReadOnlyList<ConsentChoice> choices = [.. (body.Consents ?? []).Select(c => new ConsentChoice(c.Purpose ?? "", c.Channel ?? "", c.Granted ?? false))];
+        if (body.Consents is null || body.Consents.Length == 0 || ConsentRules.Problem(choices, body.PolicyVersion) is not null)
+        {
+            string problem = body.Consents is null || body.Consents.Length == 0 ? "consents: at least one" : ConsentRules.Problem(choices, body.PolicyVersion)!;
+            return Problems.Validation(http, new Dictionary<string, string[]> { [problem.Split(':')[0]] = [problem] });
+        }
+
+        MembershipRef? mine = (await uow.ExecuteWithoutTenantAsync(null, (s, c) => memberships.ListAsync(s, customerId, c), ct)).FirstOrDefault(m => m.MembershipId == membershipId);
+        if (mine is null) return Problems.NotFound(http);
+        MembershipView? view = await uow.ExecuteAsync(new FixedTenantContext(new TenantId(mine.TenantId)), async (s, c) =>
+        {
+            MembershipView? updated = await memberships.UpdateConsentsAsync(s, membershipId, customerId, choices, body.PolicyVersion!.Trim(), "Portal", DateTimeOffset.UtcNow, c);
+            if (updated is not null)
+            {
+                await Audit(http, s, CustomerActor(http), new AuditEntry("customers.consent.changed", "Membership", membershipId.ToString(),
+                    Details: new { changes = choices.Select(x => new { x.Purpose, x.Channel, x.Granted }) }), c);
+            }
+
+            return updated;
+        }, ct);
+        return view is null ? Problems.NotFound(http) : Results.Ok(MembershipJson(view));
+    })
+    .RequireAuthorization(ServiceCollectionExtensions.CustomerPolicy);
+
+customerApi.MapDelete("/memberships/{membershipId:guid}", async (Guid membershipId, IUnitOfWork uow, HttpContext http, CancellationToken ct) =>
+    {
+        if (http.RequestServices.GetService<IMemberships>() is not { } memberships) return CustomerAuthOff(http);
+        if (!Guid.TryParse(http.User.FindFirst("sub")?.Value, out Guid customerId)) return Problems.Create(http, StatusCodes.Status401Unauthorized, "invalid-token", "Not signed in");
+        MembershipRef? mine = (await uow.ExecuteWithoutTenantAsync(null, (s, c) => memberships.ListAsync(s, customerId, c), ct)).FirstOrDefault(m => m.MembershipId == membershipId);
+        if (mine is null) return Problems.NotFound(http);
+        bool left = await uow.ExecuteAsync(new FixedTenantContext(new TenantId(mine.TenantId)), async (s, c) =>
+        {
+            bool done = await memberships.LeaveAsync(s, membershipId, customerId, DateTimeOffset.UtcNow, c);
+            if (done) await Audit(http, s, CustomerActor(http), new AuditEntry("customers.membership.left", "Membership", membershipId.ToString()), c);
+            return done;
+        }, ct);
+        return left ? Results.NoContent() : Problems.NotFound(http);
+    })
+    .RequireAuthorization(ServiceCollectionExtensions.CustomerPolicy);
+
+AuditActor CustomerActor(HttpContext http) => new(null, "Customer", [], null, null, ClientIp(http));
+
+static object MembershipJson(MembershipView m) => new
+{
+    membershipId = m.MembershipId, storeName = m.StoreName, joinedAt = m.JoinedAt, hasCreditAccount = false,
+    consents = m.Consents.Select(c => new { purpose = c.Purpose, channel = c.Channel, granted = c.Granted, updatedAt = c.UpdatedAt, policyVersion = c.PolicyVersion }),
+};
+
 static object CustomerMeJson(CustomerView c) => new { publicCode = c.PublicCode, maskedPhone = c.MaskedPhone, baleLinked = false };
+
+// ---------------- US-142: the store's counter QR (CUS-005, AB-11). The invite is a signed link; the row makes it revocable.
+v1.MapPost("/store-invites", async (StoreInviteInput body, RequestContext ctx, IUnitOfWork uow, HttpContext http, CancellationToken ct) =>
+    {
+        if (http.RequestServices.GetService<IContactProtector>() is not { } protector || http.RequestServices.GetService<IStoreInvites>() is not { } invites) return CustomerAuthOff(http);
+        int days = body.ExpiresInDays ?? 90;
+        var errors = new Dictionary<string, string[]>();
+        if (body.BranchId is null) errors["branchId"] = ["required"];
+        if (days is < 1 or > 365) errors["expiresInDays"] = ["1-365"];
+        if (errors.Count > 0) return Problems.Validation(http, errors);
+        if (!AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.TenantSettingsManage, new ScopeRef(ScopeType.Branch, body.BranchId!.Value, body.BranchId.Value))) return Forbidden(http);
+        Guid id = Guid.CreateVersion7();
+        DateTimeOffset expires = DateTimeOffset.UtcNow.AddDays(days);
+        InviteView? view = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            InviteView? made = await invites.CreateAsync(s, id, body.BranchId!.Value, expires, ctx.User!.Value.Value, c);
+            if (made is not null)
+            {
+                await Audit(http, s, ActorOf(ctx, http), new AuditEntry("customers.store-invite.created", "StoreInvite", id.ToString(), Details: new { branchId = body.BranchId, expiresAt = expires }), c);
+            }
+
+            return made;
+        }, ct);
+        if (view is null) return Problems.NotFound(http);
+        string token = StoreInviteToken.Create(protector, ctx.ActiveTenant!.Value.Value, view.BranchId, id, view.ExpiresAt);
+        string baseUrl = (http.RequestServices.GetRequiredService<IConfiguration>()["Portal:BaseUrl"] ?? "https://portal.retailcloud.example").TrimEnd('/');
+        return Results.Created($"/api/v1/store-invites/{id}", new { id, url = $"{baseUrl}/join/{token}", expiresAt = view.ExpiresAt });
+    })
+    .RequirePermission(Permissions.TenantSettingsManage);
+
+v1.MapDelete("/store-invites/{inviteId:guid}", async (Guid inviteId, RequestContext ctx, IUnitOfWork uow, HttpContext http, CancellationToken ct) =>
+    {
+        if (http.RequestServices.GetService<IStoreInvites>() is not { } invites) return CustomerAuthOff(http);
+        bool revoked = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            bool done = await invites.RevokeAsync(s, inviteId, c);
+            if (done) await Audit(http, s, ActorOf(ctx, http), new AuditEntry("customers.store-invite.revoked", "StoreInvite", inviteId.ToString()), c);
+            return done;
+        }, ct);
+        return revoked ? Results.NoContent() : Problems.NotFound(http);
+    })
+    .RequirePermission(Permissions.TenantSettingsManage);
 
 // ---------------- US-013: POS terminals (TEN-002.1, ABAC-04)
 v1.MapPost("/branches/{branchId:guid}/pairing-codes", async (Guid branchId, RequestContext ctx, IUnitOfWork uow, ITerminalAdministration terminals,
@@ -5100,6 +5260,10 @@ internal sealed record ReceiptOverridesInput(string? LogoObjectKey, string? Foot
 internal sealed record ReceiptTemplateUpdateInput(int? ExpectedVersion, ReceiptOverridesInput? Overrides);
 internal sealed record RetentionPolicyInput(string? Category, int? MinimumDays, int? DefaultDays, DateTimeOffset? ValidFrom, string? Reason);
 internal sealed record LegalHoldInput(string? Reason, DateTimeOffset? Until);
+internal sealed record StoreInviteInput(Guid? BranchId, int? ExpiresInDays);
+internal sealed record PortalConsentInput(string? Purpose, string? Channel, bool? Granted);
+internal sealed record PortalJoinInput(PortalConsentInput[]? Consents, string? PolicyVersion);
+internal sealed record PortalConsentsInput(PortalConsentInput[]? Consents, string? PolicyVersion);
 internal sealed record PortalOtpStartInput(string? Phone, string? CaptchaToken);
 internal sealed record PortalOtpVerifyInput(Guid? ChallengeId, string? Code);
 internal sealed record TenantStatusInput(string? Status, string? Reason);

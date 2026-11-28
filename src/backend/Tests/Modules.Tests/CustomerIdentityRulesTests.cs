@@ -62,3 +62,51 @@ public sealed class CustomerIdentityRulesTests
             OtpPolicy.PerPhonePerHour, OtpPolicy.PerPhonePerDay));
     }
 }
+
+/// <summary>US-142 / CUS-005 / CUS-007 / AT-222: the counter QR cannot be altered, and consent choices are well formed.</summary>
+public sealed class StoreInviteAndConsentRulesTests
+{
+    private sealed class Mac(string key) : IContactProtector
+    {
+        public byte[] Hash(string purpose, string value) => System.Security.Cryptography.HMACSHA256.HashData(System.Text.Encoding.UTF8.GetBytes(key), System.Text.Encoding.UTF8.GetBytes(purpose + "\0" + value));
+
+        public byte[] Protect(string value) => throw new NotSupportedException();
+
+        public string Unprotect(byte[] protectedValue) => throw new NotSupportedException();
+    }
+
+    [Fact]
+    public void AT222_a_token_reads_back_and_any_change_to_the_store_branch_or_expiry_breaks_it()
+    {
+        var protector = new Mac("k1");
+        Guid tenant = Guid.NewGuid(), branch = Guid.NewGuid(), invite = Guid.NewGuid();
+        DateTimeOffset exp = DateTimeOffset.UtcNow.AddDays(90);
+        string token = StoreInviteToken.Create(protector, tenant, branch, invite, exp);
+        Assert.True(StoreInviteToken.TryRead(protector, token, out StoreInviteToken.Parsed? ok));
+        Assert.Equal((tenant, branch, invite, exp.ToUnixTimeSeconds()), (ok.TenantId, ok.BranchId, ok.InviteId, ok.ExpiresAt.ToUnixTimeSeconds()));
+
+        // another store's id swapped into the payload: the mac no longer fits (the same payload re-encoded)
+        string[] parts = token.Split('.');
+        string forged = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(parts[1].Replace('-', '+').Replace('_', '/') + new string('=', (4 - parts[1].Length % 4) % 4)))
+            .Replace(tenant.ToString("N"), Guid.NewGuid().ToString("N")))).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        Assert.False(StoreInviteToken.TryRead(protector, $"v1.{forged}.{parts[2]}", out _));
+        Assert.False(StoreInviteToken.TryRead(new Mac("k2"), token, out _));          // another key
+        Assert.False(StoreInviteToken.TryRead(protector, "v1." + parts[1], out _));   // no mac
+        Assert.False(StoreInviteToken.TryRead(protector, "", out _));
+        Assert.False(StoreInviteToken.TryRead(protector, null, out _));
+        Assert.False(StoreInviteToken.TryRead(protector, token + "x", out _));
+    }
+
+    [Fact]
+    public void Consent_choices_name_a_known_purpose_and_channel_once_and_carry_a_policy_version()
+    {
+        ConsentChoice op = new("Operational", "Sms", true);
+        Assert.Null(ConsentRules.Problem([op, new("Marketing", "Sms", false), new("Operational", "Bale", true)], "1"));
+        Assert.Null(ConsentRules.Problem([], "1"));   // joining with no consent at all is allowed
+        Assert.StartsWith("consents", ConsentRules.Problem([op, op], "1"), StringComparison.Ordinal);
+        Assert.StartsWith("consents", ConsentRules.Problem([new("Spam", "Sms", true)], "1"), StringComparison.Ordinal);
+        Assert.StartsWith("consents", ConsentRules.Problem([new("Operational", "Fax", true)], "1"), StringComparison.Ordinal);
+        Assert.StartsWith("policyVersion", ConsentRules.Problem([op], null), StringComparison.Ordinal);
+        Assert.StartsWith("policyVersion", ConsentRules.Problem([op], ""), StringComparison.Ordinal);
+    }
+}

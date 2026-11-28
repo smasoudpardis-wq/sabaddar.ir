@@ -135,6 +135,19 @@
   "idempotent": false
  },
  {
+  "operationId": "revokeStoreInvite",
+  "method": "DELETE",
+  "path": "/store-invites/{inviteId}",
+  "permission": "tenant.settings.manage",
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [
+   "inviteId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
+ },
+ {
   "operationId": "listBranches",
   "method": "GET",
   "path": "/branches",

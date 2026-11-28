@@ -509,6 +509,43 @@ paths:
       x-requirements:
       - NOT-009
       x-audited: true
+  /store-invites/{inviteId}:
+    delete:
+      operationId: revokeStoreInvite
+      tags:
+      - Customers
+      summary: ابطال QR پیشخوان
+      security: *id001
+      parameters:
+      - name: inviteId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '204':
+          description: No content
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: tenant.settings.manage
+      x-scope: Tenant
+      x-idempotent: false
+      x-requirements:
+      - CUS-005
+      x-audited: true
   /branches:
     get:
       operationId: listBranches
@@ -14805,15 +14842,14 @@ components:
           format: uuid
         url:
           type: string
-        qrPngUrl:
-          type: string
+          description: The signed link the counter QR carries (v1.<payload>.<mac>); the QR picture itself is drawn by the
+            client until the image library is approved
         expiresAt:
           type: string
           format: date-time
       required:
       - id
       - url
-      - qrPngUrl
       - expiresAt
     StoreInviteCreate:
       type: object
@@ -16542,6 +16578,12 @@ x-error-catalog:
   customer-auth-not-configured:
     status: 503
     meaning: Customer sign-in has no keys configured in this environment (US-141)
+  invalid-invite:
+    status: 400
+    meaning: The store QR is forged, expired or revoked; one answer for all three (CUS-005, AT-222)
+  already-member:
+    status: 409
+    meaning: The customer already belongs to this store (DI-062)
   below-retention-floor:
     status: 422
     meaning: The store cannot keep data for less than the platform's minimum for the category (BR-087, RC036)

@@ -132,3 +132,126 @@ public interface IOtpSender
 {
     Task<bool> SendAsync(string e164, string code, string idempotencyKey, CancellationToken cancellationToken);
 }
+
+/// <summary>BR-063: consent per purpose and channel; the operational and the marketing kind are separate and never imply each other.</summary>
+public sealed record ConsentChoice(string Purpose, string Channel, bool Granted);
+
+public sealed record ConsentView(string Purpose, string Channel, bool Granted, DateTimeOffset UpdatedAt, string PolicyVersion);
+
+public sealed record MembershipView(Guid MembershipId, string StoreName, DateTimeOffset JoinedAt, IReadOnlyList<ConsentView> Consents);
+
+public sealed record MembershipRef(Guid TenantId, Guid MembershipId, string StoreName, DateTimeOffset JoinedAt);
+
+public static class ConsentRules
+{
+    public static readonly IReadOnlyList<string> Purposes = ["Operational", "Marketing"];
+
+    public static readonly IReadOnlyList<string> Channels = ["Sms", "Bale"];
+
+    /// <summary>The first problem, as <c>field: message</c>, or null (a choice is repeated or names something unknown).</summary>
+    public static string? Problem(IReadOnlyList<ConsentChoice>? choices, string? policyVersion)
+    {
+        if (policyVersion is null || policyVersion.Trim().Length is < 1 or > 20)
+        {
+            return "policyVersion: 1-20 characters";
+        }
+
+        if (choices is null)
+        {
+            return "consents: required";
+        }
+
+        if (choices.Any(c => !Purposes.Contains(c.Purpose) || !Channels.Contains(c.Channel)))
+        {
+            return "consents: purpose Operational or Marketing, channel Sms or Bale";
+        }
+
+        return choices.GroupBy(c => (c.Purpose, c.Channel)).Any(g => g.Count() > 1) ? "consents: a purpose and channel once" : null;
+    }
+}
+
+/// <summary>CUS-005: the counter QR carries <c>v1.&lt;payload&gt;.&lt;mac&gt;</c>; any change to the payload (store, branch, expiry) breaks the mac (AT-222).</summary>
+public static class StoreInviteToken
+{
+    public sealed record Parsed(Guid TenantId, Guid BranchId, Guid InviteId, DateTimeOffset ExpiresAt);
+
+    public static string Create(IContactProtector protector, Guid tenantId, Guid branchId, Guid inviteId, DateTimeOffset expiresAt)
+    {
+        ArgumentNullException.ThrowIfNull(protector);
+        string payload = B64(System.Text.Encoding.UTF8.GetBytes($"{tenantId:N}.{branchId:N}.{inviteId:N}.{expiresAt.ToUnixTimeSeconds()}"));
+        return $"v1.{payload}.{B64(protector.Hash("store-invite", payload))}";
+    }
+
+    public static bool TryRead(IContactProtector protector, string? token, out Parsed parsed)
+    {
+        ArgumentNullException.ThrowIfNull(protector);
+        parsed = null!;
+        string[] parts = (token ?? "").Split('.');
+        if (parts.Length != 3 || parts[0] != "v1" || parts[1].Length > 200)
+        {
+            return false;
+        }
+
+        if (!System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(System.Text.Encoding.ASCII.GetBytes(B64(protector.Hash("store-invite", parts[1]))),
+                System.Text.Encoding.ASCII.GetBytes(parts[2])))
+        {
+            return false;
+        }
+
+        string[] f = System.Text.Encoding.UTF8.GetString(FromB64(parts[1])).Split('.');
+        if (f.Length != 4 || !Guid.TryParseExact(f[0], "N", out Guid t) || !Guid.TryParseExact(f[1], "N", out Guid b) || !Guid.TryParseExact(f[2], "N", out Guid i)
+            || !long.TryParse(f[3], NumberStyles.None, CultureInfo.InvariantCulture, out long exp))
+        {
+            return false;
+        }
+
+        parsed = new Parsed(t, b, i, DateTimeOffset.FromUnixTimeSeconds(exp));
+        return true;
+    }
+
+    private static string B64(byte[] bytes) => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
+    private static byte[] FromB64(string s)
+    {
+        string b = s.Replace('-', '+').Replace('_', '/');
+        return Convert.FromBase64String(b.PadRight(b.Length + ((4 - (b.Length % 4)) % 4), '='));
+    }
+}
+
+public sealed record InviteView(Guid Id, Guid BranchId, string StoreName, string BranchName, DateTimeOffset ExpiresAt);
+
+public interface IStoreInvites
+{
+    /// <summary>A new invite for a branch of the current store; null when the branch is not one of its own.</summary>
+    Task<InviteView?> CreateAsync(IUnitOfWorkScope scope, Guid inviteId, Guid branchId, DateTimeOffset expiresAt, Guid createdBy, CancellationToken cancellationToken);
+
+    Task<bool> RevokeAsync(IUnitOfWorkScope scope, Guid inviteId, CancellationToken cancellationToken);
+
+    /// <summary>The invite when it exists, is not revoked and not expired: with the store's and branch's names, nothing more (AB-11).</summary>
+    Task<InviteView?> ActiveAsync(IUnitOfWorkScope scope, Guid inviteId, DateTimeOffset now, CancellationToken cancellationToken);
+}
+
+public enum JoinOutcome
+{
+    Joined,
+    AlreadyMember,
+}
+
+public interface IMemberships
+{
+    /// <summary>CUS-003 / DI-062: one membership per customer per store; a customer who left and scans again is reactivated. The consents given are recorded.</summary>
+    Task<(JoinOutcome Outcome, MembershipView Membership)> JoinAsync(IUnitOfWorkScope scope, Guid customerId, string source, IReadOnlyList<ConsentChoice> choices,
+        string policyVersion, DateTimeOffset now, CancellationToken cancellationToken);
+
+    /// <summary>The customer's stores across all tenants (no tenant context; the directory function).</summary>
+    Task<IReadOnlyList<MembershipRef>> ListAsync(IUnitOfWorkScope scope, Guid customerId, CancellationToken cancellationToken);
+
+    Task<MembershipView?> GetAsync(IUnitOfWorkScope scope, Guid membershipId, Guid customerId, CancellationToken cancellationToken);
+
+    /// <summary>CUS-007: each change is a new record (history is append-only); the newest per purpose and channel is in force at once.</summary>
+    Task<MembershipView?> UpdateConsentsAsync(IUnitOfWorkScope scope, Guid membershipId, Guid customerId, IReadOnlyList<ConsentChoice> choices, string policyVersion,
+        string source, DateTimeOffset now, CancellationToken cancellationToken);
+
+    /// <summary>Leaving withdraws every consent and ends the membership (the store keeps its invoices, DI-062).</summary>
+    Task<bool> LeaveAsync(IUnitOfWorkScope scope, Guid membershipId, Guid customerId, DateTimeOffset now, CancellationToken cancellationToken);
+}

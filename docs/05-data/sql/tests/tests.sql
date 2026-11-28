@@ -1076,4 +1076,27 @@ SELECT t.expect_error('T293 a verified challenge is final (single use)', 'RC001'
 SELECT t.expect_error('T294 the application cannot delete challenges, only the Workers purge', '42501', $$DELETE FROM cid.otp_challenge$$);
 RESET ROLE;
 
+-- US-142 store invites and the customer's own stores (CUS-005, CUS-003)
+SET ROLE rc_app;
+SELECT set_config('app.tenant_id', :A, false);
+INSERT INTO cid.store_invite (tenant_id, id, branch_id, created_by, expires_at)
+  VALUES (:A, 'c2000000-0000-0000-0000-0000000000a1', 'a0000000-0000-0000-0000-000000000001', gen_random_uuid(), now() + interval '90 days');
+SELECT t.expect_error('T295 an invite lasts at most a year', '23514',
+  format($$INSERT INTO cid.store_invite (tenant_id, id, branch_id, created_by, expires_at) VALUES (%L, gen_random_uuid(), 'a0000000-0000-0000-0000-000000000001', gen_random_uuid(), now() + interval '3 years')$$, :A));
+SELECT t.expect_error('T296 an invite belongs to a branch of its own store', '23503',
+  format($$INSERT INTO cid.store_invite (tenant_id, id, branch_id, created_by, expires_at) VALUES (%L, gen_random_uuid(), gen_random_uuid(), gen_random_uuid(), now() + interval '1 day')$$, :A));
+UPDATE cid.store_invite SET revoked_at = now() WHERE id = 'c2000000-0000-0000-0000-0000000000a1';
+SELECT t.expect_error('T297 only the revocation of an invite can change', '42501', $$UPDATE cid.store_invite SET expires_at = now() + interval '200 days'$$);
+SELECT set_config('app.tenant_id', :B, false);
+SELECT t.ok('T298 another store sees none of the invites (RLS)', (SELECT count(*) FROM cid.store_invite) = 0);
+SELECT set_config('app.tenant_id', '', false);
+INSERT INTO cid.global_customer (id, public_code) VALUES ('c2000000-0000-0000-0000-0000000000c1', 'CU-23456789');
+SELECT set_config('app.tenant_id', :A, false);
+INSERT INTO cid.tenant_customer_membership (tenant_id, id, global_customer_id, join_source) VALUES (:A, 'c2000000-0000-0000-0000-0000000000d1', 'c2000000-0000-0000-0000-0000000000c1', 'StoreQr');
+SELECT set_config('app.tenant_id', '', false);
+SELECT t.ok('T299 the customer lists their own stores across tenants without a tenant context',
+  (SELECT count(*) FROM cid.my_memberships('c2000000-0000-0000-0000-0000000000c1')) = 1
+  AND (SELECT store_name FROM cid.my_memberships('c2000000-0000-0000-0000-0000000000c1')) = 'فروشگاه الف');
+RESET ROLE;
+
 \echo '== ALL CHECKS PASSED'

@@ -13,7 +13,7 @@ CREATE TABLE audit.audit_record (
   id            uuid NOT NULL,
   occurred_at   timestamptz NOT NULL DEFAULT now(),
   actor_id      uuid,
-  actor_kind    text NOT NULL CHECK (actor_kind IN ('User','Support','Worker','System')),
+  actor_kind    text NOT NULL CHECK (actor_kind IN ('User','Support','Customer','Worker','System')),
   actor_roles   text[] NOT NULL DEFAULT '{}',          -- AUD-001.1 who: roles in the tenant at that moment
   impersonated_by uuid,                                -- JIT support acting for a user (IAM-008)
   branch_id     uuid,                                  -- AUD-001.1 where

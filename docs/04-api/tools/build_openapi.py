@@ -503,7 +503,7 @@ schema("TenantCustomer", tenantCustomerId="uuid", maskedName="str", maskedPhone=
 schema("ConsentState", purpose=("enum", ["Operational", "Marketing"]), channel=("enum", ["Sms", "Bale", "Email", "Push"]),
        granted="bool", updatedAt="dt", policyVersion="str")
 schema("StoreInviteCreate", branchId="uuid", **{"expiresInDays?": "int"})
-schema("StoreInvite", id="uuid", url="str", qrPngUrl="str", expiresAt="dt")
+schema("StoreInvite", id="uuid", url=("desc", "str", "The signed link the counter QR carries (v1.<payload>.<mac>); the QR picture itself is drawn by the client until the image library is approved"), expiresAt="dt")
 
 # Customer portal
 schema("PortalOtpStart", phone="str", **{"captchaToken?": "str"})
@@ -732,6 +732,8 @@ ERROR_CATALOG = {
     "otp-rate-limited": (429, "Too many codes for this number or address (60 s between sends; 5 an hour and 10 a day per number); Retry-After and context.retryAfterSeconds (CUS-001, TM-043)"),
     "otp-send-failed": (503, "The SMS could not be sent; the challenge counts toward the limits (CUS-001)"),
     "customer-auth-not-configured": (503, "Customer sign-in has no keys configured in this environment (US-141)"),
+    "invalid-invite": (400, "The store QR is forged, expired or revoked; one answer for all three (CUS-005, AT-222)"),
+    "already-member": (409, "The customer already belongs to this store (DI-062)"),
     "below-retention-floor": (422, "The store cannot keep data for less than the platform's minimum for the category (BR-087, RC036)"),
     "report-too-large": (422, "The report has more rows than the cap (5,000; 100,000 as csv): narrow the range or the branch; context.limit"),
     "already-imported": (409, "This settlement file was imported before; context.importId (PAY-002.2)"),
@@ -889,6 +891,8 @@ op("put", "/settings/notification-templates/{code}", "updateNotificationTemplate
    perm="tenant.settings.manage", scope="Tenant", body="SmsTemplateInput", resp="SmsTemplate", reqs=["NOT-009"], audited=True,
    desc="Only the name the store signs with (30 characters) and a closing signature (40); a single line, no links. The text itself is the "
         "platform's. Each change is the next version (409 version-conflict if two people save at once); the Workers use the newest.")
+op("delete", "/store-invites/{inviteId}", "revokeStoreInvite", "Customers", "ابطال QR پیشخوان", perm="tenant.settings.manage", scope="Tenant",
+   no_content=True, reqs=["CUS-005"], audited=True)
 op("get", "/branches", "listBranches", "Tenant", "فهرست شعب مجاز کاربر", resp="Branch", list_of=True, reqs=["TEN-002"])
 op("post", "/branches", "createBranch", "Tenant", "ایجاد شعبه", perm="tenant.settings.manage", scope="Tenant",
    body="BranchCreate", resp="Branch", resp_code="201", reqs=["TEN-002"], audited=True, conflict=True,
