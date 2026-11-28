@@ -6,6 +6,7 @@ using RetailCloud.BuildingBlocks.Infrastructure;
 using Microsoft.Extensions.Caching.Memory;
 using RetailCloud.IdentityAccess.Application;
 using RetailCloud.IdentityAccess.Infrastructure;
+using RetailCloud.CustomerIdentity.Application;
 using RetailCloud.Notifications.Application;
 using RetailCloud.Platform.Application;
 using RetailCloud.Platform.Infrastructure;
@@ -47,6 +48,28 @@ builder.Services.AddSingleton<ICatalogProvider>(_ =>
 builder.Services.AddSingleton<IIndustryTemplates, RetailCloud.Platform.Infrastructure.PostgresIndustryTemplates>();
 builder.Services.AddSingleton<ITenantDirectory, RetailCloud.Platform.Infrastructure.PostgresTenantDirectory>();
 builder.Services.AddSingleton<IRetention, RetailCloud.Platform.Infrastructure.PostgresRetention>();
+// US-141: customer identity (phone OTP). Off until its keys are configured: the endpoints then answer 503 customer-auth-not-configured.
+{
+    string? encKey = builder.Configuration["CustomerIdentity:EncryptionKey"], idxKey = builder.Configuration["CustomerIdentity:IndexKey"];
+    if (encKey is { Length: >= 44 } && idxKey is { Length: >= 44 })
+    {
+        builder.Services.AddSingleton<IContactProtector>(RetailCloud.CustomerIdentity.Infrastructure.AesContactProtector.FromBase64(encKey, idxKey));
+        builder.Services.AddSingleton<IOtpChallenges, RetailCloud.CustomerIdentity.Infrastructure.PostgresOtpChallenges>();
+        builder.Services.AddSingleton<ICustomers, RetailCloud.CustomerIdentity.Infrastructure.PostgresCustomers>();
+        if (builder.Configuration["Notifications:Sms:BaseUrl"] is { Length: > 0 } smsUrl)
+        {
+            builder.Services.AddSingleton<IOtpSender>(_ => new RetailCloud.Api.SmsOtpSender(
+                new RetailCloud.Notifications.Infrastructure.HttpSmsChannel(new HttpClient { Timeout = TimeSpan.FromSeconds(10) },
+                    new RetailCloud.Notifications.Infrastructure.SmsProviderOptions(smsUrl, builder.Configuration["Notifications:Sms:ApiKey"] ?? "", builder.Configuration["Notifications:Sms:SenderLine"] ?? ""),
+                    new RetailCloud.Api.TelRefResolver())));
+        }
+        else if (builder.Environment.IsDevelopment())
+        {
+            builder.Services.AddSingleton<IOtpSender, RetailCloud.CustomerIdentity.Infrastructure.LogOtpSender>();
+        }
+    }
+}
+
 builder.Services.AddSingleton<ITemplateOverrides, RetailCloud.Notifications.Infrastructure.PostgresTemplateOverrides>();
 builder.Services.AddSingleton<IReceiptTemplateOverrides, PostgresReceiptTemplateOverrides>();
 builder.Services.AddSingleton<IStockLedger, RetailCloud.Inventory.Infrastructure.PostgresStockLedger>();
@@ -674,6 +697,95 @@ static object SmsTemplateJson(TemplateOverrideView v)
         preview = NotificationTemplates.Render(v.Code, 1, payload, new TemplateOverride(v.StoreName, v.Signature)),
     };
 }
+
+// ---------------- US-141: the customer's phone sign-in (CUS-001/002/002.1, TM-043) and the portal's first calls
+RouteGroupBuilder customerApi = app.MapGroup("/api/v1/c");
+IResult CustomerAuthOff(HttpContext http) =>
+    Problems.Create(http, StatusCodes.Status503ServiceUnavailable, "customer-auth-not-configured", "Customer sign-in is not available yet");
+
+customerApi.MapPost("/auth/otp", async (PortalOtpStartInput body, IUnitOfWork uow, HttpContext http, CancellationToken ct) =>
+    {
+        var sp = http.RequestServices;
+        if (sp.GetService<IContactProtector>() is not { } protector || sp.GetService<IOtpSender>() is not { } sender) return CustomerAuthOff(http);
+        if (!PhoneNumber.TryNormalize(body.Phone, out string phone))
+        {
+            return Problems.Validation(http, new Dictionary<string, string[]> { ["phone"] = ["an Iranian mobile number (09xx xxx xxxx)"] });
+        }
+
+        string code = OtpCode.Generate();
+        byte[] phoneHash = protector.Hash("phone", phone);
+        OtpStart start = await uow.ExecuteWithoutTenantAsync(null, (s, c) => sp.GetRequiredService<IOtpChallenges>().StartAsync(s, phoneHash,
+            protector.Hash("ip", ClientIp(http) ?? "unknown"), protector.Hash("otp", code + ":" + Convert.ToHexString(phoneHash)), protector.Protect(phone),
+            DateTimeOffset.UtcNow, c), ct);
+        if (start.Outcome != OtpStartOutcome.Started)
+        {
+            int wait = Math.Max(1, (int)Math.Ceiling(start.RetryAfter.TotalSeconds));
+            http.Response.Headers.RetryAfter = wait.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            return Problems.WithContext(http, StatusCodes.Status429TooManyRequests, "otp-rate-limited", "Too many codes requested; try again later",
+                new { retryAfterSeconds = wait });
+        }
+
+        // the same answer whether or not this number has an account (no enumeration); a send that fails is reported so the caller may retry later
+        if (!await sender.SendAsync(phone, code, start.ChallengeId.ToString("N") + ":1", ct))
+        {
+            return Problems.Create(http, StatusCodes.Status503ServiceUnavailable, "otp-send-failed", "The code could not be sent; try again later");
+        }
+
+        return Results.Created((string?)null, new { challengeId = start.ChallengeId, expiresAt = start.ExpiresAt, resendAfter = start.ResendAfter });
+    })
+    .AllowAnonymous().RequireRateLimiting(RateLimits.Otp);
+
+customerApi.MapPost("/auth/otp/verify", async (PortalOtpVerifyInput body, IUnitOfWork uow, HttpContext http, CancellationToken ct) =>
+    {
+        var sp = http.RequestServices;
+        if (sp.GetService<IContactProtector>() is not { } protector) return CustomerAuthOff(http);
+        if (body.ChallengeId is null || body.Code is not { Length: OtpPolicy.Digits } code || !code.All(char.IsAsciiDigit))
+        {
+            return Problems.Validation(http, new Dictionary<string, string[]> { ["code"] = [$"{OtpPolicy.Digits} digits"] });
+        }
+
+        IOtpChallenges challenges = sp.GetRequiredService<IOtpChallenges>();
+        (int? remaining, CustomerView? customer) = await uow.ExecuteWithoutTenantAsync(null, async (s, c) =>
+        {
+            OtpChallengeState? state = await challenges.LockAsync(s, body.ChallengeId.Value, c);
+            if (state is null || state.Status != "Pending" || state.ExpiresAt <= DateTimeOffset.UtcNow) return ((int?)0, (CustomerView?)null);
+            bool match = System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(state.CodeHash,
+                protector.Hash("otp", code + ":" + Convert.ToHexString(state.PhoneHash)));
+            if (!match) return (await challenges.FailAttemptAsync(s, state.Id, c), null);
+            CustomerView view = await sp.GetRequiredService<ICustomers>().FindOrCreateAsync(s, protector.Unprotect(state.ProtectedPhone), DateTimeOffset.UtcNow, c);
+            await challenges.VerifiedAsync(s, state.Id, c);
+            return ((int?)null, view);
+        }, ct);
+        if (customer is null)
+        {
+            return Problems.WithContext(http, StatusCodes.Status422UnprocessableEntity, "otp-invalid", "The code is wrong or expired",
+                new { attemptsRemaining = remaining ?? 0 });
+        }
+
+        (string token, DateTimeOffset expires) = CustomerTokens.Issue(http.RequestServices.GetRequiredService<IConfiguration>(), customer.Id);
+        return Results.Ok(new { expiresAt = expires, isNewCustomer = customer.IsNew, accessToken = token, publicCode = customer.PublicCode });
+    })
+    .AllowAnonymous().RequireRateLimiting(RateLimits.Otp);
+
+customerApi.MapGet("/me", async (IUnitOfWork uow, HttpContext http, CancellationToken ct) =>
+    {
+        if (http.RequestServices.GetService<ICustomers>() is not { } customers) return CustomerAuthOff(http);
+        if (!Guid.TryParse(http.User.FindFirst("sub")?.Value, out Guid id)) return Problems.Create(http, StatusCodes.Status401Unauthorized, "invalid-token", "Not signed in");
+        CustomerView? me = await uow.ExecuteWithoutTenantAsync(null, (s, c) => customers.GetAsync(s, id, c), ct);
+        return me is null ? Problems.Create(http, StatusCodes.Status401Unauthorized, "invalid-token", "Not signed in") : Results.Ok(CustomerMeJson(me));
+    })
+    .RequireAuthorization(ServiceCollectionExtensions.CustomerPolicy);
+
+customerApi.MapPost("/me/public-code/rotate", async (IUnitOfWork uow, HttpContext http, CancellationToken ct) =>
+    {
+        if (http.RequestServices.GetService<ICustomers>() is not { } customers) return CustomerAuthOff(http);
+        if (!Guid.TryParse(http.User.FindFirst("sub")?.Value, out Guid id)) return Problems.Create(http, StatusCodes.Status401Unauthorized, "invalid-token", "Not signed in");
+        CustomerView? me = await uow.ExecuteWithoutTenantAsync(null, (s, c) => customers.RotateCodeAsync(s, id, c), ct);
+        return me is null ? Problems.Create(http, StatusCodes.Status401Unauthorized, "invalid-token", "Not signed in") : Results.Ok(CustomerMeJson(me));
+    })
+    .RequireAuthorization(ServiceCollectionExtensions.CustomerPolicy);
+
+static object CustomerMeJson(CustomerView c) => new { publicCode = c.PublicCode, maskedPhone = c.MaskedPhone, baleLinked = false };
 
 // ---------------- US-013: POS terminals (TEN-002.1, ABAC-04)
 v1.MapPost("/branches/{branchId:guid}/pairing-codes", async (Guid branchId, RequestContext ctx, IUnitOfWork uow, ITerminalAdministration terminals,
@@ -4988,6 +5100,8 @@ internal sealed record ReceiptOverridesInput(string? LogoObjectKey, string? Foot
 internal sealed record ReceiptTemplateUpdateInput(int? ExpectedVersion, ReceiptOverridesInput? Overrides);
 internal sealed record RetentionPolicyInput(string? Category, int? MinimumDays, int? DefaultDays, DateTimeOffset? ValidFrom, string? Reason);
 internal sealed record LegalHoldInput(string? Reason, DateTimeOffset? Until);
+internal sealed record PortalOtpStartInput(string? Phone, string? CaptchaToken);
+internal sealed record PortalOtpVerifyInput(Guid? ChallengeId, string? Code);
 internal sealed record TenantStatusInput(string? Status, string? Reason);
 internal sealed record SmsTemplateInput(int? ExpectedVersion, string? StoreName, string? Signature);
 internal sealed record RetentionDaysInput(int? Days);
@@ -5081,4 +5195,23 @@ internal static partial class PlatformLog
 
     [LoggerMessage(EventId = 6102, Level = LogLevel.Information, Message = "platform.catalog.suggestion-decided {Suggestion} {Outcome} product {Product} by {Operator}")]
     public static partial void SuggestionDecided(ILogger logger, Guid suggestion, string outcome, Guid? product, string @operator);
+}
+
+/// <summary>The customer token (ADR-003 §6): HS256, issuer and audience from Auth:Customer, ten minutes.</summary>
+internal static class CustomerTokens
+{
+    public static (string Token, DateTimeOffset Expires) Issue(IConfiguration configuration, Guid customerId)
+    {
+        var o = configuration.GetSection("Auth:Customer").Get<CustomerAuthOptions>() ?? new CustomerAuthOptions();
+        DateTimeOffset now = DateTimeOffset.UtcNow, expires = now.AddMinutes(10);
+        var handler = new Microsoft.IdentityModel.JsonWebTokens.JsonWebTokenHandler();
+        string token = handler.CreateToken(new Microsoft.IdentityModel.Tokens.SecurityTokenDescriptor
+        {
+            Issuer = o.Issuer, Audience = o.Audience, IssuedAt = now.UtcDateTime, NotBefore = now.UtcDateTime, Expires = expires.UtcDateTime,
+            Claims = new Dictionary<string, object> { ["sub"] = customerId.ToString() },
+            SigningCredentials = new Microsoft.IdentityModel.Tokens.SigningCredentials(
+                new Microsoft.IdentityModel.Tokens.SymmetricSecurityKey(Convert.FromBase64String(o.Key)), Microsoft.IdentityModel.Tokens.SecurityAlgorithms.HmacSha256),
+        });
+        return (token, expires);
+    }
 }

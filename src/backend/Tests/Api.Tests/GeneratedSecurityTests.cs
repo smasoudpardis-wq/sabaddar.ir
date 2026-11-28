@@ -257,6 +257,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
         // the platform audience has its own realm and tests (PlatformTemplateTests); these are the merchant operations
         List<Operation> ops = [.. d07.Where(o => mapped.Contains((o.Method, o.Path)) && !o.Path.StartsWith("/platform/", StringComparison.Ordinal)
                                        && !o.Path.StartsWith("/r/", StringComparison.Ordinal)
+                                       && !o.Path.StartsWith("/c/", StringComparison.Ordinal)
                                        && !o.Path.StartsWith("/partner/", StringComparison.Ordinal))];
         Assert.True(ops.Count >= 20, $"only {ops.Count} implemented operations found");
         return ops;

@@ -63,7 +63,7 @@ open_questions: [BQ-01..BQ-04]
 | `pay` | Payments | `payment` ✓، `payment_intent`، `payment_callback` (Inbox)، `refund`، `gateway_config`، `settlement_import` ✓، `settlement_line` ✓ | بله |
 | `acc` | Accounting | `account` ✓، `account_mapping`، `detail_account`، `fiscal_year`، `fiscal_period` ✓ (بستن یک‌طرفه، RC033)، `journal_entry` ✓، `journal_line` ✓، `posting_rule_set` | بله |
 | `ar` | Receivables | `credit_account` ✓، `receivable_entry` ✓، `collection`، `collection_allocation` | بله |
-| `cid` | CustomerIdentity | `global_customer` ✓، `public_code_registry` ✓، `verified_contact` ✓، `otp_challenge`، `bale_account_link` (Global)؛ `tenant_customer_membership` ✓، `consent_record` ✓، `store_invite`، `receipt_access_grant`، `tenant_customer_profile` (Tenant) | ترکیبی |
+| `cid` | CustomerIdentity | `otp_challenge` ✓ (کد و شماره فقط Hash؛ شماره‌ی رمزشده تا ساخت مشتری)، `global_customer` ✓، `public_code_registry` ✓، `verified_contact` ✓، `otp_challenge`، `bale_account_link` (Global)؛ `tenant_customer_membership` ✓، `consent_record` ✓، `store_invite`، `receipt_access_grant`، `tenant_customer_profile` (Tenant) | ترکیبی |
 | `tax` | TaxCompliance | `tax_profile`، `issuing_unit`، `signing_key`، `tax_invoice` ✓، `submission_attempt` | بله |
 | `notif` | Notifications | `notification`، `notification_attempt`، `template`، `template_override` ✓ (نسخه‌دار؛ فقط نام و امضای فروشگاه، NOT-009)، `channel_config` | بله |
 | `rpt` | Reporting | Projectionها: `daily_sales`، `stock_value`، `ar_aging`، … | بله |

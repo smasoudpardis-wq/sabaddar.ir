@@ -1062,4 +1062,18 @@ RESET ROLE;
 UPDATE platform.tenant SET status = 'Trial' WHERE id = :A;
 SELECT set_config('app.tenant_id', '', false);
 
+-- US-141 customer OTP (CUS-001)
+SET ROLE rc_app;
+INSERT INTO cid.otp_challenge (id, phone_hash, ip_hash, code_hash, phone_enc, expires_at)
+  VALUES ('c1000000-0000-0000-0000-0000000000a1', sha256('p'), sha256('i'), sha256('c'), '\x01', now() + interval '2 minutes');
+SELECT t.expect_error('T290 a challenge lives at most ten minutes', '23514',
+  $$INSERT INTO cid.otp_challenge (id, phone_hash, ip_hash, code_hash, phone_enc, expires_at) VALUES (gen_random_uuid(), sha256('p'), sha256('i'), sha256('c'), '\x01', now() + interval '1 hour')$$);
+SELECT t.expect_error('T291 at most five attempts', '23514', $$UPDATE cid.otp_challenge SET attempts = 6 WHERE id = 'c1000000-0000-0000-0000-0000000000a1'$$);
+SELECT t.expect_error('T292 the code a challenge holds never changes', 'RC001', $$UPDATE cid.otp_challenge SET code_hash = sha256('other') WHERE id = 'c1000000-0000-0000-0000-0000000000a1'$$);
+UPDATE cid.otp_challenge SET attempts = 1 WHERE id = 'c1000000-0000-0000-0000-0000000000a1';
+UPDATE cid.otp_challenge SET status = 'Verified' WHERE id = 'c1000000-0000-0000-0000-0000000000a1';
+SELECT t.expect_error('T293 a verified challenge is final (single use)', 'RC001', $$UPDATE cid.otp_challenge SET status = 'Failed' WHERE id = 'c1000000-0000-0000-0000-0000000000a1'$$);
+SELECT t.expect_error('T294 the application cannot delete challenges, only the Workers purge', '42501', $$DELETE FROM cid.otp_challenge$$);
+RESET ROLE;
+
 \echo '== ALL CHECKS PASSED'

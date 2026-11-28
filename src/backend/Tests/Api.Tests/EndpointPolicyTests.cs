@@ -69,6 +69,20 @@ public sealed class EndpointPolicyTests : IClassFixture<ApiFactory>
                     continue;
                 }
 
+                if (op is not null && path.StartsWith("/c/", StringComparison.Ordinal))
+                {
+                    // the customer portal (US-141): anonymous for the phone sign-in, the customer policy for everything after it
+                    bool anonymous = e.Metadata.GetMetadata<Microsoft.AspNetCore.Authorization.IAllowAnonymous>() is not null;
+                    bool customer = e.Metadata.GetOrderedMetadata<Microsoft.AspNetCore.Authorization.IAuthorizeData>()
+                        .Any(a => a.Policy == RetailCloud.BuildingBlocks.Api.ServiceCollectionExtensions.CustomerPolicy);
+                    if (!anonymous && !customer)
+                    {
+                        problems.Add($"{method} {path} ({op.OperationId}): a portal operation that is neither anonymous nor under the customer policy");
+                    }
+
+                    continue;
+                }
+
                 if (op is { Permission: null } && (path.StartsWith("/r/", StringComparison.Ordinal) || path.StartsWith("/partner/", StringComparison.Ordinal)))
                 {
                     // the public audience (CUS-009): explicitly anonymous and rate-limited, nothing else

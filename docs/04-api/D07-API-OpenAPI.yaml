@@ -12675,9 +12675,17 @@ components:
           format: date-time
         isNewCustomer:
           type: boolean
+        accessToken:
+          type: string
+          description: Customer token (HS256, issuer retailcloud-customer, audience customer-api, 10 minutes); the portal
+            BFF keeps it server-side
+        publicCode:
+          type: string
       required:
       - expiresAt
       - isNewCustomer
+      - accessToken
+      - publicCode
     PosContext:
       type: object
       additionalProperties: false
@@ -16524,6 +16532,16 @@ x-error-catalog:
   invalid-status-transition:
     status: 409
     meaning: The store is already in that status, or it is Closed (final) (TEN-004)
+  otp-rate-limited:
+    status: 429
+    meaning: Too many codes for this number or address (60 s between sends; 5 an hour and 10 a day per number); Retry-After
+      and context.retryAfterSeconds (CUS-001, TM-043)
+  otp-send-failed:
+    status: 503
+    meaning: The SMS could not be sent; the challenge counts toward the limits (CUS-001)
+  customer-auth-not-configured:
+    status: 503
+    meaning: Customer sign-in has no keys configured in this environment (US-141)
   below-retention-floor:
     status: 422
     meaning: The store cannot keep data for less than the platform's minimum for the category (BR-087, RC036)

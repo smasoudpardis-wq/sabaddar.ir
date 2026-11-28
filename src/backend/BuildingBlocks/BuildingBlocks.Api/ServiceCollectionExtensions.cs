@@ -17,6 +17,19 @@ public sealed class MerchantAuthOptions
     public bool RequireHttpsMetadata { get; set; } = true;
 }
 
+/// <summary>
+/// The customer portal's token (ADR-003 §6, US-141): HS256 over <see cref="Key"/>, issuer retailcloud-customer, audience customer-api, minutes long.
+/// It is issued by the API after a verified phone (the BFF portal does not exist yet); with no key every customer token is refused.
+/// </summary>
+public sealed class CustomerAuthOptions
+{
+    public string Key { get; set; } = string.Empty;
+
+    public string Issuer { get; set; } = "retailcloud-customer";
+
+    public string Audience { get; set; } = "customer-api";
+}
+
 /// <summary>The platform operators' realm (D06 §6.2, TM-071): its own issuer and audience, never accepted as a merchant.</summary>
 public sealed class PlatformAuthOptions
 {
@@ -33,6 +46,12 @@ public static class ServiceCollectionExtensions
 
     /// <summary>JWT bearer scheme of the platform realm.</summary>
     public const string PlatformScheme = "platform";
+
+    /// <summary>JWT bearer scheme of the customer portal (HS256, US-141).</summary>
+    public const string CustomerScheme = "customer";
+
+    /// <summary>A customer signed in by phone: the portal API only (<c>/c/*</c>), never a store's data.</summary>
+    public const string CustomerPolicy = "customer";
 
     /// <summary>PlatformSuperAdmin with a second factor (D06 §6.2, AUTH-02): global templates and policies.</summary>
     public const string PlatformAdminPolicy = "platform-admin";
@@ -70,6 +89,7 @@ public static class ServiceCollectionExtensions
     {
         var auth = configuration.GetSection("Auth:Merchant").Get<MerchantAuthOptions>() ?? new MerchantAuthOptions();
         var platform = configuration.GetSection("Auth:Platform").Get<PlatformAuthOptions>() ?? new PlatformAuthOptions();
+        var customer = configuration.GetSection("Auth:Customer").Get<CustomerAuthOptions>() ?? new CustomerAuthOptions();
         static TokenValidationParameters Validation(string issuer, string audience) => new()
         {
             ValidateIssuer = true,
@@ -91,6 +111,19 @@ public static class ServiceCollectionExtensions
                 o.MapInboundClaims = false;
                 o.TokenValidationParameters = Validation(auth.Authority, auth.Audience);
             })
+            .AddJwtBearer(CustomerScheme, o =>
+            {
+                o.MapInboundClaims = false;
+                byte[] key = customer.Key.Length >= 44 ? Convert.FromBase64String(customer.Key) : new byte[32];   // no key: a zero key no one signs with, and the issuer below never matches
+                o.TokenValidationParameters = new TokenValidationParameters
+                {
+                    ValidateIssuer = true, ValidIssuer = customer.Key.Length >= 44 ? customer.Issuer : "unconfigured",
+                    ValidateAudience = true, ValidAudience = customer.Audience,
+                    ValidateLifetime = true, RequireExpirationTime = true, RequireSignedTokens = true,
+                    ValidateIssuerSigningKey = true, IssuerSigningKey = new SymmetricSecurityKey(key),
+                    ValidAlgorithms = [SecurityAlgorithms.HmacSha256], ClockSkew = TimeSpan.FromSeconds(30),
+                };
+            })
             .AddJwtBearer(PlatformScheme, o =>
             {
                 o.Authority = string.IsNullOrEmpty(platform.Authority) ? null : platform.Authority;
@@ -100,6 +133,7 @@ public static class ServiceCollectionExtensions
             });
         services.AddAuthorizationBuilder()
             .AddPolicy(MerchantPolicy, p => p.RequireAuthenticatedUser())
+            .AddPolicy(CustomerPolicy, p => p.AddAuthenticationSchemes(CustomerScheme).RequireAuthenticatedUser())
             .AddPolicy(PlatformAdminPolicy, p => p.AddAuthenticationSchemes(PlatformScheme).RequireAuthenticatedUser()
                 .RequireClaim("acr", MfaPolicy.MfaAcr).RequireAssertion(c => HasRealmRole(c.User, "PlatformSuperAdmin")))
             .AddPolicy(PlatformSupportPolicy, p => p.AddAuthenticationSchemes(PlatformScheme).RequireAuthenticatedUser()
@@ -136,6 +170,11 @@ public static class ServiceCollectionExtensions
                 http.Request.Headers["X-Api-Key"].ToString() is { Length: >= 15 } k && k.StartsWith("rck_", StringComparison.Ordinal)
                     ? k[..15] : "ip|" + http.Connection.RemoteIpAddress,
                 _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions { PermitLimit = 120, Window = TimeSpan.FromMinutes(1) }));
+
+            // CUS-001 / TM-043: a burst guard per client address in front of the per-phone and per-address limits kept in the database
+            o.AddPolicy(RateLimits.Otp, http => System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+                "ip|" + ClientAddress.Of(http),
+                _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions { PermitLimit = 20, Window = TimeSpan.FromMinutes(1) }));
 
             // D07 README: barcode resolve 120 a minute per user (a scanner is fast, a scraper faster)
             o.AddPolicy(RateLimits.CatalogResolve, http => System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
@@ -178,5 +217,19 @@ public static class RateLimits
     public const string CatalogResolve = "catalog-resolve";
     public const string ReceiptLink = "receipt-link";
     public const string Partner = "partner";
+    public const string Otp = "otp";
 }
 
+
+/// <summary>The caller's address: the first X-Forwarded-For entry when the peer is a trusted proxy (Network:TrustedProxies, "*" = any), else the peer itself.</summary>
+public static class ClientAddress
+{
+    public static string Of(HttpContext http)
+    {
+        ArgumentNullException.ThrowIfNull(http);
+        string? peer = http.Connection.RemoteIpAddress?.ToString();
+        string[] trusted = (http.RequestServices.GetService<IConfiguration>()?["Network:TrustedProxies"] ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        bool fromProxy = trusted.Contains("*") || (peer is not null && trusted.Contains(peer));
+        return fromProxy && http.Request.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim() is { Length: > 0 } fwd ? fwd : peer ?? "unknown";
+    }
+}

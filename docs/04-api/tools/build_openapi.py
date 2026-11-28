@@ -508,7 +508,7 @@ schema("StoreInvite", id="uuid", url="str", qrPngUrl="str", expiresAt="dt")
 # Customer portal
 schema("PortalOtpStart", phone="str", **{"captchaToken?": "str"})
 schema("PortalOtpVerify", challengeId="uuid", code="str")
-schema("PortalSession", expiresAt="dt", isNewCustomer="bool")
+schema("PortalSession", expiresAt="dt", isNewCustomer="bool", accessToken=("desc", "str", "Customer token (HS256, issuer retailcloud-customer, audience customer-api, 10 minutes); the portal BFF keeps it server-side"), publicCode="str")
 schema("CustomerMe", publicCode="str", maskedPhone="str", baleLinked="bool")
 schema("CustomerQr", token="str", expiresAt="dt")
 schema("Membership", membershipId="uuid", storeName="str", joinedAt="dt", consents=["#ConsentState"], hasCreditAccount="bool")
@@ -729,6 +729,9 @@ ERROR_CATALOG = {
     "approval-expired": (409, "The pending request expired (10 minutes)"),
     "approval-not-pending": (409, "The request was already decided"),
     "invalid-status-transition": (409, "The store is already in that status, or it is Closed (final) (TEN-004)"),
+    "otp-rate-limited": (429, "Too many codes for this number or address (60 s between sends; 5 an hour and 10 a day per number); Retry-After and context.retryAfterSeconds (CUS-001, TM-043)"),
+    "otp-send-failed": (503, "The SMS could not be sent; the challenge counts toward the limits (CUS-001)"),
+    "customer-auth-not-configured": (503, "Customer sign-in has no keys configured in this environment (US-141)"),
     "below-retention-floor": (422, "The store cannot keep data for less than the platform's minimum for the category (BR-087, RC036)"),
     "report-too-large": (422, "The report has more rows than the cap (5,000; 100,000 as csv): narrow the range or the branch; context.limit"),
     "already-imported": (409, "This settlement file was imported before; context.importId (PAY-002.2)"),

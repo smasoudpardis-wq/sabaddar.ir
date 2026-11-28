@@ -23,6 +23,25 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     private static readonly RSA Rsa = RSA.Create(2048);
     public static readonly RsaSecurityKey SigningKey = new(Rsa) { KeyId = "test-key" };
 
+    /// <summary>US-141: a 32-byte test key each for the customer token, the phone encryption and the blind index (never real keys).</summary>
+    public const string CustomerKey = "dGVzdC1jdXN0b21lci1rZXktMDEyMzQ1Njc4OWFiY2Q=";
+
+    /// <summary>The codes the API "sent" (a test cannot read an SMS): number → latest code.</summary>
+    public sealed class CapturedOtps : RetailCloud.CustomerIdentity.Application.IOtpSender
+    {
+        public System.Collections.Concurrent.ConcurrentDictionary<string, string> Latest { get; } = new();
+
+        public bool Fail { get; set; }
+
+        public Task<bool> SendAsync(string e164, string code, string idempotencyKey, CancellationToken cancellationToken)
+        {
+            Latest[e164] = code;
+            return Task.FromResult(!Fail);
+        }
+    }
+
+    public CapturedOtps Otps { get; } = new();
+
     public RetailCloud.TestSupport.InMemoryObjectStorage Storage { get; } = new();
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -33,6 +52,9 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
         builder.UseSetting("Auth:Merchant:Audience", Audience);
         builder.UseSetting("Auth:Platform:Authority", PlatformIssuer);
         builder.UseSetting("Auth:Platform:Audience", PlatformAudience);
+        builder.UseSetting("Auth:Customer:Key", CustomerKey);
+        builder.UseSetting("CustomerIdentity:EncryptionKey", CustomerKey);
+        builder.UseSetting("CustomerIdentity:IndexKey", "dGVzdC1jdXN0b21lci1pbmRleC0wMTIzNDU2Nzg5YWJj");
         builder.UseSetting("Network:TrustedProxies", "*"); // TestServer has no peer address; the tests act as the BFF
         builder.ConfigureTestServices(services =>
         {
@@ -52,6 +74,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
                 o.Configuration = config;
                 o.TokenValidationParameters.IssuerSigningKey = SigningKey;
             });
+            services.AddSingleton<RetailCloud.CustomerIdentity.Application.IOtpSender>(Otps);
             services.AddSingleton<RetailCloud.BuildingBlocks.Application.IObjectStorage>(Storage);   // US-016: links without a real bucket
         });
     }

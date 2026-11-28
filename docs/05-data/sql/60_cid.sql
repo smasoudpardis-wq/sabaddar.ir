@@ -61,9 +61,41 @@ CALL core.enable_tenant_rls('cid.consent_record');
 CREATE TRIGGER tr_consent_append_only BEFORE UPDATE OR DELETE ON cid.consent_record
   FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
 
+-- CUS-001 / TM-043 (US-141): one-time codes for phone verification. Global (a customer belongs to no store yet). The code and the
+-- phone are kept only as keyed hashes; a row doubles as the send log for the per-phone and per-address limits.
+CREATE TABLE cid.otp_challenge (
+  id         uuid PRIMARY KEY,
+  phone_hash bytea NOT NULL CHECK (octet_length(phone_hash) = 32),
+  ip_hash    bytea NOT NULL CHECK (octet_length(ip_hash) = 32),
+  code_hash  bytea NOT NULL CHECK (octet_length(code_hash) = 32),
+  phone_enc  bytea NOT NULL,                     -- envelope-encrypted E.164: needed once, to create the customer on success; purged with the row
+  created_at timestamptz NOT NULL DEFAULT now(),
+  expires_at timestamptz NOT NULL,
+  attempts   int NOT NULL DEFAULT 0 CHECK (attempts BETWEEN 0 AND 5),
+  status     text NOT NULL DEFAULT 'Pending' CHECK (status IN ('Pending','Verified','Failed')),
+  CHECK (expires_at > created_at AND expires_at <= created_at + interval '10 minutes')
+);
+CREATE INDEX ix_otp_phone ON cid.otp_challenge (phone_hash, created_at DESC);
+CREATE INDEX ix_otp_ip ON cid.otp_challenge (ip_hash, created_at DESC);
+-- a verified or failed challenge never changes again; only attempts and the final status move
+CREATE FUNCTION cid.otp_challenge_guard() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  IF (NEW.id, NEW.phone_hash, NEW.ip_hash, NEW.code_hash, NEW.created_at, NEW.expires_at)
+     IS DISTINCT FROM (OLD.id, OLD.phone_hash, OLD.ip_hash, OLD.code_hash, OLD.created_at, OLD.expires_at) THEN
+    RAISE EXCEPTION 'a challenge keeps its facts' USING ERRCODE = 'RC001';
+  END IF;
+  IF OLD.status <> 'Pending' AND (NEW.status <> OLD.status OR NEW.attempts <> OLD.attempts) THEN
+    RAISE EXCEPTION 'a finished challenge does not change' USING ERRCODE = 'RC001';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tr_otp_challenge_guard BEFORE UPDATE ON cid.otp_challenge FOR EACH ROW EXECUTE FUNCTION cid.otp_challenge_guard();
+
 GRANT USAGE ON SCHEMA cid TO rc_app, rc_worker;
 GRANT SELECT, INSERT, UPDATE ON cid.global_customer, cid.public_code_registry, cid.verified_contact,
                                cid.tenant_customer_membership TO rc_app;
 GRANT SELECT, INSERT ON cid.consent_record TO rc_app;
+GRANT SELECT, INSERT, UPDATE ON cid.otp_challenge TO rc_app;
+GRANT DELETE ON cid.otp_challenge TO rc_worker;   -- purge after a day (data minimisation)
 GRANT SELECT ON ALL TABLES IN SCHEMA cid TO rc_worker;
 RESET ROLE;

@@ -24,6 +24,7 @@ public class DependencyRulesTests
         typeof(RetailCloud.Sales.Application.IShifts).Assembly,
         typeof(RetailCloud.Payments.Application.IPayments).Assembly,
         typeof(RetailCloud.Notifications.Application.INotifications).Assembly,
+        typeof(RetailCloud.CustomerIdentity.Application.ICustomers).Assembly,
     ];
 
     private static readonly Assembly[] ModuleInfrastructures =
@@ -36,6 +37,7 @@ public class DependencyRulesTests
         typeof(RetailCloud.Sales.Infrastructure.PostgresShifts).Assembly,
         typeof(RetailCloud.Payments.Infrastructure.PostgresPayments).Assembly,
         typeof(RetailCloud.Notifications.Infrastructure.NotificationDispatcher).Assembly,
+        typeof(RetailCloud.CustomerIdentity.Infrastructure.PostgresCustomers).Assembly,
     ];
 
     private static readonly string[] InfrastructureNamespaces =

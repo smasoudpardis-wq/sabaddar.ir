@@ -494,7 +494,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
          (SELECT count(*) FROM platform.branch b WHERE b.tenant_id = t.id AND b.status = 'Active')
     FROM platform.tenant t LEFT JOIN platform.subscription s ON s.tenant_id = t.id
    WHERE (p_only IS NULL OR t.id = p_only) AND (p_after IS NULL OR t.id > p_after)
-   ORDER BY t.id LIMIT greatest(least(p_limit, 200), 1)
+   ORDER BY t.id LIMIT greatest(least(p_limit, 501), 1)   -- the API asks for one more than its page (max 500) to know whether another follows
 $$;
 GRANT SELECT (id, status, legal_name, created_at) ON platform.tenant TO rc_tenant_directory;
 GRANT SELECT (tenant_id, plan_code) ON platform.subscription TO rc_tenant_directory;
