@@ -34,8 +34,8 @@ export default function SmsTemplatesPage() {
       expectedVersion: t.version, storeName: d.name.trim() || undefined, signature: d.sig.trim() || undefined,
     });
     if (!r.ok) { setError(await codeOf(r)); if (r.status === 409) await load(); return; }
-    setSaved(t.code);
     await load();
+    setSaved(t.code);   // shown once the list (and its preview) shows the saved version
   }
 
   if (!items) return <p>در حال بارگذاری…</p>;
