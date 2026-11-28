@@ -79,4 +79,12 @@ GRANT USAGE ON SCHEMA notif TO rc_app, rc_worker, rc_reporting;
 GRANT SELECT, INSERT ON notif.notification TO rc_app;                       -- producers queue; only the Workers send
 GRANT SELECT, INSERT, UPDATE ON notif.notification, notif.notification_attempt TO rc_worker;
 GRANT SELECT (tenant_id, id, purpose, channel, status, attempts, created_at, updated_at) ON notif.notification TO rc_reporting;
+-- BR-087 (US-173): the Workers delete old notifications by the retention policy, and the trigger refuses any deletion
+-- inside the store's retention or under a legal hold, whoever asks.
+GRANT DELETE ON notif.notification, notif.notification_attempt TO rc_worker;
+GRANT INSERT ON platform.retention_run TO rc_worker;
+CREATE TRIGGER tr_notification_retention BEFORE DELETE ON notif.notification
+  FOR EACH ROW EXECUTE FUNCTION platform.retention_delete_guard('Notifications', 'created_at');
+CREATE TRIGGER tr_notification_attempt_retention BEFORE DELETE ON notif.notification_attempt
+  FOR EACH ROW EXECUTE FUNCTION platform.retention_delete_guard('Notifications', 'started_at');
 RESET ROLE;

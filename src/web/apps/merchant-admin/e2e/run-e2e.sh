@@ -87,6 +87,7 @@ DELETE FROM merch.tenant_product_barcode WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM merch.tenant_variant WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM merch.tenant_product WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM platform.integration_key WHERE tenant_id IN ('$T1','$T2','$TF');
+DELETE FROM platform.tenant_retention WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM platform.subscription WHERE tenant_id IN ('$T1','$T2','$TF');
 DELETE FROM platform.tenant WHERE id IN ('$T1','$T2','$TF');
 DELETE FROM iam.role_assignment WHERE user_id IN (SELECT id FROM iam.merchant_user WHERE idp_issuer = '$ISSUER' AND idp_subject = '$NEW_SUB');

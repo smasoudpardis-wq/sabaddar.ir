@@ -7,7 +7,7 @@ namespace RetailCloud.Workers;
 /// Daily upkeep (D05 §6, D10 §5.13, INV-001): movement partitions three months ahead, then every consistency oracle.
 /// A finding is logged per tenant and counted (rc_oracle_findings_total) for the alert; it is never "fixed" silently.
 /// </summary>
-public sealed partial class NightlyService(StockMaintenance stock, OracleRunner oracles, FiscalYearRollover fiscal, ILogger<NightlyService> logger)
+public sealed partial class NightlyService(StockMaintenance stock, OracleRunner oracles, FiscalYearRollover fiscal, RetailCloud.Platform.Infrastructure.RetentionJob retention, ILogger<NightlyService> logger)
     : BackgroundService
 {
     private static readonly TimeSpan Every = TimeSpan.FromHours(24);
@@ -26,6 +26,9 @@ public sealed partial class NightlyService(StockMaintenance stock, OracleRunner 
                 {
                     LogPeriodsFailed(logger, tenant, error);
                 }
+
+                int expired = await retention.RunAsync(stoppingToken);
+                LogRetention(logger, expired);
 
                 foreach (OracleFinding f in await oracles.RunAsync(stoppingToken))
                 {
@@ -56,6 +59,9 @@ public sealed partial class NightlyService(StockMaintenance stock, OracleRunner 
 
     [LoggerMessage(EventId = 5205, Level = LogLevel.Critical, Message = "fiscal periods of tenant {TenantId} could not be created: {Error}")]
     private static partial void LogPeriodsFailed(ILogger logger, Guid tenantId, string error);
+
+    [LoggerMessage(EventId = 5206, Level = LogLevel.Information, Message = "retention: {Deleted} rows deleted past their retention")]
+    private static partial void LogRetention(ILogger logger, int deleted);
 
     [LoggerMessage(EventId = 5203, Level = LogLevel.Error, Message = "nightly checks failed")]
     private static partial void LogFailed(ILogger logger, Exception e);

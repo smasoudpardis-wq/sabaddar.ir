@@ -20,6 +20,7 @@ ObjectStorageOptions? storage = builder.Configuration.GetSection("Storage").Get<
 builder.Services.AddSingleton<IObjectStorage>(storage is { ServiceUrl.Length: > 0 } ? new S3ObjectStorage(storage) : new UnconfiguredObjectStorage());
 builder.Services.AddSingleton<IIntegrationEventConsumer, RetailCloud.Platform.Infrastructure.DataExportConsumer>();   // TEN-005
 builder.Services.AddSingleton<RetailCloud.Platform.Infrastructure.ExportRetention>();
+builder.Services.AddSingleton<RetailCloud.Platform.Infrastructure.RetentionJob>();   // BR-087, TEN-005.1
 // Consumers (IIntegrationEventConsumer), one per module and purpose. Never rename a deployed consumer (inbox key).
 builder.Services.AddSingleton<IIntegrationEventConsumer, RetailCloud.IdentityAccess.Infrastructure.OwnerMembershipConsumer>();
 builder.Services.AddSingleton<IIntegrationEventConsumer, RetailCloud.Inventory.Infrastructure.DefaultWarehouseConsumer>();

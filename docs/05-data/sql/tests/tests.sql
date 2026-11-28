@@ -969,4 +969,50 @@ SELECT t.ok('T121 a tenant created by an operator without a context also starts 
   (SELECT count(*) FROM platform.subscription WHERE tenant_id = 'c1000000-0000-0000-0000-000000000002') = 1
   AND coalesce(current_setting('app.tenant_id', true), '') = '');
 
+-- US-173 retention (BR-087, TEN-005.1)
+SET ROLE rc_app;
+SELECT set_config('app.tenant_id', :A, false);
+SELECT t.ok('T264 the platform floors are seeded and a future version changes nothing yet',
+  platform.retention_floor('FinancialDocuments') = 3650 AND platform.retention_floor('Notifications') = 90);
+INSERT INTO platform.retention_policy (category, version, minimum_days, default_days, valid_from, reason, created_by)
+  VALUES ('TechnicalLogs', 2, 60, 90, now() + interval '30 days', 'test', 'op');
+SELECT t.ok('T265 a policy valid from the future is not in force', platform.retention_floor('TechnicalLogs') = 30);
+SELECT t.expect_error('T266 a policy version never changes', '42501',
+  $$UPDATE platform.retention_policy SET minimum_days = 1 WHERE category = 'Audit'$$);
+SELECT t.expect_error('T267 a default below the floor is refused', '23514',
+  $$INSERT INTO platform.retention_policy (category, version, minimum_days, default_days, valid_from, reason, created_by) VALUES ('Audit', 2, 3650, 100, now(), 'test', 'op')$$);
+SELECT t.expect_error('T268 a store cannot keep data for less than the floor', 'RC036',
+  format($$INSERT INTO platform.tenant_retention (tenant_id, category, days, set_by) VALUES (%L, 'Notifications', 60, gen_random_uuid())$$, :A));
+INSERT INTO platform.tenant_retention (tenant_id, category, days, set_by) VALUES (:A, 'Notifications', 365, gen_random_uuid());
+SELECT t.ok('T269 a store may keep data longer than the default', platform.effective_retention_days('Notifications') = 365);
+SELECT t.expect_error('T270 a store cannot lift its own legal hold or set one', '42501',
+  format($$INSERT INTO platform.legal_hold (tenant_id, category, reason, created_by) VALUES (%L, 'Notifications', 'x y z', 'me')$$, :A));
+DELETE FROM platform.tenant_retention WHERE category = 'Notifications';
+SELECT t.ok('T271 clearing the choice returns to the default', platform.effective_retention_days('Notifications') = 180);
+INSERT INTO notif.notification (tenant_id, id, purpose, channel, recipient_ref, template_code, template_version, status, created_at)
+  VALUES (:A, 'a0000000-0000-0000-0000-0000000000c1', 'Internal', 'Sms', 'u1', 'x-code', 1, 'Failed', now() - interval '400 days'),
+         (:A, 'a0000000-0000-0000-0000-0000000000c2', 'Internal', 'Sms', 'u1', 'x-code', 1, 'Failed', now() - interval '10 days');
+SELECT platform.set_legal_hold(:A, 'Notifications', 'قرار قضایی', NULL, 'op|1');
+SELECT t.ok('T272 the store sees its hold', (SELECT count(*) FROM platform.legal_hold) = 1);
+RESET ROLE;
+SET ROLE rc_worker;
+SELECT set_config('app.tenant_id', :A, false);
+SELECT t.expect_error('T273 no deletion under a legal hold', 'RC036',
+  $$DELETE FROM notif.notification WHERE id = 'a0000000-0000-0000-0000-0000000000c1'$$);
+RESET ROLE;
+SET ROLE rc_app;
+SELECT t.ok('T274 an operator lifts the hold', platform.release_legal_hold(:A, 'Notifications') AND NOT platform.release_legal_hold(:A, 'Notifications'));
+RESET ROLE;
+SET ROLE rc_worker;
+SELECT set_config('app.tenant_id', :A, false);
+SELECT t.expect_error('T275 nothing is deleted inside its retention', 'RC036',
+  $$DELETE FROM notif.notification WHERE id = 'a0000000-0000-0000-0000-0000000000c2'$$);
+DELETE FROM notif.notification WHERE id = 'a0000000-0000-0000-0000-0000000000c1';
+SELECT t.ok('T276 past its retention and with no hold, a notification is deleted',
+  (SELECT count(*) FROM notif.notification WHERE id = 'a0000000-0000-0000-0000-0000000000c1') = 0);
+INSERT INTO platform.retention_run (tenant_id, id, category, outcome, cutoff, deleted_rows) VALUES (:A, gen_random_uuid(), 'Notifications', 'Purged', now(), 1);
+SELECT t.expect_error('T277 a run record is never rewritten', '42501', $$UPDATE platform.retention_run SET deleted_rows = 0$$);
+RESET ROLE;
+SELECT set_config('app.tenant_id', '', false);
+
 \echo '== ALL CHECKS PASSED'

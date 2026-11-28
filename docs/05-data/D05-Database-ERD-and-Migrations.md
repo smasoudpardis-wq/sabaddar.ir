@@ -53,7 +53,7 @@ open_questions: [BQ-01..BQ-04]
 | Schema | ماژول | جداول اصلی (✓ = در DDL نمونه پیاده و تست‌شده) | Tenant-scoped |
 |---|---|---|---|
 | `core` | BuildingBlocks | `current_tenant()` ✓، `enable_tenant_rls()` ✓، `forbid_update_delete()` ✓ | — |
-| `platform` | Platform | `tenant` ✓، `branch` ✓، `register` ✓، `terminal`، `subscription`، `entitlement`، `industry_profile` ✓ (Global)، `receipt_template_industry` ✓ (Global، نسخه‌دار)، `integration_key` ✓ (فقط Hash راز؛ INT-001)، `retention_policy` (Global + Override)، `tax_submission_policy` (Global) | بله، جز Globalها |
+| `platform` | Platform | `tenant` ✓، `branch` ✓، `register` ✓، `terminal`، `subscription`، `entitlement`، `industry_profile` ✓ (Global)، `receipt_template_industry` ✓ (Global، نسخه‌دار)، `integration_key` ✓ (فقط Hash راز؛ INT-001)، `retention_policy` ✓ (Global، نسخه‌دار، فقط‌افزودنی)، `tenant_retention` ✓ (انتخاب فروشگاه، فقط بیشتر از کف)، `legal_hold` ✓، `retention_run` ✓، `tax_submission_policy` (Global) | بله، جز Globalها |
 | `iam` | IdentityAccess | `merchant_user` (Global: فقط `sub` و پروفایل)، `tenant_membership`، `role`، `role_permission`، `role_assignment` (Scope)، `approval_request`، `support_access_grant`، `pin_credential` | بله، جز `merchant_user` |
 | `merch` | Merchandising | `tenant_product` ✓، `tenant_variant` ✓، `tenant_product_barcode` ✓، `unit_conversion`، `price_list` ✓، `price_list_item` ✓، `discount_rule` ✓، `manual_discount_cap` ✓، `weighted_barcode_profile` ✓، `receipt_template_override` ✓، `receipt_template_override` ✓، `weighted_barcode_settings` ✓، `receipt_template_override` | بله |
 | `catalog` | Catalog | `catalog_product` ✓، `catalog_variant`، `global_barcode` ✓، `catalog_source_record` ✓ (Cache Provider)، `catalog_suggestion` ✓ (با تصمیم Moderation؛ US-047)، `catalog_review` (ادغام در `catalog_suggestion`)، `provider_health` | **Global** |
@@ -478,6 +478,8 @@ CALL core.enable_tenant_rls('sales.sale');   -- ENABLE + FORCE + policy tenant_i
 | `Idempotency/Outbox/Inbox` | — | حذف | ۷ روز |
 
 **Legal Hold:** جدول `platform.legal_hold (tenant_id, category, reason, until)` که PM-10 پیش از هر حذف بررسی می‌کند.
+
+**پیاده‌سازی (US-173):** کف و پیش‌فرض هر دسته در `platform.retention_policy` (نسخه‌دار؛ نسخه‌ی بعدی با `valid_from`)؛ فروشگاه فقط با `platform.tenant_retention` بیشتر از کف نگه می‌دارد (`RC036` برای کمتر). اپراتور Legal Hold را فقط با `platform.set_legal_hold` / `release_legal_hold` می‌گذارد و برمی‌دارد. نگهبان `platform.retention_delete_guard` (BEFORE DELETE) هر حذفی را که داخل مدت اعمال‌شده یا زیر Legal Hold باشد با `RC036` رد می‌کند؛ Job شبانه‌ی Workers (`RetentionJob`) پیامک‌های پایان‌یافته‌ی قدیمی را حذف و هر اجرا را در `platform.retention_run` ثبت می‌کند. دسته‌های بایگانی‌شونده (اسناد مالی، صورتحساب، گردش انبار، ممیزی) فعلاً Job حذف ندارند و فقط نگهبان برای آن‌ها آماده است.
 
 ---
 

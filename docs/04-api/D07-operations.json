@@ -57,6 +57,56 @@
   "idempotent": false
  },
  {
+  "operationId": "getRetention",
+  "method": "GET",
+  "path": "/settings/retention",
+  "permission": "tenant.settings.manage",
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
+ },
+ {
+  "operationId": "setRetention",
+  "method": "PUT",
+  "path": "/settings/retention/{category}",
+  "permission": "tenant.settings.manage",
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [
+   "category"
+  ],
+  "bodyProps": [
+   "days"
+  ],
+  "idempotent": false
+ },
+ {
+  "operationId": "clearRetention",
+  "method": "DELETE",
+  "path": "/settings/retention/{category}",
+  "permission": "tenant.settings.manage",
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [
+   "category"
+  ],
+  "bodyProps": null,
+  "idempotent": false
+ },
+ {
+  "operationId": "listRetentionRuns",
+  "method": "GET",
+  "path": "/settings/retention/runs",
+  "permission": "tenant.settings.manage",
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
+ },
+ {
   "operationId": "listBranches",
   "method": "GET",
   "path": "/branches",
@@ -2602,8 +2652,40 @@
    "category",
    "defaultDays",
    "minimumDays",
+   "reason",
    "validFrom"
   ],
+  "idempotent": false
+ },
+ {
+  "operationId": "platformSetLegalHold",
+  "method": "PUT",
+  "path": "/platform/tenants/{tenantId}/legal-holds/{category}",
+  "permission": null,
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [
+   "tenantId",
+   "category"
+  ],
+  "bodyProps": [
+   "reason",
+   "until"
+  ],
+  "idempotent": false
+ },
+ {
+  "operationId": "platformReleaseLegalHold",
+  "method": "DELETE",
+  "path": "/platform/tenants/{tenantId}/legal-holds/{category}",
+  "permission": null,
+  "allowedWhenReadOnly": false,
+  "scope": null,
+  "pathParams": [
+   "tenantId",
+   "category"
+  ],
+  "bodyProps": null,
   "idempotent": false
  },
  {

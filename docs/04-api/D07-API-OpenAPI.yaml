@@ -249,6 +249,174 @@ paths:
       - BR-040
       - BR-052
       x-audited: true
+  /settings/retention:
+    get:
+      operationId: getRetention
+      tags:
+      - Tenant
+      summary: مدت نگهداری هر دسته داده و Legal Hold
+      security: *id001
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - items
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/StoreRetention'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: tenant.settings.manage
+      x-scope: Tenant
+      x-idempotent: false
+      x-requirements:
+      - TEN-005.1
+      - BR-087
+  /settings/retention/{category}:
+    put:
+      operationId: setRetention
+      tags:
+      - Tenant
+      summary: نگهداری بیشتر از پیش‌فرض پلتفرم
+      description: 'Only longer: 422 below-retention-floor under the platform''s minimum. The platform''s nightly job deletes
+        data past this period unless a legal hold is in force.'
+      security: *id001
+      parameters:
+      - name: category
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetentionDaysInput'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoreRetention'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: tenant.settings.manage
+      x-scope: Tenant
+      x-idempotent: false
+      x-requirements:
+      - TEN-005.1
+      - BR-087
+      x-audited: true
+    delete:
+      operationId: clearRetention
+      tags:
+      - Tenant
+      summary: بازگشت به پیش‌فرض پلتفرم
+      security: *id001
+      parameters:
+      - name: category
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: No content
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: tenant.settings.manage
+      x-scope: Tenant
+      x-idempotent: false
+      x-requirements:
+      - TEN-005.1
+      - BR-087
+      x-audited: true
+  /settings/retention/runs:
+    get:
+      operationId: listRetentionRuns
+      tags:
+      - Tenant
+      summary: اجراهای اخیر Job نگهداری (حذف یا توقف با Legal Hold)
+      security: *id001
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - items
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RetentionRun'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: tenant.settings.manage
+      x-scope: Tenant
+      x-idempotent: false
+      x-requirements:
+      - TEN-005.1
   /branches:
     get:
       operationId: listBranches
@@ -8987,13 +9155,16 @@ paths:
       tags:
       - Platform
       summary: تعیین کف و پیش‌فرض نگهداری
+      description: Publishes the next version of a category's policy (versions never change); validFrom defaults to now. defaultDays
+        is not below minimumDays. A store may keep data longer than the default but never shorter than the minimum. 409 version-conflict
+        if two operators publish at once.
       security: *id011
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RetentionPolicy'
+              $ref: '#/components/schemas/RetentionPolicyInput'
       responses:
         '200':
           description: Success
@@ -9020,6 +9191,104 @@ paths:
       x-idempotent: false
       x-requirements:
       - BR-087
+      - TEN-005.1
+      x-audited: true
+  /platform/tenants/{tenantId}/legal-holds/{category}:
+    put:
+      operationId: platformSetLegalHold
+      tags:
+      - Platform
+      summary: Legal Hold روی یک دسته داده‌ی فروشگاه
+      description: While a hold is in force the retention job deletes nothing of the category for that store, and the database
+        refuses any deletion (RC036). Replaces an earlier hold. 404 for an unknown store.
+      security: *id011
+      parameters:
+      - name: tenantId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: category
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LegalHoldInput'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LegalHold'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-idempotent: false
+      x-requirements:
+      - BR-087
+      - TEN-005.1
+      x-audited: true
+    delete:
+      operationId: platformReleaseLegalHold
+      tags:
+      - Platform
+      summary: رفع Legal Hold
+      security: *id011
+      parameters:
+      - name: tenantId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: category
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: No content
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-idempotent: false
+      x-requirements:
+      - BR-087
+      - TEN-005.1
       x-audited: true
   /platform/industry-profiles:
     get:
@@ -11741,6 +12010,48 @@ components:
       - debit
       - credit
       - runningBalance
+    LegalHold:
+      type: object
+      additionalProperties: false
+      properties:
+        tenantId:
+          type: string
+          format: uuid
+        category:
+          type: string
+          enum:
+          - FinancialDocuments
+          - TaxInvoices
+          - InventoryLedger
+          - Audit
+          - CustomerCrm
+          - CustomerIdentity
+          - Notifications
+          - TechnicalLogs
+        reason:
+          type: string
+        until:
+          type:
+          - string
+          - 'null'
+          format: date-time
+      required:
+      - tenantId
+      - category
+      - reason
+      - until
+    LegalHoldInput:
+      type: object
+      additionalProperties: false
+      properties:
+        reason:
+          type: string
+        until:
+          type: string
+          format: date-time
+          description: 'Omitted: until an operator lifts it'
+      required:
+      - reason
     LineDiscount:
       type: object
       additionalProperties: false
@@ -13161,7 +13472,52 @@ components:
           description: 'A register of the cart''s branch with the caller''s open shift; default: the cart''s'
       required:
       - expectedVersion
+    RetentionDaysInput:
+      type: object
+      additionalProperties: false
+      properties:
+        days:
+          type: integer
+          format: int32
+      required:
+      - days
     RetentionPolicy:
+      type: object
+      additionalProperties: false
+      properties:
+        category:
+          type: string
+          enum:
+          - FinancialDocuments
+          - TaxInvoices
+          - InventoryLedger
+          - Audit
+          - CustomerCrm
+          - CustomerIdentity
+          - Notifications
+          - TechnicalLogs
+        version:
+          type: integer
+          format: int32
+        minimumDays:
+          type: integer
+          format: int32
+        defaultDays:
+          type: integer
+          format: int32
+        validFrom:
+          type: string
+          format: date-time
+        reason:
+          type: string
+      required:
+      - category
+      - version
+      - minimumDays
+      - defaultDays
+      - validFrom
+      - reason
+    RetentionPolicyInput:
       type: object
       additionalProperties: false
       properties:
@@ -13185,11 +13541,49 @@ components:
         validFrom:
           type: string
           format: date-time
+          description: Defaults to now; a future date schedules the new version
+        reason:
+          type: string
       required:
       - category
       - minimumDays
       - defaultDays
-      - validFrom
+      - reason
+    RetentionRun:
+      type: object
+      additionalProperties: false
+      properties:
+        category:
+          type: string
+          enum:
+          - FinancialDocuments
+          - TaxInvoices
+          - InventoryLedger
+          - Audit
+          - CustomerCrm
+          - CustomerIdentity
+          - Notifications
+          - TechnicalLogs
+        outcome:
+          type: string
+          enum:
+          - Purged
+          - Held
+        cutoff:
+          type: string
+          format: date-time
+        deletedRows:
+          type: integer
+          format: int32
+        ranAt:
+          type: string
+          format: date-time
+      required:
+      - category
+      - outcome
+      - cutoff
+      - deletedRows
+      - ranAt
     ReturnCreate:
       type: object
       additionalProperties: false
@@ -14282,6 +14676,55 @@ components:
           format: int32
       required:
       - branchId
+    StoreRetention:
+      type: object
+      additionalProperties: false
+      properties:
+        category:
+          type: string
+          enum:
+          - FinancialDocuments
+          - TaxInvoices
+          - InventoryLedger
+          - Audit
+          - CustomerCrm
+          - CustomerIdentity
+          - Notifications
+          - TechnicalLogs
+        minimumDays:
+          type: integer
+          format: int32
+        defaultDays:
+          type: integer
+          format: int32
+        overrideDays:
+          type:
+          - integer
+          - 'null'
+          format: int32
+        effectiveDays:
+          type: integer
+          format: int32
+        legalHold:
+          type: boolean
+        holdReason:
+          type:
+          - string
+          - 'null'
+        holdUntil:
+          type:
+          - string
+          - 'null'
+          format: date-time
+      required:
+      - category
+      - minimumDays
+      - defaultDays
+      - overrideDays
+      - effectiveDays
+      - legalHold
+      - holdReason
+      - holdUntil
     Supplier:
       type: object
       additionalProperties: false
@@ -15935,6 +16378,9 @@ x-error-catalog:
   approval-not-pending:
     status: 409
     meaning: The request was already decided
+  below-retention-floor:
+    status: 422
+    meaning: The store cannot keep data for less than the platform's minimum for the category (BR-087, RC036)
   report-too-large:
     status: 422
     meaning: 'The report has more rows than the cap (5,000; 100,000 as csv): narrow the range or the branch; context.limit'

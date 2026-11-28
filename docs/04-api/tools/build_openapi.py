@@ -592,9 +592,17 @@ schema("TaxSubmissionPolicy", id="uuid", validFrom="dt", periodType=("enum", ["M
        deadlineOffsetDays="int", **{"appliesTo?": "str"}, version="int")
 schema("TaxSubmissionPolicyCreate", validFrom="dt", periodType=("enum", ["Monthly", "Quarterly", "Custom"]),
        deadlineOffsetDays="int", reason="str", **{"appliesTo?": "str"})
-schema("RetentionPolicy", category=("enum", ["FinancialDocuments", "TaxInvoices", "InventoryLedger", "Audit", "CustomerCrm",
-                                             "CustomerIdentity", "Notifications", "TechnicalLogs"]),
-       minimumDays="int", defaultDays="int", validFrom="dt")
+RETENTION_CATEGORIES = ["FinancialDocuments", "TaxInvoices", "InventoryLedger", "Audit", "CustomerCrm", "CustomerIdentity", "Notifications", "TechnicalLogs"]
+schema("RetentionPolicy", category=("enum", RETENTION_CATEGORIES), version="int", minimumDays="int", defaultDays="int", validFrom="dt",
+       reason="str")
+schema("RetentionPolicyInput", category=("enum", RETENTION_CATEGORIES), minimumDays="int", defaultDays="int",
+       **{"validFrom?": ("desc", "dt", "Defaults to now; a future date schedules the new version")}, reason="str")
+schema("LegalHoldInput", reason="str", **{"until?": ("desc", "dt", "Omitted: until an operator lifts it")})
+schema("LegalHold", tenantId="uuid", category=("enum", RETENTION_CATEGORIES), reason="str", until="dt?")
+schema("StoreRetention", category=("enum", RETENTION_CATEGORIES), minimumDays="int", defaultDays="int", overrideDays="int?", effectiveDays="int",
+       legalHold="bool", holdReason="str?", holdUntil="dt?")
+schema("RetentionDaysInput", days="int")
+schema("RetentionRun", category=("enum", RETENTION_CATEGORIES), outcome=("enum", ["Purged", "Held"]), cutoff="dt", deletedRows="int", ranAt="dt")
 schema("IndustryProfile", code="str", name="str", receiptTemplateVersion="str", version="int", lockedFields=["str"], legalText="str",
        reason="str", publishedAt="dt")
 schema("IndustryProfileUpdate", expectedVersion=("desc", "int", "The newest version; the update publishes the next one"), legalText="str",
@@ -717,6 +725,7 @@ ERROR_CATALOG = {
     "self-approval": (403, "The requester cannot approve their own request (SoD-01)"),
     "approval-expired": (409, "The pending request expired (10 minutes)"),
     "approval-not-pending": (409, "The request was already decided"),
+    "below-retention-floor": (422, "The store cannot keep data for less than the platform's minimum for the category (BR-087, RC036)"),
     "report-too-large": (422, "The report has more rows than the cap (5,000; 100,000 as csv): narrow the range or the branch; context.limit"),
     "already-imported": (409, "This settlement file was imported before; context.importId (PAY-002.2)"),
     "invalid-settlement-file": (400, "The settlement CSV has unreadable rows; nothing imported; context.rows[] (line, field, message)"),
@@ -857,6 +866,16 @@ op("get", "/tenants/me/setup", "getTenantSetup", "Tenant", "پیشرفت راه�
 op("get", "/tenants/me", "getMyTenant", "Tenant", "Tenant فعال", resp="Tenant", reqs=["TEN-001"])
 op("patch", "/tenants/me", "updateMyTenant", "Tenant", "به‌روزرسانی تنظیمات", perm="tenant.settings.manage", scope="Tenant",
    body="TenantUpdate", resp="Tenant", reqs=["TEN-001", "BR-040", "BR-052"], audited=True, conflict=True)
+op("get", "/settings/retention", "getRetention", "Tenant", "مدت نگهداری هر دسته داده و Legal Hold", perm="tenant.settings.manage", scope="Tenant",
+   resp="StoreRetention", list_of=True, reqs=["TEN-005.1", "BR-087"])
+op("put", "/settings/retention/{category}", "setRetention", "Tenant", "نگهداری بیشتر از پیش‌فرض پلتفرم", perm="tenant.settings.manage", scope="Tenant",
+   body="RetentionDaysInput", resp="StoreRetention", reqs=["TEN-005.1", "BR-087"], audited=True,
+   desc="Only longer: 422 below-retention-floor under the platform's minimum. The platform's nightly job deletes data past this period "
+        "unless a legal hold is in force.")
+op("delete", "/settings/retention/{category}", "clearRetention", "Tenant", "بازگشت به پیش‌فرض پلتفرم", perm="tenant.settings.manage", scope="Tenant",
+   no_content=True, reqs=["TEN-005.1", "BR-087"], audited=True)
+op("get", "/settings/retention/runs", "listRetentionRuns", "Tenant", "اجراهای اخیر Job نگهداری (حذف یا توقف با Legal Hold)", perm="tenant.settings.manage",
+   scope="Tenant", resp="RetentionRun", list_of=True, reqs=["TEN-005.1"])
 op("get", "/branches", "listBranches", "Tenant", "فهرست شعب مجاز کاربر", resp="Branch", list_of=True, reqs=["TEN-002"])
 op("post", "/branches", "createBranch", "Tenant", "ایجاد شعبه", perm="tenant.settings.manage", scope="Tenant",
    body="BranchCreate", resp="Branch", resp_code="201", reqs=["TEN-002"], audited=True, conflict=True,
@@ -1486,7 +1505,16 @@ op("post", "/platform/tax-submission-policies", "platformCreateTaxPolicy", "Plat
 op("get", "/platform/retention-policies", "platformListRetention", "Platform", "Policyهای نگهداری", aud="platform",
    resp="RetentionPolicy", list_of=True, reqs=["BR-087"])
 op("put", "/platform/retention-policies", "platformSetRetention", "Platform", "تعیین کف و پیش‌فرض نگهداری", aud="platform",
-   body="RetentionPolicy", resp="RetentionPolicy", reqs=["BR-087"], audited=True)
+   body="RetentionPolicyInput", resp="RetentionPolicy", reqs=["BR-087", "TEN-005.1"], audited=True,
+   desc="Publishes the next version of a category's policy (versions never change); validFrom defaults to now. defaultDays is not below "
+        "minimumDays. A store may keep data longer than the default but never shorter than the minimum. 409 version-conflict if two "
+        "operators publish at once.")
+op("put", "/platform/tenants/{tenantId}/legal-holds/{category}", "platformSetLegalHold", "Platform", "Legal Hold روی یک دسته داده‌ی فروشگاه", aud="platform",
+   body="LegalHoldInput", resp="LegalHold", reqs=["BR-087", "TEN-005.1"], audited=True,
+   desc="While a hold is in force the retention job deletes nothing of the category for that store, and the database refuses any "
+        "deletion (RC036). Replaces an earlier hold. 404 for an unknown store.")
+op("delete", "/platform/tenants/{tenantId}/legal-holds/{category}", "platformReleaseLegalHold", "Platform", "رفع Legal Hold", aud="platform",
+   no_content=True, reqs=["BR-087", "TEN-005.1"], audited=True)
 op("get", "/platform/industry-profiles", "platformListIndustries", "Platform", "صنف‌ها و قالب فاکتور", aud="platform",
    resp="IndustryProfile", list_of=True, reqs=["BR-086"])
 op("put", "/platform/industry-profiles/{code}", "platformUpdateIndustry", "Platform", "نسخه جدید قالب صنف", aud="platform",

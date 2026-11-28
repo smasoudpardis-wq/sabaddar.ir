@@ -44,6 +44,7 @@ builder.Services.AddSingleton<ICatalogProvider>(_ =>
     return new OpenFoodFactsProvider(http, offOptions);
 });
 builder.Services.AddSingleton<IIndustryTemplates, RetailCloud.Platform.Infrastructure.PostgresIndustryTemplates>();
+builder.Services.AddSingleton<IRetention, RetailCloud.Platform.Infrastructure.PostgresRetention>();
 builder.Services.AddSingleton<IReceiptTemplateOverrides, PostgresReceiptTemplateOverrides>();
 builder.Services.AddSingleton<IStockLedger, RetailCloud.Inventory.Infrastructure.PostgresStockLedger>();
 builder.Services.AddSingleton<IStockAdjustments, RetailCloud.Inventory.Infrastructure.PostgresStockAdjustments>();
@@ -192,6 +193,65 @@ platformApi.MapPut("/industry-profiles/{code}", async (string code, IndustryProf
         PlatformLog.TemplatePublished(platformLogger, template!.IndustryCode, template.Version, operatorId);
         return Results.Ok(IndustryJson(template));
     });
+
+// BR-087 / US-173: the platform sets the floor and default of each data category (a new version each time, valid from a
+// date) and puts a legal hold on a store's category; stores may only keep data longer.
+platformApi.MapGet("/retention-policies", async (IUnitOfWork uow, IRetention retention, CancellationToken ct) =>
+    Results.Ok(new { items = (await uow.ExecuteWithoutTenantAsync(null, (s, c) => retention.PoliciesAsync(s, c), ct)).Select(RetentionPolicyJson) }));
+
+platformApi.MapPut("/retention-policies", async (RetentionPolicyInput body, IUnitOfWork uow, IRetention retention, HttpContext http, CancellationToken ct) =>
+    {
+        if (RetentionRules.PolicyProblem(body.Category, body.MinimumDays, body.DefaultDays, body.Reason) is { } problem)
+        {
+            return Problems.Validation(http, new Dictionary<string, string[]> { [problem.Split(':')[0]] = [problem] });
+        }
+
+        string operatorId = $"{http.User.FindFirst("iss")?.Value}|{http.User.FindFirst("sub")?.Value}";
+        var (outcome, policy) = await uow.ExecuteWithoutTenantAsync(null, (s, c) => retention.PublishAsync(s, body.Category!, body.MinimumDays!.Value,
+            body.DefaultDays!.Value, body.ValidFrom ?? DateTimeOffset.UtcNow, body.Reason!.Trim(), operatorId, c), ct);
+        if (outcome == RetentionChange.Conflict)
+        {
+            return Problems.Create(http, StatusCodes.Status409Conflict, "version-conflict", "Another version was published at the same time; reload and retry");
+        }
+
+        PlatformLog.RetentionPublished(platformLogger, policy!.Category, policy.Version, operatorId);
+        return Results.Ok(RetentionPolicyJson(policy));
+    });
+
+platformApi.MapPut("/tenants/{tenantId:guid}/legal-holds/{category}", async (Guid tenantId, string category, LegalHoldInput body, IUnitOfWork uow,
+        IRetention retention, HttpContext http, CancellationToken ct) =>
+    {
+        var errors = new Dictionary<string, string[]>();
+        if (!RetentionRules.IsCategory(category)) errors["category"] = ["unknown category"];
+        if (body.Reason is null || body.Reason.Trim().Length is < 3 or > 500) errors["reason"] = ["3-500 characters"];
+        if (body.Until is { } until && until <= DateTimeOffset.UtcNow) errors["until"] = ["must be in the future"];
+        if (errors.Count > 0) return Problems.Validation(http, errors);
+        string operatorId = $"{http.User.FindFirst("iss")?.Value}|{http.User.FindFirst("sub")?.Value}";
+        if (!await uow.ExecuteWithoutTenantAsync(null, (s, c) => retention.HoldAsync(s, tenantId, category, body.Reason!.Trim(), body.Until, operatorId, c), ct))
+        {
+            return Problems.NotFound(http);
+        }
+
+        PlatformLog.LegalHoldSet(platformLogger, tenantId, category, operatorId);
+        return Results.Ok(new { tenantId, category, reason = body.Reason!.Trim(), until = body.Until });
+    });
+
+platformApi.MapDelete("/tenants/{tenantId:guid}/legal-holds/{category}", async (Guid tenantId, string category, IUnitOfWork uow, IRetention retention,
+        HttpContext http, CancellationToken ct) =>
+    {
+        if (!RetentionRules.IsCategory(category) ||
+            !await uow.ExecuteWithoutTenantAsync(null, (s, c) => retention.ReleaseAsync(s, tenantId, category, c), ct))
+        {
+            return Problems.NotFound(http);
+        }
+
+        string operatorId = $"{http.User.FindFirst("iss")?.Value}|{http.User.FindFirst("sub")?.Value}";
+        PlatformLog.LegalHoldReleased(platformLogger, tenantId, category, operatorId);
+        return Results.NoContent();
+    });
+
+static object RetentionPolicyJson(RetentionPolicyView p) =>
+    new { category = p.Category, version = p.Version, minimumDays = p.MinimumDays, defaultDays = p.DefaultDays, validFrom = p.ValidFrom, reason = p.Reason };
 
 // IAM-008 / US-027 (platform side): PlatformSupport asks a store for time-limited access with a reason; only its TenantOwner
 // approves (SoD-05, store side). While the grant is in force the operator sees a read-only, masked view (no customer data,
@@ -455,6 +515,70 @@ v1.MapPost("/branches/{branchId:guid}/registers", async (Guid branchId, Register
         }
     })
     .RequirePermission(Permissions.TenantSettingsManage);
+
+// ---------------- US-173: retention of the store's data (BR-087, TEN-005.1)
+v1.MapGet("/settings/retention", async (RequestContext ctx, IUnitOfWork uow, IRetention retention, CancellationToken ct) =>
+        Results.Ok(new { items = (await uow.ExecuteAsync(ctx, (s, c) => retention.StoreAsync(s, c), ct)).Select(StoreRetentionJson) }))
+    .RequirePermission(Permissions.TenantSettingsManage);
+
+v1.MapPut("/settings/retention/{category}", async (string category, RetentionDaysInput body, RequestContext ctx, IUnitOfWork uow, IRetention retention,
+        HttpContext http, CancellationToken ct) =>
+    {
+        if (!RetentionRules.IsCategory(category)) return Problems.NotFound(http);
+        if (body.Days is not (>= 1 and <= RetentionRules.MaxDays))
+        {
+            return Problems.Validation(http, new Dictionary<string, string[]> { ["days"] = [$"1-{RetentionRules.MaxDays}"] });
+        }
+
+        StoreRetentionView? view = null;
+        bool below = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            if (await retention.SetOverrideAsync(s, category, body.Days!.Value, ctx.User!.Value.Value, c) == RetentionChange.BelowFloor)
+            {
+                return true;
+            }
+
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry("settings.retention.updated", "RetentionPolicy", category, Details: new { category, days = body.Days }), c);
+            view = (await retention.StoreAsync(s, c)).Single(v => v.Category == category);
+            return false;
+        }, ct);
+        return below
+            ? Problems.Create(http, StatusCodes.Status422UnprocessableEntity, "below-retention-floor", "Data cannot be kept for less than the platform's minimum")
+            : Results.Ok(StoreRetentionJson(view!));
+    })
+    .RequirePermission(Permissions.TenantSettingsManage);
+
+v1.MapDelete("/settings/retention/{category}", async (string category, RequestContext ctx, IUnitOfWork uow, IRetention retention, HttpContext http,
+        CancellationToken ct) =>
+    {
+        if (!RetentionRules.IsCategory(category)) return Problems.NotFound(http);
+        bool cleared = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            bool done = await retention.ClearOverrideAsync(s, category, c);
+            if (done)
+            {
+                await Audit(http, s, ActorOf(ctx, http), new AuditEntry("settings.retention.cleared", "RetentionPolicy", category, Details: new { category }), c);
+            }
+
+            return done;
+        }, ct);
+        return cleared ? Results.NoContent() : Problems.NotFound(http);
+    })
+    .RequirePermission(Permissions.TenantSettingsManage);
+
+v1.MapGet("/settings/retention/runs", async (RequestContext ctx, IUnitOfWork uow, IRetention retention, CancellationToken ct) =>
+        Results.Ok(new
+        {
+            items = (await uow.ExecuteAsync(ctx, (s, c) => retention.RunsAsync(s, 50, c), ct))
+                .Select(r => new { category = r.Category, outcome = r.Outcome, cutoff = r.Cutoff, deletedRows = r.DeletedRows, ranAt = r.RanAt }),
+        }))
+    .RequirePermission(Permissions.TenantSettingsManage);
+
+static object StoreRetentionJson(StoreRetentionView v) => new
+{
+    category = v.Category, minimumDays = v.MinimumDays, defaultDays = v.DefaultDays, overrideDays = v.OverrideDays, effectiveDays = v.EffectiveDays,
+    legalHold = v.LegalHold, holdReason = v.HoldReason, holdUntil = v.HoldUntil,
+};
 
 // ---------------- US-013: POS terminals (TEN-002.1, ABAC-04)
 v1.MapPost("/branches/{branchId:guid}/pairing-codes", async (Guid branchId, RequestContext ctx, IUnitOfWork uow, ITerminalAdministration terminals,
@@ -4767,6 +4891,9 @@ internal sealed record CatalogReviewEdits(string? Name, string? Brand, string? C
 internal sealed record CatalogReviewInput(string? Decision, CatalogReviewEdits? Edits, string? Reason);
 internal sealed record ReceiptOverridesInput(string? LogoObjectKey, string? FooterText, string? Signature);
 internal sealed record ReceiptTemplateUpdateInput(int? ExpectedVersion, ReceiptOverridesInput? Overrides);
+internal sealed record RetentionPolicyInput(string? Category, int? MinimumDays, int? DefaultDays, DateTimeOffset? ValidFrom, string? Reason);
+internal sealed record LegalHoldInput(string? Reason, DateTimeOffset? Until);
+internal sealed record RetentionDaysInput(int? Days);
 internal sealed record IndustryProfileUpdateInput(int? ExpectedVersion, string? LegalText, string[]? LockedFields, string? Reason);
 internal sealed record HoldInput(int? ExpectedVersion, string? Note);
 internal sealed record ResumeInput(int? ExpectedVersion, Guid? RegisterId);
@@ -4842,6 +4969,15 @@ internal static partial class PlatformLog
 {
     [LoggerMessage(EventId = 6101, Level = LogLevel.Information, Message = "platform.receipt-template.published {Industry} v{Version} by {Operator}")]
     public static partial void TemplatePublished(ILogger logger, string industry, int version, string @operator);
+
+    [LoggerMessage(EventId = 6103, Level = LogLevel.Information, Message = "platform.retention-policy.published {Category} v{Version} by {Operator}")]
+    public static partial void RetentionPublished(ILogger logger, string category, int version, string @operator);
+
+    [LoggerMessage(EventId = 6104, Level = LogLevel.Information, Message = "platform.legal-hold.set {Tenant} {Category} by {Operator}")]
+    public static partial void LegalHoldSet(ILogger logger, Guid tenant, string category, string @operator);
+
+    [LoggerMessage(EventId = 6105, Level = LogLevel.Information, Message = "platform.legal-hold.released {Tenant} {Category} by {Operator}")]
+    public static partial void LegalHoldReleased(ILogger logger, Guid tenant, string category, string @operator);
 
     [LoggerMessage(EventId = 6102, Level = LogLevel.Information, Message = "platform.catalog.suggestion-decided {Suggestion} {Outcome} product {Product} by {Operator}")]
     public static partial void SuggestionDecided(ILogger logger, Guid suggestion, string outcome, Guid? product, string @operator);

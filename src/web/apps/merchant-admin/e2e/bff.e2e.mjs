@@ -864,6 +864,27 @@ try {
   await page.goto(BFF);
   await page.getByTestId('logout').waitFor();
 
+  // RN01–RN02 US-173: the platform's minimum for each data category is shown; a store keeps data longer but not shorter (TEN-005.1)
+  await page.goto(`${BFF}/retention`);
+  await page.getByTestId('retention').waitFor();
+  const effective0 = ((await page.getByTestId('ret-effective-Notifications').textContent()) ?? '');
+  check('RN01', 'the retention page lists the eight data categories with the days in force (notifications: 180 by default)',
+    (await page.locator('tr[data-testid^="ret-"]').count()) === 8 && effective0.includes('۱۸۰'), effective0);
+  await page.locator('input[name="days-Notifications"]').fill('60');
+  await page.getByTestId('ret-save-Notifications').click();
+  const floorMsg = ((await page.getByTestId('retention-error').textContent()) ?? '');
+  await page.locator('input[name="days-Notifications"]').fill('400');
+  await page.getByTestId('ret-save-Notifications').click();
+  await page.getByTestId('ret-reset-Notifications').waitFor();
+  const effective1 = ((await page.getByTestId('ret-effective-Notifications').textContent()) ?? '');
+  check('RN02', 'under the minimum is refused with its reason; a longer period is applied and can be reset to the default',
+    floorMsg.includes('حداقل') && effective1.includes('۴۰۰'), `${floorMsg} | ${effective1}`);
+  await page.getByTestId('ret-reset-Notifications').click();
+  await page.getByTestId('ret-save-Notifications').waitFor();
+  await shot(page, 'retention');
+  await page.goto(BFF);
+  await page.getByTestId('logout').waitFor();
+
   // D01–D05 US-024: my sessions on every device; sign one out, disable a colleague (IAM-009), sign out everywhere
   const signInCashier = async () => {
     const c = await browser.newContext();

@@ -20,6 +20,9 @@ export const postJson = (url: string, body?: unknown) =>
 export const patchJson = (url: string, body: unknown) =>
   fetch(url, { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf() }, body: JSON.stringify(body) });
 
+export const putJson = (url: string, body: unknown) =>
+  fetch(url, { method: 'PUT', headers: { 'content-type': 'application/json', 'x-csrf-token': csrf() }, body: JSON.stringify(body) });
+
 export const deleteWithCsrf = (url: string) => fetch(url, { method: 'DELETE', headers: { 'x-csrf-token': csrf() } });
 
 /** D09 §10.1 messages used outside the home page. */

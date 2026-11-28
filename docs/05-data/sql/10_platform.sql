@@ -274,10 +274,149 @@ CREATE TABLE platform.integration_key (
 CREATE UNIQUE INDEX ux_integration_key_prefix ON platform.integration_key (prefix);
 CALL core.enable_tenant_rls('platform.integration_key');
 
+
+-- Retention (BR-087, TEN-005.1, US-173). The platform sets a floor (minimum, the legal part) and a default per data
+-- category; a policy version never changes (a new row is the next version, valid from a date). A store may keep data
+-- LONGER than the default, never shorter than the floor (RC036). A legal hold stops deletion of a category for a store
+-- until it ends. The figures seeded here are drafts until the tax adviser confirms the floors (X-05).
+CREATE TABLE platform.retention_policy (
+  category     text NOT NULL CHECK (category IN ('FinancialDocuments','TaxInvoices','InventoryLedger','Audit','CustomerCrm',
+                                                  'CustomerIdentity','Notifications','TechnicalLogs')),
+  version      int  NOT NULL CHECK (version >= 1),
+  minimum_days int  NOT NULL CHECK (minimum_days BETWEEN 1 AND 36500),
+  default_days int  NOT NULL CHECK (default_days BETWEEN 1 AND 36500),
+  valid_from   timestamptz NOT NULL,
+  reason       text NOT NULL CHECK (char_length(btrim(reason)) BETWEEN 3 AND 500),
+  created_by   text NOT NULL,                      -- the platform operator (issuer|subject)
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (category, version),
+  CHECK (default_days >= minimum_days)
+);
+CREATE TRIGGER tr_retention_policy_append_only BEFORE UPDATE OR DELETE ON platform.retention_policy
+  FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
+INSERT INTO platform.retention_policy (category, version, minimum_days, default_days, valid_from, reason, created_by) VALUES
+  ('FinancialDocuments', 1, 3650, 3650, '2020-01-01', 'پیش‌فرض اولیه D05 §9 (کف قانونی منتظر X-05)', 'migration'),
+  ('TaxInvoices',        1, 3650, 3650, '2020-01-01', 'پیش‌فرض اولیه D05 §9 (کف قانونی منتظر X-05)', 'migration'),
+  ('InventoryLedger',    1, 3650, 3650, '2020-01-01', 'پیش‌فرض اولیه D05 §9 (کف قانونی منتظر X-05)', 'migration'),
+  ('Audit',              1, 3650, 3650, '2020-01-01', 'پیش‌فرض اولیه D05 §9 (کف قانونی منتظر X-05)', 'migration'),
+  ('CustomerCrm',        1,  730,  730, '2020-01-01', 'پیش‌فرض اولیه D05 §9: دو سال پس از آخرین فعالیت', 'migration'),
+  ('CustomerIdentity',   1,   30,   30, '2020-01-01', 'پیش‌فرض اولیه D05 §9: درخواست حذف به‌علاوه ۳۰ روز', 'migration'),
+  ('Notifications',      1,   90,  180, '2020-01-01', 'پیش‌فرض اولیه D05 §9: ۶ ماه', 'migration'),
+  ('TechnicalLogs',      1,   30,   90, '2020-01-01', 'پیش‌فرض اولیه D05 §9: ۹۰ روز', 'migration');
+
+-- the floor and default in force now for a category
+CREATE FUNCTION platform.retention_floor(p_category text) RETURNS int LANGUAGE sql STABLE SET search_path = pg_catalog AS $$
+  SELECT minimum_days FROM platform.retention_policy WHERE category = p_category AND valid_from <= now()
+   ORDER BY valid_from DESC, version DESC LIMIT 1
+$$;
+
+-- A store's own choice: only longer than the floor. The row is the current choice; clearing it returns to the default.
+CREATE TABLE platform.tenant_retention (
+  tenant_id uuid NOT NULL REFERENCES platform.tenant (id),
+  category  text NOT NULL CHECK (category IN ('FinancialDocuments','TaxInvoices','InventoryLedger','Audit','CustomerCrm',
+                                               'CustomerIdentity','Notifications','TechnicalLogs')),
+  days      int  NOT NULL CHECK (days BETWEEN 1 AND 36500),
+  set_by    uuid NOT NULL,
+  set_at    timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, category)
+);
+CALL core.enable_tenant_rls('platform.tenant_retention');
+CREATE FUNCTION platform.tenant_retention_guard() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+BEGIN
+  IF NEW.days < platform.retention_floor(NEW.category) THEN
+    RAISE EXCEPTION 'retention of % cannot be shorter than the legal floor of % days', NEW.category, platform.retention_floor(NEW.category)
+      USING ERRCODE = 'RC036';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tr_tenant_retention_guard BEFORE INSERT OR UPDATE ON platform.tenant_retention
+  FOR EACH ROW EXECUTE FUNCTION platform.tenant_retention_guard();
+
+-- Legal hold: set and lifted by a platform operator (definer functions below), visible to the store it concerns.
+CREATE TABLE platform.legal_hold (
+  tenant_id  uuid NOT NULL REFERENCES platform.tenant (id),
+  category   text NOT NULL CHECK (category IN ('FinancialDocuments','TaxInvoices','InventoryLedger','Audit','CustomerCrm',
+                                                'CustomerIdentity','Notifications','TechnicalLogs')),
+  reason     text NOT NULL CHECK (char_length(btrim(reason)) BETWEEN 3 AND 500),
+  until      timestamptz,                          -- NULL: until an operator lifts it
+  created_by text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, category)
+);
+CALL core.enable_tenant_rls('platform.legal_hold');
+
+-- days to keep a category for the current store: its own longer choice, else the default; never below the floor
+CREATE FUNCTION platform.effective_retention_days(p_category text) RETURNS int LANGUAGE sql STABLE SET search_path = pg_catalog AS $$
+  SELECT greatest(platform.retention_floor(p_category),
+         coalesce((SELECT days FROM platform.tenant_retention WHERE category = p_category),
+                  (SELECT default_days FROM platform.retention_policy WHERE category = p_category AND valid_from <= now()
+                    ORDER BY valid_from DESC, version DESC LIMIT 1)))
+$$;
+CREATE FUNCTION platform.legal_hold_active(p_category text) RETURNS boolean LANGUAGE sql STABLE SET search_path = pg_catalog AS $$
+  SELECT EXISTS (SELECT 1 FROM platform.legal_hold WHERE category = p_category AND (until IS NULL OR until > now()))
+$$;
+
+CREATE FUNCTION platform.set_legal_hold(p_tenant uuid, p_category text, p_reason text, p_until timestamptz, p_by text) RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+DECLARE v_prev text := coalesce(current_setting('app.tenant_id', true), '');
+BEGIN
+  PERFORM set_config('app.tenant_id', p_tenant::text, true);
+  INSERT INTO platform.legal_hold (tenant_id, category, reason, until, created_by) VALUES (p_tenant, p_category, p_reason, p_until, p_by)
+  ON CONFLICT (tenant_id, category) DO UPDATE SET reason = EXCLUDED.reason, until = EXCLUDED.until, created_by = EXCLUDED.created_by, created_at = now();
+  PERFORM set_config('app.tenant_id', v_prev, true);
+END $$;
+CREATE FUNCTION platform.release_legal_hold(p_tenant uuid, p_category text) RETURNS boolean
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+DECLARE v_prev text := coalesce(current_setting('app.tenant_id', true), ''); v_n int;
+BEGIN
+  PERFORM set_config('app.tenant_id', p_tenant::text, true);
+  DELETE FROM platform.legal_hold WHERE tenant_id = p_tenant AND category = p_category;
+  GET DIAGNOSTICS v_n = ROW_COUNT;
+  PERFORM set_config('app.tenant_id', v_prev, true);
+  RETURN v_n > 0;
+END $$;
+REVOKE ALL ON FUNCTION platform.set_legal_hold(uuid, text, text, timestamptz, text), platform.release_legal_hold(uuid, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION platform.set_legal_hold(uuid, text, text, timestamptz, text), platform.release_legal_hold(uuid, text) TO rc_app;
+
+-- The deleting side: a row of a category is deleted only after the store's effective retention and while no hold is in
+-- force, whoever deletes it (RC036). Used as BEFORE DELETE trigger: (category, timestamp column).
+CREATE FUNCTION platform.retention_delete_guard() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+DECLARE v_at timestamptz := (to_jsonb(OLD) ->> TG_ARGV[1])::timestamptz;
+BEGIN
+  IF platform.legal_hold_active(TG_ARGV[0]) THEN
+    RAISE EXCEPTION 'a legal hold on % is in force', TG_ARGV[0] USING ERRCODE = 'RC036';
+  END IF;
+  IF v_at > now() - make_interval(days => platform.effective_retention_days(TG_ARGV[0])) THEN
+    RAISE EXCEPTION 'data of % is kept for % days', TG_ARGV[0], platform.effective_retention_days(TG_ARGV[0]) USING ERRCODE = 'RC036';
+  END IF;
+  RETURN OLD;
+END $$;
+
+-- what the nightly job did for a store: the evidence of a deletion (append-only)
+CREATE TABLE platform.retention_run (
+  tenant_id    uuid NOT NULL REFERENCES platform.tenant (id),
+  id           uuid NOT NULL,
+  category     text NOT NULL,
+  outcome      text NOT NULL CHECK (outcome IN ('Purged','Held')),
+  cutoff       timestamptz NOT NULL,               -- rows created before this were eligible
+  deleted_rows int  NOT NULL CHECK (deleted_rows >= 0),
+  ran_at       timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, id),
+  CHECK (outcome <> 'Held' OR deleted_rows = 0)
+);
+CREATE INDEX ix_retention_run_recent ON platform.retention_run (tenant_id, ran_at DESC);
+CALL core.enable_tenant_rls('platform.retention_run');
+CREATE TRIGGER tr_retention_run_append_only BEFORE UPDATE OR DELETE ON platform.retention_run
+  FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
+
 GRANT USAGE ON SCHEMA platform TO rc_app, rc_worker, rc_reporting;
 GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA platform TO rc_app;
 REVOKE INSERT, UPDATE ON platform.industry_profile FROM rc_app;   -- reference data: changed by migration only
-REVOKE UPDATE ON platform.receipt_template_industry FROM rc_app;   -- a version is only added (the trigger refuses changes too)
+REVOKE UPDATE ON platform.receipt_template_industry FROM rc_app;
+REVOKE UPDATE ON platform.retention_policy FROM rc_app;            -- a policy version is only added
+GRANT DELETE ON platform.tenant_retention TO rc_app;               -- a store returns to the default by clearing its choice
+REVOKE INSERT, UPDATE ON platform.legal_hold FROM rc_app;          -- operators use set_legal_hold / release_legal_hold
+REVOKE INSERT, UPDATE ON platform.retention_run FROM rc_app;       -- only the Workers record a run
 GRANT SELECT ON ALL TABLES IN SCHEMA platform TO rc_worker, rc_reporting;
 REVOKE INSERT, UPDATE ON platform.plan, platform.subscription FROM rc_app;   -- read-only for the application
 -- TEN-004: suspension is a platform decision, so the application may edit only the settings of TenantUpdate (D07),
