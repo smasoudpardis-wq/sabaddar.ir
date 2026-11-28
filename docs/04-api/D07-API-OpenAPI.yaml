@@ -5225,7 +5225,7 @@ paths:
       summary: Callback درگاه (عمومی؛ فقط Verify اعتبار دارد)
       description: Accepts the gateway's native form/JSON body (max 64KB). Stored in Inbox; server-to-server Verify decides
         the outcome. Return URL data is never trusted. Always responds quickly with a redirect/HTML for the customer.
-      security: &id002 []
+      security: &id004 []
       parameters:
       - name: gateway
         in: path
@@ -6068,28 +6068,33 @@ paths:
       operationId: getTrialBalance
       tags:
       - Accounting
-      summary: تراز آزمایشی
+      summary: تراز آزمایشی (۲ و ۴ ستونی)
+      description: Posted entries only, over [from, to). Without `from`, the fiscal year that holds `to` (default now) so
+        far; at most 800 days. Groups sum the accounts under them, in chart order.
       security: *id001
       parameters:
-      - $ref: '#/components/parameters/From'
-      - $ref: '#/components/parameters/To'
+      - &id002
+        $ref: '#/components/parameters/From'
+      - &id003
+        $ref: '#/components/parameters/To'
+      - name: includeEmpty
+        in: query
+        required: false
+        schema:
+          type: boolean
+        description: Also list accounts with no balance and no movement
       responses:
         '200':
           description: Success
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: false
-                required:
-                - items
-                properties:
-                  items:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/TrialBalanceRow'
-                  meta:
-                    $ref: '#/components/schemas/ReportMeta'
+                $ref: '#/components/schemas/TrialBalance'
+          headers:
+            ETag:
+              schema:
+                type: string
+              description: Weak ETag of version
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -6105,16 +6110,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
       x-permission: accounting.read
-      x-scope: Branch
+      x-scope: Tenant
       x-idempotent: false
       x-requirements:
       - ACC-007
+      - AT-107
   /accounting/reports/ledger/{accountId}:
     get:
       operationId: getLedger
       tags:
       - Accounting
-      summary: دفتر کل/معین/گردش تفصیلی
+      summary: دفتر کل، معین و گردش تفصیلی
+      description: The posted lines of the account, or of every account under a group (دفتر کل), oldest first, with the opening
+        before `from` and the running balance. Range as getTrialBalance. Limit 1-500 (default 100).
       security: *id001
       parameters:
       - name: accountId
@@ -6123,36 +6131,36 @@ paths:
         schema:
           type: string
           format: uuid
-      - $ref: '#/components/parameters/Cursor'
-      - $ref: '#/components/parameters/Limit'
       - name: detailId
         in: query
         required: false
         schema:
           type: string
           format: uuid
-      - $ref: '#/components/parameters/From'
-      - $ref: '#/components/parameters/To'
+        description: 'Only the lines of this detail (a customer, supplier or branch): گردش حساب تفصیلی'
+      - *id002
+      - *id003
+      - $ref: '#/components/parameters/Cursor'
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 100
       responses:
         '200':
           description: Success
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: false
-                required:
-                - items
-                - page
-                properties:
-                  items:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/LedgerRow'
-                  page:
-                    $ref: '#/components/schemas/PageInfo'
-                  meta:
-                    $ref: '#/components/schemas/ReportMeta'
+                $ref: '#/components/schemas/Ledger'
+          headers:
+            ETag:
+              schema:
+                type: string
+              description: Weak ETag of version
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -6170,10 +6178,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
       x-permission: accounting.read
-      x-scope: Branch
+      x-scope: Tenant
       x-idempotent: false
       x-requirements:
       - ACC-007
+      - AT-107
   /credit-accounts:
     post:
       operationId: createCreditAccount
@@ -6819,7 +6828,7 @@ paths:
       tags:
       - Portal
       summary: شروع ورود با OTP
-      security: *id002
+      security: *id004
       requestBody:
         required: true
         content:
@@ -6856,7 +6865,7 @@ paths:
       tags:
       - Portal
       summary: تأیید OTP و ایجاد Session (BFF Cookie)
-      security: *id002
+      security: *id004
       requestBody:
         required: true
         content:
@@ -6893,7 +6902,7 @@ paths:
       tags:
       - Portal
       summary: کد عمومی و وضعیت کانال‌ها
-      security: &id003
+      security: &id005
       - customerBearer: []
       responses:
         '200':
@@ -6928,7 +6937,7 @@ paths:
       tags:
       - Portal
       summary: باطل و تعویض کد عمومی
-      security: *id003
+      security: *id005
       responses:
         '200':
           description: Success
@@ -6958,7 +6967,7 @@ paths:
       tags:
       - Portal
       summary: صدور QR مشتری (۱۲۰ ثانیه، یک‌بارمصرف)
-      security: *id003
+      security: *id005
       responses:
         '201':
           description: Success
@@ -6988,7 +6997,7 @@ paths:
       tags:
       - Portal
       summary: نمایش فروشگاه QR پیشخوان (فقط نام و دامنه)
-      security: *id002
+      security: *id004
       parameters:
       - name: inviteToken
         in: path
@@ -7017,7 +7026,7 @@ paths:
       tags:
       - Portal
       summary: عضویت در فروشگاه با رضایت‌ها
-      security: *id003
+      security: *id005
       parameters:
       - name: inviteToken
         in: path
@@ -7069,7 +7078,7 @@ paths:
       tags:
       - Portal
       summary: پذیرش درخواست عضویت ارسال‌شده از POS (پس از اسکن QR)
-      security: *id003
+      security: *id005
       parameters:
       - name: joinRequestId
         in: path
@@ -7118,7 +7127,7 @@ paths:
       tags:
       - Portal
       summary: فروشگاه‌های من
-      security: *id003
+      security: *id005
       responses:
         '200':
           description: Success
@@ -7155,7 +7164,7 @@ paths:
       tags:
       - Portal
       summary: لغو عضویت
-      security: *id003
+      security: *id005
       parameters:
       - name: membershipId
         in: path
@@ -7190,7 +7199,7 @@ paths:
       tags:
       - Portal
       summary: تغییر رضایت‌ها (اثر فوری روی صف ارسال)
-      security: *id003
+      security: *id005
       parameters:
       - name: membershipId
         in: path
@@ -7240,7 +7249,7 @@ paths:
       tags:
       - Portal
       summary: تاریخچه دسترسی فروشگاه به پروفایل
-      security: *id003
+      security: *id005
       parameters:
       - name: membershipId
         in: path
@@ -7291,7 +7300,7 @@ paths:
       tags:
       - Portal
       summary: فاکتورهای من (فقط Membershipهای خودم)
-      security: *id003
+      security: *id005
       parameters:
       - $ref: '#/components/parameters/Cursor'
       - $ref: '#/components/parameters/Limit'
@@ -7334,7 +7343,7 @@ paths:
       tags:
       - Portal
       summary: مانده و سررسید نسیه همین فروشگاه
-      security: *id003
+      security: *id005
       parameters:
       - name: membershipId
         in: path
@@ -7378,7 +7387,7 @@ paths:
       tags:
       - Portal
       summary: پرداخت آنلاین مانده نسیه
-      security: *id003
+      security: *id005
       parameters:
       - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -7423,7 +7432,7 @@ paths:
       tags:
       - Portal
       summary: Deep Link اتصال بله (۱۰ دقیقه، یک‌بارمصرف)
-      security: *id003
+      security: *id005
       responses:
         '201':
           description: Success
@@ -7453,7 +7462,7 @@ paths:
       tags:
       - Portal
       summary: Export داده من
-      security: *id003
+      security: *id005
       responses:
         '202':
           description: OK
@@ -7480,7 +7489,7 @@ paths:
       tags:
       - Portal
       summary: درخواست حذف حساب (ناشناس‌سازی پس از ۳۰ روز)
-      security: *id003
+      security: *id005
       responses:
         '202':
           description: OK
@@ -7509,7 +7518,7 @@ paths:
       summary: نمایش فاکتور با Receipt Link (بدون PII مشتری)
       description: No customer data. Unknown, expired and revoked links are the same 404; each view is audited in the store;
         30 a minute per address.
-      security: *id002
+      security: *id004
       parameters:
       - name: token
         in: path
@@ -7550,7 +7559,7 @@ paths:
       tags:
       - Public
       summary: Webhook بات بله (Verification Required)
-      security: *id002
+      security: *id004
       parameters:
       - name: secretPath
         in: path
@@ -8554,7 +8563,7 @@ paths:
       - PartnerApi
       summary: کاتالوگ Tenant (catalog.read)
       description: The store's products (not merged), with variants, barcodes and current prices. Needs catalog.read.
-      security: &id004
+      security: &id006
       - integrationKey: []
       parameters:
       - $ref: '#/components/parameters/Cursor'
@@ -8602,7 +8611,7 @@ paths:
       summary: موجودی (inventory.read؛ بدون بها)
       description: 'Quantities only: never the cost (WAC) or the value. 401 invalid-api-key for an unknown, wrong, revoked
         or expired key; 403 scope-missing without inventory.read; 120 calls a minute per key.'
-      security: *id004
+      security: *id006
       parameters:
       - $ref: '#/components/parameters/Cursor'
       - $ref: '#/components/parameters/Limit'
@@ -8661,7 +8670,7 @@ paths:
       tags:
       - Platform
       summary: فهرست Tenantها (فراداده)
-      security: &id005
+      security: &id007
       - platformBearer: []
       parameters:
       - $ref: '#/components/parameters/Cursor'
@@ -8705,7 +8714,7 @@ paths:
       tags:
       - Platform
       summary: تعلیق/فعال‌سازی
-      security: *id005
+      security: *id007
       parameters:
       - name: tenantId
         in: path
@@ -8754,7 +8763,7 @@ paths:
       tags:
       - Platform
       summary: درخواست JIT (تأیید با Owner)
-      security: *id005
+      security: *id007
       parameters:
       - name: tenantId
         in: path
@@ -8807,7 +8816,7 @@ paths:
       description: PlatformSupport with MFA, only while the store owner's grant to this operator is in force (403 support-access-required
         otherwise). No customer data, payment references or card digits; every call is audited in the store with actor kind
         Support.
-      security: *id005
+      security: *id007
       parameters:
       - name: tenantId
         in: path
@@ -8855,7 +8864,7 @@ paths:
       tags:
       - Platform
       summary: Policyهای مهلت مؤدیان
-      security: *id005
+      security: *id007
       responses:
         '200':
           description: Success
@@ -8892,7 +8901,7 @@ paths:
       tags:
       - Platform
       summary: نسخه جدید Policy مهلت
-      security: *id005
+      security: *id007
       requestBody:
         required: true
         content:
@@ -8933,7 +8942,7 @@ paths:
       tags:
       - Platform
       summary: Policyهای نگهداری
-      security: *id005
+      security: *id007
       responses:
         '200':
           description: Success
@@ -8969,7 +8978,7 @@ paths:
       tags:
       - Platform
       summary: تعیین کف و پیش‌فرض نگهداری
-      security: *id005
+      security: *id007
       requestBody:
         required: true
         content:
@@ -9009,7 +9018,7 @@ paths:
       tags:
       - Platform
       summary: صنف‌ها و قالب فاکتور
-      security: *id005
+      security: *id007
       responses:
         '200':
           description: Success
@@ -9046,7 +9055,7 @@ paths:
       tags:
       - Platform
       summary: نسخه جدید قالب صنف
-      security: *id005
+      security: *id007
       parameters:
       - name: code
         in: path
@@ -9097,7 +9106,7 @@ paths:
       - Platform
       summary: صف Moderation کاتالوگ
       description: CatalogModerator (MFA) only. Pending suggestions, oldest first; never which store sent one.
-      security: *id005
+      security: *id007
       parameters:
       - $ref: '#/components/parameters/Cursor'
       - $ref: '#/components/parameters/Limit'
@@ -9144,7 +9153,7 @@ paths:
       description: 'Publish copies only name, brand and category (edited if given) into the global catalog: a new product
         with its public barcode, or the product that already holds it, re-verified; every pending suggestion for that code
         is settled with it. Reject settles this one only. 409 already-decided.'
-      security: *id005
+      security: *id007
       parameters:
       - name: suggestionId
         in: path
@@ -11584,6 +11593,85 @@ components:
           description: 3-200 characters; becomes the reversal's description
       required:
       - reason
+    Ledger:
+      type: object
+      additionalProperties: false
+      properties:
+        account:
+          type: object
+          additionalProperties: false
+          properties:
+            id:
+              type: string
+              format: uuid
+            code:
+              type: string
+            name:
+              type: string
+            accountType:
+              type: string
+            postable:
+              type: boolean
+          required:
+          - id
+          - code
+          - name
+          - accountType
+          - postable
+        detailId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        opening:
+          type: object
+          additionalProperties: false
+          properties:
+            debit:
+              $ref: '#/components/schemas/Money'
+            credit:
+              $ref: '#/components/schemas/Money'
+          required:
+          - debit
+          - credit
+        periodDebit:
+          $ref: '#/components/schemas/Money'
+        periodCredit:
+          $ref: '#/components/schemas/Money'
+        closing:
+          type: object
+          additionalProperties: false
+          properties:
+            debit:
+              $ref: '#/components/schemas/Money'
+            credit:
+              $ref: '#/components/schemas/Money'
+          required:
+          - debit
+          - credit
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/LedgerRow'
+        page:
+          $ref: '#/components/schemas/PageInfo'
+      required:
+      - account
+      - detailId
+      - from
+      - to
+      - opening
+      - periodDebit
+      - periodCredit
+      - closing
+      - items
+      - page
     LedgerRow:
       type: object
       additionalProperties: false
@@ -11598,16 +11686,40 @@ components:
           type:
           - string
           - 'null'
+        sourceType:
+          type:
+          - string
+          - 'null'
+        accountId:
+          type: string
+          format: uuid
+        accountCode:
+          type: string
+        detailType:
+          type:
+          - string
+          - 'null'
+        detailId:
+          type:
+          - string
+          - 'null'
+          format: uuid
         debit:
           $ref: '#/components/schemas/Money'
         credit:
           $ref: '#/components/schemas/Money'
         runningBalance:
           $ref: '#/components/schemas/Money'
+          description: 'Debit − credit after this line, from the opening (negative: a credit balance)'
       required:
       - journalId
       - effectiveAt
       - description
+      - sourceType
+      - accountId
+      - accountCode
+      - detailType
+      - detailId
       - debit
       - credit
       - runningBalance
@@ -15085,6 +15197,56 @@ components:
       - fromWarehouseId
       - toWarehouseId
       - lines
+    TrialBalance:
+      type: object
+      additionalProperties: false
+      properties:
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrialBalanceRow'
+        totals:
+          type: object
+          additionalProperties: false
+          properties:
+            openingDebit:
+              $ref: '#/components/schemas/Money'
+            openingCredit:
+              $ref: '#/components/schemas/Money'
+            periodDebit:
+              $ref: '#/components/schemas/Money'
+            periodCredit:
+              $ref: '#/components/schemas/Money'
+            closingDebit:
+              $ref: '#/components/schemas/Money'
+            closingCredit:
+              $ref: '#/components/schemas/Money'
+            balanced:
+              type: boolean
+          required:
+          - openingDebit
+          - openingCredit
+          - periodDebit
+          - periodCredit
+          - closingDebit
+          - closingCredit
+          - balanced
+        meta:
+          $ref: '#/components/schemas/ReportMeta'
+      required:
+      - from
+      - to
+      - items
+      - totals
+      - meta
+      description: 'ACC-007: 4-column (opening, period debit/credit, closing) and 2-column (closing) views of the same data.
+        Totals count postable accounts only.'
     TrialBalanceRow:
       type: object
       additionalProperties: false
@@ -15096,22 +15258,49 @@ components:
           type: string
         accountName:
           type: string
+        accountType:
+          type: string
+          enum:
+          - Asset
+          - Liability
+          - Equity
+          - Revenue
+          - Expense
+        parentId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        postable:
+          type: boolean
+          description: 'false: a group; its amounts are the sum of the accounts under it'
+        level:
+          type: integer
+          format: int32
+          description: Depth in the chart (0 = top group)
         openingDebit:
           $ref: '#/components/schemas/Money'
+          description: Net balance before `from`, on its side
         openingCredit:
           $ref: '#/components/schemas/Money'
         periodDebit:
           $ref: '#/components/schemas/Money'
+          description: Gross movement in [from, to)
         periodCredit:
           $ref: '#/components/schemas/Money'
         closingDebit:
           $ref: '#/components/schemas/Money'
+          description: Net balance at `to`, on its side
         closingCredit:
           $ref: '#/components/schemas/Money'
       required:
       - accountId
       - accountCode
       - accountName
+      - accountType
+      - parentId
+      - postable
+      - level
       - openingDebit
       - openingCredit
       - periodDebit

@@ -818,6 +818,27 @@ try {
   check('CS03', 'the settled slip leaves the report, and the same file again is refused',
     stillOpen === 0 && ((await page.getByTestId('error').textContent()) ?? '').includes('قبلاً'), String(stillOpen));
   await shot(page, 'card-settlements');
+  // AR01–AR03 US-114: the trial balance of the fiscal year so far balances and shows the bank's fee of CS02; 2-column keeps
+  // the balances only; the cash account's ledger (تراز صندوق) is shown and exported for Excel (ACC-007, AT-107)
+  await page.goto(`${BFF}/accounting-reports`);
+  await page.locator('[data-testid="report-to-period"] option').first().waitFor({ state: 'attached' });
+  await page.getByTestId('show-trial-balance').click();
+  await page.getByTestId('trial-balance').waitFor();
+  check('AR01', 'the trial balance balances and carries the bank fee of the settlement (J4)',
+    (await page.getByTestId('trial-balance').getAttribute('data-balanced')) === 'true'
+    && (await page.getByTestId('tb-5106').getAttribute('data-closing-debit')) === '500',
+    `${await page.getByTestId('trial-balance').getAttribute('data-balanced')} ${await page.getByTestId('tb-5106').getAttribute('data-closing-debit')}`);
+  const fourCols = await page.locator('[data-testid="tb-totals"] td').count();
+  await page.getByTestId('tb-cols-2').check();
+  const twoCols = await page.locator('[data-testid="tb-totals"] td').count();
+  check('AR02', 'the 2-column view keeps only the closing balances', fourCols === 8 && twoCols === 4, `${fourCols}/${twoCols}`);
+  await page.getByTestId('show-cash').click();
+  await page.locator('[data-testid="ledger"][data-account="1101"]').waitFor();
+  const cashLines = await page.getByTestId('ledger-line').count();
+  const [csvDownload] = await Promise.all([page.waitForEvent('download'), page.getByTestId('export-ledger').click()]);
+  check('AR03', 'the cash ledger lists its lines with a running balance and exports as CSV for Excel',
+    cashLines > 0 && csvDownload.suggestedFilename() === 'ledger-1101.csv', `${cashLines} ${csvDownload.suggestedFilename()}`);
+  await shot(page, 'accounting-reports');
   await page.goto(BFF);
   await page.getByTestId('logout').waitFor();
 

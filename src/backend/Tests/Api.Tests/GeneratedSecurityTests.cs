@@ -68,7 +68,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
 
     private sealed record Fixture(Guid Tenant, Guid Branch, Guid Branch2, Guid Terminal, Guid Terminal2, Guid User, Guid Assignment,
         Guid Approval, Guid Export, Guid SupportRequest, Guid Product, Guid Variant, Guid Barcode, Guid Shift, Guid Journal,
-        Guid PriceList, Guid DiscountRule, Guid Sale, Guid Count, Guid Supplier, Guid Period, Guid IntegrationKey, Guid SettlementImport)
+        Guid PriceList, Guid DiscountRule, Guid Sale, Guid Count, Guid Supplier, Guid Period, Guid IntegrationKey, Guid SettlementImport, Guid Account)
     {
         /// <summary>A path value: ids from the fixture; a line number is a position inside the sale (line 1 exists).</summary>
         public string Path(string param) => param is "lineNo" or "seq" ? "1" : Id(param).ToString();
@@ -95,6 +95,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
             "periodId" => Period,
             "keyId" => IntegrationKey,
             "importId" => SettlementImport,
+            "accountId" => Account,
             _ => throw new InvalidOperationException($"No fixture for path parameter '{param}': add one to GeneratedSecurityTests (US-010)"),
         };
     }
@@ -222,7 +223,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
             return await Exec(s, ct, "INSERT INTO platform.export_job (tenant_id, id, requested_by, categories) VALUES ($1, $2, $3, '{Products}')", t, export, owner);
         });
         _roleSubjects[$"owner-{t}"] = $"gen-{_run}-owner-{t}";
-        return new Fixture(t, b1, b2, term, term2, member, assignment, approval, export, support, product, variant, barcode, shift, journal, priceList, rule, sale, count, supplier, period, key, settlement);
+        return new Fixture(t, b1, b2, term, term2, member, assignment, approval, export, support, product, variant, barcode, shift, journal, priceList, rule, sale, count, supplier, period, key, settlement, cash);
     }
 
     private static async Task<int> Exec(IUnitOfWorkScope s, CancellationToken ct, string sql, params object[] args)

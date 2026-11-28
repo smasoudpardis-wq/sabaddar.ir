@@ -55,6 +55,7 @@ builder.Services.AddSingleton<RetailCloud.Payments.Application.IPayments, Retail
 builder.Services.AddSingleton<ISettlements, RetailCloud.Payments.Infrastructure.PostgresSettlements>();
 builder.Services.AddSingleton<IShifts, PostgresShifts>();
 builder.Services.AddSingleton<IJournals, PostgresJournals>();
+builder.Services.AddSingleton<IAccountingReports, PostgresAccountingReports>();
 ObjectStorageOptions? storage = builder.Configuration.GetSection("Storage").Get<ObjectStorageOptions>();
 builder.Services.AddSingleton<IObjectStorage>(storage is { ServiceUrl.Length: > 0 } ? new S3ObjectStorage(storage) : new UnconfiguredObjectStorage());
 builder.Services.AddSingleton<IIdempotencyStore, PostgresIdempotencyStore>();
@@ -750,6 +751,92 @@ v1.MapGet("/accounting/journals", async (RequestContext ctx, IUnitOfWork uow, IJ
         JournalView[] page = [.. rows.Take(size)];
         string? next = more ? $"{page[^1].EffectiveAt.UtcTicks}_{page[^1].Id}" : null;
         return Results.Ok(new { items = page.Select(JournalJson), page = new { nextCursor = next, hasMore = more } });
+    })
+    .RequirePermission(Permissions.AccountingRead);
+
+// US-114 / ACC-007 (AT-107): the trial balance and the ledger of an account, a group of accounts or one detail
+// The range is [from, to); without one, the fiscal year that holds `to` (default now) so far.
+async Task<(DateTimeOffset From, DateTimeOffset To)?> ReportRangeAsync(IJournals journals, IUnitOfWorkScope s, DateTimeOffset? from, DateTimeOffset? to,
+    DateTimeOffset now, CancellationToken c)
+{
+    DateTimeOffset until = to ?? now;
+    if (from is { } f) return f < until && until - f <= TimeSpan.FromDays(800) ? (f, until) : null;
+    IReadOnlyList<PeriodView> periods = await journals.PeriodsAsync(s, c);
+    PeriodView? holding = periods.FirstOrDefault(p => p.Start < until && until <= p.End) ?? periods.LastOrDefault(p => p.Start < until);
+    DateTimeOffset start = holding is null ? until.AddDays(-30) : periods.Where(p => p.FiscalYear == holding.FiscalYear).Min(p => p.Start);
+    return (start, until);
+}
+
+object AmountSide(long net) => new { debit = Rial(Math.Max(net, 0)), credit = Rial(Math.Max(-net, 0)) };
+
+v1.MapGet("/accounting/reports/trial-balance", async (RequestContext ctx, IUnitOfWork uow, IJournals journals, IAccountingReports reports, HttpContext http,
+        DateTimeOffset? from, DateTimeOffset? to, bool? includeEmpty, CancellationToken ct) =>
+    {
+        DateTimeOffset now = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
+        var result = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            if (await ReportRangeAsync(journals, s, from, to, now, c) is not { } range) return null;
+            IReadOnlyList<AccountView> accounts = await journals.AccountsAsync(s, c);
+            IReadOnlyList<AccountMovement> moves = await reports.MovementsAsync(s, range.From, range.To, c);
+            return new { range, built = TrialBalance.Build(accounts, moves, includeEmpty ?? false) };
+        }, ct);
+        if (result is null) return Problems.Validation(http, new Dictionary<string, string[]> { ["query"] = ["from < to, at most 800 days"] });
+        TrialBalanceTotals t = result.built.Totals;
+        return Results.Ok(new
+        {
+            from = result.range.From, to = result.range.To,
+            items = result.built.Lines.Select(l => new
+            {
+                accountId = l.Account.Id, accountCode = l.Account.Code, accountName = l.Account.Name, accountType = l.Account.AccountType,
+                parentId = l.Account.ParentId, postable = l.Account.IsPostable, l.Level,
+                openingDebit = Rial(l.OpeningDebit), openingCredit = Rial(l.OpeningCredit), periodDebit = Rial(l.PeriodDebit), periodCredit = Rial(l.PeriodCredit),
+                closingDebit = Rial(l.ClosingDebit), closingCredit = Rial(l.ClosingCredit),
+            }),
+            totals = new
+            {
+                openingDebit = Rial(t.OpeningDebit), openingCredit = Rial(t.OpeningCredit), periodDebit = Rial(t.PeriodDebit), periodCredit = Rial(t.PeriodCredit),
+                closingDebit = Rial(t.ClosingDebit), closingCredit = Rial(t.ClosingCredit), t.Balanced,
+            },
+            meta = new { generatedAt = now, dataAsOf = now },
+        });
+    })
+    .RequirePermission(Permissions.AccountingRead);
+
+v1.MapGet("/accounting/reports/ledger/{accountId:guid}", async (Guid accountId, RequestContext ctx, IUnitOfWork uow, IJournals journals, IAccountingReports reports,
+        HttpContext http, Guid? detailId, DateTimeOffset? from, DateTimeOffset? to, string? cursor, int? limit, CancellationToken ct) =>
+    {
+        int size = limit ?? 100;
+        int offset = 0;
+        if (size is < 1 or > 500 || (cursor is not null && (!int.TryParse(cursor, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out offset)
+            || offset > 1_000_000)))
+        {
+            return Problems.Validation(http, new Dictionary<string, string[]> { ["query"] = ["limit 1-500; cursor from the previous page"] });
+        }
+
+        DateTimeOffset now = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
+        var result = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            IReadOnlyList<AccountView> accounts = await journals.AccountsAsync(s, c);
+            if (accounts.FirstOrDefault(a => a.Id == accountId) is not { } account) return (Found: false, Range: ((DateTimeOffset, DateTimeOffset)?)null, Account: (AccountView?)null, Page: (LedgerPage?)null);
+            if (await ReportRangeAsync(journals, s, from, to, now, c) is not { } range) return (true, null, account, null);
+            LedgerPage page = await reports.LedgerAsync(s, TrialBalance.WithDescendants(accounts, accountId), detailId, range.From, range.To, offset, size, c);
+            return (true, range, account, page);
+        }, ct);
+        if (!result.Found) return Problems.NotFound(http);
+        if (result.Page is not { } p) return Problems.Validation(http, new Dictionary<string, string[]> { ["query"] = ["from < to, at most 800 days"] });
+        AccountView a = result.Account!;
+        return Results.Ok(new
+        {
+            account = new { a.Id, a.Code, a.Name, a.AccountType, postable = a.IsPostable }, detailId,
+            from = result.Range!.Value.Item1, to = result.Range!.Value.Item2,
+            opening = AmountSide(p.Opening), periodDebit = Rial(p.PeriodDebit), periodCredit = Rial(p.PeriodCredit), closing = AmountSide(p.Closing),
+            items = p.Lines.Select(l => new
+            {
+                l.JournalId, l.EffectiveAt, l.Description, l.SourceType, l.AccountId, l.AccountCode, l.DetailType, l.DetailId,
+                debit = Rial(l.Debit), credit = Rial(l.Credit), runningBalance = Rial(l.RunningBalance),
+            }),
+            page = new { nextCursor = p.HasMore ? (offset + size).ToString(System.Globalization.CultureInfo.InvariantCulture) : null, hasMore = p.HasMore },
+        });
     })
     .RequirePermission(Permissions.AccountingRead);
 

@@ -1762,7 +1762,7 @@
   "path": "/accounting/reports/trial-balance",
   "permission": "accounting.read",
   "allowedWhenReadOnly": false,
-  "scope": "Branch",
+  "scope": "Tenant",
   "pathParams": [],
   "bodyProps": null,
   "idempotent": false
@@ -1773,7 +1773,7 @@
   "path": "/accounting/reports/ledger/{accountId}",
   "permission": "accounting.read",
   "allowedWhenReadOnly": false,
-  "scope": "Branch",
+  "scope": "Tenant",
   "pathParams": [
    "accountId"
   ],

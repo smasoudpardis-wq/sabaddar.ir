@@ -451,9 +451,24 @@ schema("SourceRef", type="str", id="uuid")
 schema("JournalLine", lineNo="int", accountId="uuid", accountCode="str", detailType="str?", detailId="uuid?", debit="money", credit="money")
 schema("Period", id="uuid", fiscalYear="int", periodNo="int", start="dt", end="dt", status=("enum", ["Open", "Closed", "Locked"]),
        closedAt="dt?", closedBy="uuid?", version="int")
-schema("TrialBalanceRow", accountId="uuid", accountCode="str", accountName="str", openingDebit="money", openingCredit="money",
-       periodDebit="money", periodCredit="money", closingDebit="money", closingCredit="money")
-schema("LedgerRow", journalId="uuid", effectiveAt="dt", description="str?", debit="money", credit="money", runningBalance="money")
+schema("TrialBalanceRow", accountId="uuid", accountCode="str", accountName="str",
+       accountType=("enum", ["Asset", "Liability", "Equity", "Revenue", "Expense"]), parentId="uuid?",
+       postable=("desc", "bool", "false: a group; its amounts are the sum of the accounts under it"),
+       level=("desc", "int", "Depth in the chart (0 = top group)"),
+       openingDebit=("desc", "money", "Net balance before `from`, on its side"), openingCredit="money",
+       periodDebit=("desc", "money", "Gross movement in [from, to)"), periodCredit="money",
+       closingDebit=("desc", "money", "Net balance at `to`, on its side"), closingCredit="money")
+TB_AMOUNTS = {k: "money" for k in ["openingDebit", "openingCredit", "periodDebit", "periodCredit", "closingDebit", "closingCredit"]}
+schema("TrialBalance", **{"from": "dt"}, to="dt", items=["#TrialBalanceRow"],
+       totals={**TB_AMOUNTS, "balanced": "bool"}, meta="#ReportMeta",
+       _desc="ACC-007: 4-column (opening, period debit/credit, closing) and 2-column (closing) views of the same data. "
+             "Totals count postable accounts only.")
+schema("LedgerRow", journalId="uuid", effectiveAt="dt", description="str?", sourceType="str?", accountId="uuid", accountCode="str",
+       detailType="str?", detailId="uuid?", debit="money", credit="money",
+       runningBalance=("desc", "money", "Debit − credit after this line, from the opening (negative: a credit balance)"))
+schema("Ledger", account={"id": "uuid", "code": "str", "name": "str", "accountType": "str", "postable": "bool"}, detailId="uuid?",
+       **{"from": "dt"}, to="dt", opening={"debit": "money", "credit": "money"}, periodDebit="money", periodCredit="money",
+       closing={"debit": "money", "credit": "money"}, items=["#LedgerRow"], page="#PageInfo")
 
 # Receivables
 schema("CreditAccountCreate", tenantCustomerId="uuid", creditIdentity={"type": ("enum", ["Individual", "Legal"]),
@@ -1255,14 +1270,22 @@ op("post", "/accounting/periods/{periodId}/close", "closePeriod", "Accounting", 
    desc="Only a period that has ended, after every earlier one, with no draft dated in it (409 period-not-ended, "
         "earlier-period-open, period-has-drafts with context.drafts; period-closed if already closed). Never reopened in the MVP. "
         "Emits accounting.period-closed v1.")
-op("get", "/accounting/reports/trial-balance", "getTrialBalance", "Accounting", "تراز آزمایشی", perm="accounting.read",
-   scope="Branch", params=[{"$ref": "#/components/parameters/From"}, {"$ref": "#/components/parameters/To"}],
-   resp="TrialBalanceRow", list_of=True, reqs=["ACC-007"])
-op("get", "/accounting/reports/ledger/{accountId}", "getLedger", "Accounting", "دفتر کل/معین/گردش تفصیلی",
-   perm="accounting.read", scope="Branch",
-   params=[{"name": "detailId", "in": "query", "required": False, "schema": {"type": "string", "format": "uuid"}},
-           {"$ref": "#/components/parameters/From"}, {"$ref": "#/components/parameters/To"}],
-   resp="LedgerRow", list_of=True, page=True, reqs=["ACC-007"])
+REPORT_RANGE = [{"$ref": "#/components/parameters/From"}, {"$ref": "#/components/parameters/To"}]
+op("get", "/accounting/reports/trial-balance", "getTrialBalance", "Accounting", "تراز آزمایشی (۲ و ۴ ستونی)", perm="accounting.read",
+   scope="Tenant", params=REPORT_RANGE + [{"name": "includeEmpty", "in": "query", "required": False, "schema": {"type": "boolean"},
+                                          "description": "Also list accounts with no balance and no movement"}],
+   resp="TrialBalance", reqs=["ACC-007", "AT-107"],
+   desc="Posted entries only, over [from, to). Without `from`, the fiscal year that holds `to` (default now) so far; at most 800 days. "
+        "Groups sum the accounts under them, in chart order.")
+op("get", "/accounting/reports/ledger/{accountId}", "getLedger", "Accounting", "دفتر کل، معین و گردش تفصیلی",
+   perm="accounting.read", scope="Tenant",
+   params=[{"name": "detailId", "in": "query", "required": False, "schema": {"type": "string", "format": "uuid"},
+            "description": "Only the lines of this detail (a customer, supplier or branch): گردش حساب تفصیلی"}] + REPORT_RANGE
+          + [{"$ref": "#/components/parameters/Cursor"},
+             {"name": "limit", "in": "query", "required": False, "schema": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}}],
+   resp="Ledger", reqs=["ACC-007", "AT-107"],
+   desc="The posted lines of the account, or of every account under a group (دفتر کل), oldest first, with the opening before "
+        "`from` and the running balance. Range as getTrialBalance. Limit 1-500 (default 100).")
 
 # ---------------- Receivables
 tag("Receivables", "نسیه، دریافت، سنی مطالبات (CRD)")
