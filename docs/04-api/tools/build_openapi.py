@@ -561,10 +561,14 @@ schema("IndustryProfile", code="str", name="str", receiptTemplateVersion="str", 
        reason="str", publishedAt="dt")
 schema("IndustryProfileUpdate", expectedVersion=("desc", "int", "The newest version; the update publishes the next one"), legalText="str",
        lockedFields=("desc", ["str"], "Known receipt fields; legalName, invoiceNo, issuedAt, lines and totals are always locked"), reason="str")
-schema("CatalogReviewDecision", decision=("enum", ["Publish", "Reject"]), **{"edits?": {"name?": "str", "brand?": "str", "category?": "str"}},
-       reason="str")
-schema("CatalogSuggestion", id="uuid", gtin14="str", fields={"name?": "str", "brand?": "str", "category?": "str"},
-       sources=["str"], submittedAt="dt")
+schema("CatalogReviewDecision", decision=("enum", ["Publish", "Reject"]),
+       reason=("desc", "str", "3-500 characters; kept with the decision"),
+       **{"edits?": ("desc", {"name?": "str", "brand?": "str", "category?": "str"},
+                     "Publish only: the moderator's correction of the suggested text")})
+schema("CatalogSuggestion", id="uuid", gtin14="str", fields={"name": "str", "brand?": "str?", "category?": "str?"}, submittedAt="dt",
+       storesForBarcode=("desc", "int", "Pending suggestions for the same code (each from a different store; which ones is never known)"),
+       existing=("desc", {"catalogProductId": "uuid", "name": "str", "brand?": "str?", "category?": "str?", "verifiedAt": "dt"},
+                 "What the global catalog already holds for this code; null when nothing"))
 
 # ----------------------------------------------------------------------------- reusable components
 PARAMS = {
@@ -1411,9 +1415,14 @@ op("get", "/platform/industry-profiles", "platformListIndustries", "Platform", "
 op("put", "/platform/industry-profiles/{code}", "platformUpdateIndustry", "Platform", "نسخه جدید قالب صنف", aud="platform",
    body="IndustryProfileUpdate", resp="IndustryProfile", reqs=["BR-086"], audited=True, conflict=True)
 op("get", "/platform/catalog/suggestions", "platformListCatalogSuggestions", "Platform", "صف Moderation کاتالوگ", aud="platform",
-   resp="CatalogSuggestion", list_of=True, page=True, reqs=["CAT-005.1"])
+   resp="CatalogSuggestion", list_of=True, page=True, reqs=["CAT-005.1", "US-047"],
+   desc="CatalogModerator (MFA) only. Pending suggestions, oldest first; never which store sent one.")
 op("post", "/platform/catalog/suggestions/{suggestionId}/decision", "platformDecideCatalogSuggestion", "Platform",
-   "انتشار یا رد", aud="platform", body="CatalogReviewDecision", resp_code="204", no_content=True, reqs=["CAT-005", "DI-093"], audited=True)
+   "انتشار یا رد", aud="platform", body="CatalogReviewDecision", resp_code="204", no_content=True, reqs=["CAT-005", "DI-093", "US-047"],
+   audited=True, conflict=True,
+   desc="Publish copies only name, brand and category (edited if given) into the global catalog: a new product with its public "
+        "barcode, or the product that already holds it, re-verified; every pending suggestion for that code is settled with it. "
+        "Reject settles this one only. 409 already-decided.")
 
 # ----------------------------------------------------------------------------- assemble
 spec = {

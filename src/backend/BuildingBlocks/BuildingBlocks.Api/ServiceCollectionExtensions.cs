@@ -40,6 +40,9 @@ public static class ServiceCollectionExtensions
     /// <summary>PlatformSupport with a second factor (D06 §6.2, IAM-008): asks for JIT access and uses it, nothing else.</summary>
     public const string PlatformSupportPolicy = "platform-support";
 
+    /// <summary>CatalogModerator with a second factor (D06 §6.2): the global catalog only, never a store's data (US-047).</summary>
+    public const string PlatformCatalogPolicy = "platform-catalog";
+
     /// <summary>Roles of the platform realm, as Keycloak puts them in <c>realm_access.roles</c>.</summary>
     public static bool HasRealmRole(System.Security.Claims.ClaimsPrincipal user, string role)
     {
@@ -100,7 +103,9 @@ public static class ServiceCollectionExtensions
             .AddPolicy(PlatformAdminPolicy, p => p.AddAuthenticationSchemes(PlatformScheme).RequireAuthenticatedUser()
                 .RequireClaim("acr", MfaPolicy.MfaAcr).RequireAssertion(c => HasRealmRole(c.User, "PlatformSuperAdmin")))
             .AddPolicy(PlatformSupportPolicy, p => p.AddAuthenticationSchemes(PlatformScheme).RequireAuthenticatedUser()
-                .RequireClaim("acr", MfaPolicy.MfaAcr).RequireAssertion(c => HasRealmRole(c.User, "PlatformSupport")));
+                .RequireClaim("acr", MfaPolicy.MfaAcr).RequireAssertion(c => HasRealmRole(c.User, "PlatformSupport")))
+            .AddPolicy(PlatformCatalogPolicy, p => p.AddAuthenticationSchemes(PlatformScheme).RequireAuthenticatedUser()
+                .RequireClaim("acr", MfaPolicy.MfaAcr).RequireAssertion(c => HasRealmRole(c.User, "CatalogModerator")));
         services.AddMemoryCache();
         services.AddScoped<RequestContext>();
         // Brute-force bounds for guessable secrets (D07 x-rate-limit): pairing codes, invitation links. Per identity.

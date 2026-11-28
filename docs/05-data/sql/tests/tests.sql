@@ -339,6 +339,20 @@ SELECT t.expect_error('T253 an integration key has only the MVP read scopes', '2
 SELECT t.expect_error('T254 an integration key lasts at most a year', '23514',
   $$INSERT INTO platform.integration_key (tenant_id, id, prefix, secret_hash, name, scopes, created_by, expires_at)
     VALUES (core.current_tenant(), gen_random_uuid(), 'abcdefghij', decode(repeat('ab', 32), 'hex'), 'شریک', '{catalog.read}', gen_random_uuid(), now() + interval '2 years')$$);
+SELECT t.expect_error('T255 what a store suggested to the global catalog cannot be rewritten (DI-093)', '42501',
+  $$UPDATE catalog.catalog_suggestion SET name = 'دیگر'$$);
+SELECT t.expect_error('T256 the app cannot decide a suggestion except through moderation (US-047)', '42501',
+  $$UPDATE catalog.catalog_suggestion SET status = 'Rejected', decided_at = now(), decided_by = 'iss|x', decision_reason = 'بدون ناظر'$$);
+INSERT INTO catalog.catalog_suggestion (id, gtin14, name, source_hash) VALUES
+  ('0193a000-0000-7000-8000-000000000471', '06260000000470', 'نمک آزمون', decode(repeat('a1', 32), 'hex')),
+  ('0193a000-0000-7000-8000-000000000472', '06260000000470', 'نمک', decode(repeat('a2', 32), 'hex'));
+CREATE TEMP TABLE t257 AS SELECT * FROM catalog.decide_suggestion('0193a000-0000-7000-8000-000000000471', 'Publish', 'نمک تصفیه', NULL, NULL, 'تأیید', 'iss|mod');
+SELECT t.ok('T257 publishing a suggestion creates one global product and settles every suggestion for its barcode (US-047)',
+  (SELECT outcome FROM t257) = 'Published'
+  AND (SELECT count(*) FROM catalog.catalog_suggestion WHERE gtin14 = '06260000000470' AND status = 'Published') = 2
+  AND (SELECT p.name FROM catalog.global_barcode g JOIN catalog.catalog_product p ON p.id = g.catalog_product_id WHERE g.gtin14 = '06260000000470') = 'نمک تصفیه');
+SELECT t.ok('T258 a decided suggestion is not decided again',
+  (SELECT outcome FROM catalog.decide_suggestion('0193a000-0000-7000-8000-000000000472', 'Reject', NULL, NULL, NULL, 'دوباره', 'iss|mod')) = 'AlreadyDecided');
 SELECT t.expect_error('T14 stock movement is append-only for the app role', '42501',
   $$UPDATE inv.stock_movement SET qty_base = -2$$);
 SELECT t.expect_error('T15 movement for another tenant via parent rejected', '42501',

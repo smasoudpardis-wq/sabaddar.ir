@@ -6,6 +6,7 @@
 --   RC032  a stock count moves Open → Closed → Confirmed; its snapshot and entries are written while Open only (inv.count_guard)
 --   RC033  a fiscal period moves Open → Closed → Locked only; never reopened, its span never changes (acc.period_guard, D-45)
 --   RC034  a sale's receipt snapshot is written once and its print count only increases (sales.sale_receipt_guard, BR-086)
+--   RC035  a catalog suggestion is decided once and what the store sent never changes (catalog.suggestion_guard, US-047)
 -- Run as rc_migrator.  Shared helpers used by every module schema.
 SET ROLE rc_migrator;
 

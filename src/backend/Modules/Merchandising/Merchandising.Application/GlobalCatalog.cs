@@ -59,7 +59,20 @@ public interface IGlobalCatalog
     /// </summary>
     Task<bool> SuggestAsync(IUnitOfWorkScope scope, string gtin14, string name, string? brand, string? category, byte[] sourceHash,
         CancellationToken cancellationToken);
+
+    /// <summary>US-047: pending suggestions, oldest first, with how many stores sent the same code and what the catalog holds for it.</summary>
+    Task<(IReadOnlyList<PendingSuggestion> Items, string? NextCursor)> PendingAsync(IUnitOfWorkScope scope, string? cursor, int limit,
+        CancellationToken cancellationToken);
+
+    /// <summary>US-047 / CAT-005: one moderation decision (catalog.decide_suggestion); edits replace the suggested text when given.</summary>
+    Task<(ModerationOutcome Outcome, Guid? CatalogProductId)> DecideAsync(IUnitOfWorkScope scope, Guid suggestionId, bool publish,
+        CandidateFields? edits, string reason, string moderator, CancellationToken cancellationToken);
 }
+
+public sealed record PendingSuggestion(Guid Id, string Gtin14, string Name, string? Brand, string? Category, DateTimeOffset SubmittedAt,
+    int StoresForBarcode, CatalogCandidate? Existing);
+
+public enum ModerationOutcome { Published, Rejected, NotFound, AlreadyDecided }
 
 /// <summary>CAT-004 / CAT-004.1 / TM-041: how candidates are scored, compared and cleaned.</summary>
 public static partial class CandidateRules

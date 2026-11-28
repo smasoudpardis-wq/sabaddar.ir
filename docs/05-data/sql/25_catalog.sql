@@ -49,8 +49,30 @@ CREATE TABLE catalog.catalog_suggestion (
   source_hash  bytea NOT NULL CHECK (octet_length(source_hash) = 32),
   status       text NOT NULL DEFAULT 'Pending' CHECK (status IN ('Pending','Published','Rejected')),
   submitted_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (gtin14, source_hash)
+  -- US-047: the moderator's decision (decided_by is the platform operator, iss|sub; never a store user)
+  decided_at   timestamptz,
+  decided_by   text CHECK (char_length(decided_by) BETWEEN 3 AND 300),
+  decision_reason text CHECK (char_length(btrim(decision_reason)) BETWEEN 3 AND 500),
+  catalog_product_id uuid REFERENCES catalog.catalog_product (id),
+  UNIQUE (gtin14, source_hash),
+  CHECK ((status = 'Pending') = (decided_at IS NULL) AND (decided_at IS NULL) = (decided_by IS NULL)),
+  CHECK (status <> 'Rejected' OR decision_reason IS NOT NULL),
+  CHECK ((status = 'Published') = (catalog_product_id IS NOT NULL))
 );
+
+-- US-047 / CAT-005: a suggestion is decided once (Pending → Published | Rejected) and what the store sent never changes
+-- (RC035, global). A published product keeps its moderated text; only a later moderation changes it.
+CREATE OR REPLACE FUNCTION catalog.suggestion_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF OLD.status <> 'Pending' OR NEW.gtin14 IS DISTINCT FROM OLD.gtin14 OR NEW.name IS DISTINCT FROM OLD.name
+     OR NEW.brand IS DISTINCT FROM OLD.brand OR NEW.category IS DISTINCT FROM OLD.category
+     OR NEW.source_hash IS DISTINCT FROM OLD.source_hash OR NEW.submitted_at IS DISTINCT FROM OLD.submitted_at THEN
+    RAISE EXCEPTION 'a catalog suggestion is decided once and its content never changes' USING ERRCODE = 'RC035';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER trg_catalog_suggestion_guard BEFORE UPDATE ON catalog.catalog_suggestion
+  FOR EACH ROW EXECUTE FUNCTION catalog.suggestion_guard();
 CREATE INDEX ix_catalog_suggestion_pending ON catalog.catalog_suggestion (submitted_at) WHERE status = 'Pending';
 
 GRANT USAGE ON SCHEMA catalog TO rc_app, rc_worker, rc_reporting;
@@ -58,4 +80,52 @@ GRANT SELECT ON catalog.catalog_product, catalog.global_barcode, catalog.catalog
 GRANT INSERT, UPDATE ON catalog.catalog_source_record TO rc_app;   -- the provider cache; the catalog itself is moderation's
 GRANT INSERT ON catalog.catalog_suggestion TO rc_app;   -- a store only adds a suggestion; deciding is moderation's (US-047)
 GRANT SELECT (id, gtin14, source_hash) ON catalog.catalog_suggestion TO rc_app;   -- enough to see its own was already sent
+-- US-047: moderation (platform realm, CatalogModerator; the endpoint decides who) reads the queue and decides through
+-- catalog.decide_suggestion only: the app role still cannot write the global catalog directly (T244).
+GRANT SELECT (name, brand, category, status, submitted_at, decided_at, catalog_product_id) ON catalog.catalog_suggestion TO rc_app;
+
+-- US-047 / CAT-005 / DI-093: one moderation decision. Publish copies only the allow-listed descriptive fields (the
+-- moderator may correct them) into the global catalog — a new product with its public barcode, or the product that
+-- already holds that barcode, re-verified — and settles every pending suggestion for the same barcode with it.
+-- Reject needs a reason and settles only this suggestion. Outcomes: Published, Rejected, NotFound, AlreadyDecided.
+-- SECURITY DEFINER (owner rc_migrator, like inv.lock_balances): the app role executes it but has no write grant.
+CREATE OR REPLACE FUNCTION catalog.decide_suggestion(p_id uuid, p_decision text, p_name text, p_brand text, p_category text,
+                                                     p_reason text, p_operator text)
+RETURNS TABLE (outcome text, catalog_product_id uuid)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+DECLARE
+  s catalog.catalog_suggestion%ROWTYPE;
+  pid uuid;
+BEGIN
+  IF p_decision NOT IN ('Publish', 'Reject') THEN
+    RAISE EXCEPTION 'decision must be Publish or Reject' USING ERRCODE = '22023';
+  END IF;
+  SELECT * INTO s FROM catalog.catalog_suggestion WHERE id = p_id FOR UPDATE;
+  IF NOT FOUND THEN RETURN QUERY SELECT 'NotFound'::text, NULL::uuid; RETURN; END IF;
+  IF s.status <> 'Pending' THEN RETURN QUERY SELECT 'AlreadyDecided'::text, s.catalog_product_id; RETURN; END IF;
+  IF p_decision = 'Reject' THEN
+    UPDATE catalog.catalog_suggestion SET status = 'Rejected', decided_at = now(), decided_by = p_operator, decision_reason = p_reason
+     WHERE id = p_id;
+    RETURN QUERY SELECT 'Rejected'::text, NULL::uuid; RETURN;
+  END IF;
+  SELECT g.catalog_product_id INTO pid FROM catalog.global_barcode g WHERE g.gtin14 = s.gtin14;
+  IF pid IS NULL THEN
+    pid := gen_random_uuid();
+    INSERT INTO catalog.catalog_product (id, name, brand, category)
+    VALUES (pid, coalesce(nullif(btrim(p_name), ''), s.name), coalesce(nullif(btrim(p_brand), ''), s.brand),
+            coalesce(nullif(btrim(p_category), ''), s.category));
+    INSERT INTO catalog.global_barcode (gtin14, catalog_product_id) VALUES (s.gtin14, pid);
+  ELSE
+    UPDATE catalog.catalog_product SET name = coalesce(nullif(btrim(p_name), ''), s.name),
+           brand = coalesce(nullif(btrim(p_brand), ''), s.brand, brand),
+           category = coalesce(nullif(btrim(p_category), ''), s.category, category), status = 'Published', verified_at = now()
+     WHERE id = pid;
+  END IF;
+  UPDATE catalog.catalog_suggestion SET status = 'Published', decided_at = now(), decided_by = p_operator,
+         decision_reason = p_reason, catalog_product_id = pid
+   WHERE gtin14 = s.gtin14 AND status = 'Pending';
+  RETURN QUERY SELECT 'Published'::text, pid;
+END $$;
+REVOKE ALL ON FUNCTION catalog.decide_suggestion(uuid, text, text, text, text, text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION catalog.decide_suggestion(uuid, text, text, text, text, text, text) TO rc_app;
 RESET ROLE;

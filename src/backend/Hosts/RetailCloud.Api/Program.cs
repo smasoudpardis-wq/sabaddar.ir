@@ -1594,6 +1594,56 @@ v1.MapPost("/products/{productId:guid}/catalog-suggestions", async (Guid product
     })
     .RequirePermission(Permissions.CatalogProductManage);
 
+// ---------------- US-047 / CAT-005: the CatalogModerator's queue of store suggestions (global catalog only, never store data)
+RouteGroupBuilder catalogModeration = app.MapGroup("/api/v1/platform/catalog").RequireAuthorization(ServiceCollectionExtensions.PlatformCatalogPolicy);
+
+catalogModeration.MapGet("/suggestions", async (IUnitOfWork uow, IGlobalCatalog global, HttpContext http, string? cursor, int? limit,
+        CancellationToken ct) =>
+    {
+        int size = limit ?? 50;
+        if (size is < 1 or > 200) return Problems.Validation(http, new Dictionary<string, string[]> { ["limit"] = ["1-200"] });
+        var (items, next) = await uow.ExecuteWithoutTenantAsync(null, (s, c) => global.PendingAsync(s, cursor, size, c), ct);
+        return Results.Ok(new
+        {
+            items = items.Select(x => new
+            {
+                x.Id, x.Gtin14, fields = new { x.Name, x.Brand, x.Category }, x.SubmittedAt, storesForBarcode = x.StoresForBarcode,
+                existing = x.Existing is { } e ? new { e.CatalogProductId, e.Fields.Name, e.Fields.Brand, e.Fields.Category, verifiedAt = e.LastVerifiedAt } : null,
+            }),
+            page = new { nextCursor = next, hasMore = next is not null },
+        });
+    });
+
+catalogModeration.MapPost("/suggestions/{suggestionId:guid}/decision", async (Guid suggestionId, CatalogReviewInput body, IUnitOfWork uow,
+        IGlobalCatalog global, HttpContext http, CancellationToken ct) =>
+    {
+        var errors = new Dictionary<string, string[]>();
+        bool? publish = body.Decision switch { "Publish" => true, "Reject" => false, _ => null };
+        if (publish is null) errors["decision"] = ["Publish or Reject"];
+        string? reason = body.Reason?.Trim();
+        if (reason is not { Length: >= 3 and <= 500 }) errors["reason"] = ["3-500 characters"];
+        static string? Clean(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
+        CandidateFields? edits = body.Edits is { } ed ? new CandidateFields(Clean(ed.Name), Clean(ed.Brand), Clean(ed.Category), null, null) : null;
+        if (edits?.Name is { Length: > 200 }) errors["edits.name"] = ["at most 200 characters"];
+        if (edits?.Brand is { Length: > 100 }) errors["edits.brand"] = ["at most 100 characters"];
+        if (edits?.Category is { Length: > 100 }) errors["edits.category"] = ["at most 100 characters"];
+        if (publish == false && edits is not null) errors["edits"] = ["only when publishing"];
+        if (errors.Count > 0) return Problems.Validation(http, errors);
+        string moderator = OperatorOf(http);
+        var (outcome, productId) = await uow.ExecuteWithoutTenantAsync(null,
+            (s, c) => global.DecideAsync(s, suggestionId, publish!.Value, edits, reason!, moderator, c), ct);
+        switch (outcome)
+        {
+            case ModerationOutcome.NotFound:
+                return Problems.NotFound(http);
+            case ModerationOutcome.AlreadyDecided:
+                return Problems.Create(http, StatusCodes.Status409Conflict, "already-decided", "This suggestion was already decided");
+        }
+
+        PlatformLog.SuggestionDecided(platformLogger, suggestionId, outcome == ModerationOutcome.Published ? "Published" : "Rejected", productId, moderator);
+        return Results.NoContent();
+    });
+
 // ---------------- US-162 / INT-001: partner integration keys (read scopes only in the MVP) and the partner API they open
 object KeyJson(IntegrationKeyView k, string? secret = null) => new
 {
@@ -4366,6 +4416,8 @@ internal sealed record ProductMergeInput(Guid? TargetProductId, int? ExpectedVer
 internal sealed record CatalogSuggestInput(bool? Consent, string? Category);
 internal sealed record PrintInput(string? Format);
 internal sealed record SupportAccessRequestInput(string? Reason, int? DurationMinutes);
+internal sealed record CatalogReviewEdits(string? Name, string? Brand, string? Category);
+internal sealed record CatalogReviewInput(string? Decision, CatalogReviewEdits? Edits, string? Reason);
 internal sealed record ReceiptOverridesInput(string? LogoObjectKey, string? FooterText, string? Signature);
 internal sealed record ReceiptTemplateUpdateInput(int? ExpectedVersion, ReceiptOverridesInput? Overrides);
 internal sealed record IndustryProfileUpdateInput(int? ExpectedVersion, string? LegalText, string[]? LockedFields, string? Reason);
@@ -4443,4 +4495,7 @@ internal static partial class PlatformLog
 {
     [LoggerMessage(EventId = 6101, Level = LogLevel.Information, Message = "platform.receipt-template.published {Industry} v{Version} by {Operator}")]
     public static partial void TemplatePublished(ILogger logger, string industry, int version, string @operator);
+
+    [LoggerMessage(EventId = 6102, Level = LogLevel.Information, Message = "platform.catalog.suggestion-decided {Suggestion} {Outcome} product {Product} by {Operator}")]
+    public static partial void SuggestionDecided(ILogger logger, Guid suggestion, string outcome, Guid? product, string @operator);
 }

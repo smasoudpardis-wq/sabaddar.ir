@@ -8950,6 +8950,7 @@ paths:
       tags:
       - Platform
       summary: صف Moderation کاتالوگ
+      description: CatalogModerator (MFA) only. Pending suggestions, oldest first; never which store sent one.
       security: *id005
       parameters:
       - $ref: '#/components/parameters/Cursor'
@@ -8987,12 +8988,16 @@ paths:
       x-idempotent: false
       x-requirements:
       - CAT-005.1
+      - US-047
   /platform/catalog/suggestions/{suggestionId}/decision:
     post:
       operationId: platformDecideCatalogSuggestion
       tags:
       - Platform
       summary: انتشار یا رد
+      description: 'Publish copies only name, brand and category (edited if given) into the global catalog: a new product
+        with its public barcode, or the product that already holds it, re-verified; every pending suggestion for that code
+        is settled with it. Reject settles this one only. 409 already-decided.'
       security: *id005
       parameters:
       - name: suggestionId
@@ -9018,6 +9023,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Unprocessable'
         '429':
@@ -9032,6 +9039,7 @@ paths:
       x-requirements:
       - CAT-005
       - DI-093
+      - US-047
       x-audited: true
 components:
   securitySchemes:
@@ -9838,6 +9846,9 @@ components:
           enum:
           - Publish
           - Reject
+        reason:
+          type: string
+          description: 3-500 characters; kept with the decision
         edits:
           type: object
           additionalProperties: false
@@ -9848,8 +9859,7 @@ components:
               type: string
             category:
               type: string
-        reason:
-          type: string
+          description: 'Publish only: the moderator''s correction of the suggested text'
       required:
       - decision
       - reason
@@ -9869,22 +9879,54 @@ components:
             name:
               type: string
             brand:
-              type: string
+              type:
+              - string
+              - 'null'
             category:
-              type: string
-        sources:
-          type: array
-          items:
-            type: string
+              type:
+              - string
+              - 'null'
+          required:
+          - name
         submittedAt:
           type: string
           format: date-time
+        storesForBarcode:
+          type: integer
+          format: int32
+          description: Pending suggestions for the same code (each from a different store; which ones is never known)
+        existing:
+          type: object
+          additionalProperties: false
+          properties:
+            catalogProductId:
+              type: string
+              format: uuid
+            name:
+              type: string
+            brand:
+              type:
+              - string
+              - 'null'
+            category:
+              type:
+              - string
+              - 'null'
+            verifiedAt:
+              type: string
+              format: date-time
+          required:
+          - catalogProductId
+          - name
+          - verifiedAt
+          description: What the global catalog already holds for this code; null when nothing
       required:
       - id
       - gtin14
       - fields
-      - sources
       - submittedAt
+      - storesForBarcode
+      - existing
     CatalogSuggestionCreate:
       type: object
       additionalProperties: false
