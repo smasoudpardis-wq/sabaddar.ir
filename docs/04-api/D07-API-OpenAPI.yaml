@@ -4536,6 +4536,10 @@ paths:
       tags:
       - POS
       summary: اتصال مشتری (QR / کد عمومی عضو / عضو انتخاب‌شده)
+      description: 'Exactly one of qrToken (the customer''s own one-use QR), publicCode or tenantCustomerId, only a member
+        of THIS store (422 not-a-member: link them first with an OTP, CUS-004); or just buyerTaxInfo. A cart takes them again
+        and again; a finalized sale once and within 24 hours (409 customer-already-linked, link-window-closed). The buyer''s
+        identifier is stored encrypted and is never returned.'
       security: *id001
       parameters:
       - name: saleId
@@ -10039,6 +10043,7 @@ components:
         expectedVersion:
           type: integer
           format: int32
+          description: For a cart (409 version-conflict if it moved on); not needed for a finalized sale
         qrToken:
           type: string
         publicCode:
@@ -10061,8 +10066,6 @@ components:
               type: string
           required:
           - type
-      required:
-      - expectedVersion
     AuditRecord:
       type: object
       additionalProperties: false
@@ -16576,6 +16579,15 @@ x-error-catalog:
   customer-auth-not-configured:
     status: 503
     meaning: Customer sign-in has no keys configured in this environment (US-141)
+  customer-already-linked:
+    status: 409
+    meaning: The finalized sale already has its customer or buyer (CUS-006)
+  link-window-closed:
+    status: 409
+    meaning: A finalized sale takes its customer or buyer only within 24 hours (CUS-006)
+  not-a-member:
+    status: 422
+    meaning: The customer is not a member of this store; link them with an OTP first (CUS-004)
   qr-invalid:
     status: 401
     meaning: The customer QR is forged, expired (120 s) or already used; ask for a new one (CUS-005, AT-220)

@@ -3512,14 +3512,16 @@ app.MapGet("/api/v1/r/{token}", async (string token, IUnitOfWork uow, ISales sal
 // worked on a registered device of the branch (ABAC-04, BR-050); every amount is the server's (BR-013..BR-018).
 string Money(long v) => v.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
-object SaleJson(SaleView s, IReadOnlyList<string>? warnings = null, IReadOnlyList<PaymentView>? payments = null, IReadOnlyList<object>? rejectedLines = null)
+object SaleJson(SaleView s, IReadOnlyList<string>? warnings = null, IReadOnlyList<PaymentView>? payments = null, IReadOnlyList<object>? rejectedLines = null,
+    string? customerMask = null)
 {
     var t = SaleMath.Totals(s.Lines);
     long change = payments?.Where(p => p.Status != "Voided").Sum(p => p.Change ?? 0) ?? 0;
     return new
     {
         s.Id, s.Status, s.ReturnStatus, s.BranchId, s.RegisterId, s.ShiftId, cashierId = s.CashierId, terminalId = s.TerminalId, s.Channel,
-        s.ClientDraftId, pricingMode = s.PricingMode.ToString(), s.InvoiceNo, s.HoldNote, s.CancelReason, customer = (object?)null,
+        s.ClientDraftId, pricingMode = s.PricingMode.ToString(), s.InvoiceNo, s.HoldNote, s.CancelReason,
+        customer = s.TenantCustomerId is { } linked ? new { tenantCustomerId = linked, maskedName = customerMask ?? "", hasCreditAccount = false } : (object?)null,
         lines = s.Lines.Select(l => new
         {
             l.LineNo, l.VariantId, l.Name, l.Sku, qty = Qty(l.Qty), l.Unit, unitFactor = Qty(l.UnitFactor), weighted = l.WeightedCode is not null,
@@ -3708,10 +3710,15 @@ v1.MapPost("/pos/sales", async (SaleCreateInput body, RequestContext ctx, IUnitO
 v1.MapGet("/pos/sales/{saleId:guid}", async (Guid saleId, RequestContext ctx, IUnitOfWork uow, ISales sales, IPayments payments, HttpContext http,
         CancellationToken ct) =>
     {
-        var (sale, paid) = await uow.ExecuteAsync(ctx, async (s, c) => (await sales.GetAsync(s, saleId, c), await payments.ForSaleAsync(s, saleId, c)), ct);
+        var (sale, paid, mask) = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            SaleView? found = await sales.GetAsync(s, saleId, c);
+            string? masked = found?.TenantCustomerId is { } linked && http.RequestServices.GetService<IStoreMembers>() is { } members ? (await members.GetAsync(s, linked, c))?.MaskedPhone : null;
+            return (found, await payments.ForSaleAsync(s, saleId, c), masked);
+        }, ct);
         return sale is not null
                && AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.PosSell, new ScopeRef(ScopeType.Register, sale.RegisterId, sale.BranchId))
-            ? Results.Ok(SaleJson(sale, payments: paid))
+            ? Results.Ok(SaleJson(sale, payments: paid, customerMask: mask))
             : Problems.NotFound(http);
     })
     .RequirePermission(Permissions.PosSell);
@@ -4302,6 +4309,93 @@ v1.MapGet("/inventory/transfers", async (RequestContext ctx, IUnitOfWork uow, IS
         }, ct));
     })
     .RequirePermission(Permissions.ReportsView);
+
+// ---------------- US-094: link a member (and the buyer's tax identifier) to a sale (SAL-003, CUS-006, BR-073). A cart takes them freely;
+// a finalized sale once and within 24 hours. A member is found by the customer's own one-use QR, by public code, or picked by id; always this store's.
+v1.MapPost("/pos/sales/{saleId:guid}/customer", async (Guid saleId, AttachCustomerInput body, RequestContext ctx, IUnitOfWork uow, ISales sales, HttpContext http,
+        CancellationToken ct) =>
+    {
+        var sp = http.RequestServices;
+        int given = (body.QrToken is null ? 0 : 1) + (body.PublicCode is null ? 0 : 1) + (body.TenantCustomerId is null ? 0 : 1);
+        var errors = new Dictionary<string, string[]>();
+        if (given > 1) errors["qrToken"] = ["only one of qrToken, publicCode or tenantCustomerId"];
+        if (given == 0 && body.BuyerTaxInfo is null) errors["tenantCustomerId"] = ["a customer or buyerTaxInfo is required"];
+        if (body.BuyerTaxInfo is { } bt && BuyerTaxRules.Problem(bt.Type, bt.NationalId, bt.EconomicCode) is { } problem) errors[problem.Split(':')[0]] = [problem];
+        if (errors.Count > 0) return Problems.Validation(http, errors);
+        if (sp.GetService<IContactProtector>() is not { } protector || sp.GetService<ICustomerLinks>() is not { } links || sp.GetService<IStoreMembers>() is not { } members) return CustomerAuthOff(http);
+
+        return await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            SaleView? sale = await sales.GetAsync(s, saleId, c);
+            if (sale is null) return Problems.NotFound(http);
+            if (!AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.CustomersLookup, new ScopeRef(ScopeType.Branch, sale.BranchId, sale.BranchId))) return Forbidden(http);
+            if (sale.CashierId != ctx.User!.Value.Value
+                && !AccessPolicy.Allows(ctx.ActiveMembership.Assignments, Permissions.ShiftSupervise, new ScopeRef(ScopeType.Branch, sale.BranchId, sale.BranchId))) return Problems.NotFound(http);
+            bool finalized = sale.Status == "Finalized";
+            // refuse what the sale cannot take before a QR is burnt for it
+            if (sale.Status == "Cancelled") return Problems.Create(http, StatusCodes.Status409Conflict, "sale-cancelled", "A cancelled sale takes no customer");
+            if (finalized && DateTimeOffset.UtcNow - sale.FinalizedAt > TimeSpan.FromHours(24))
+            {
+                return Problems.Create(http, StatusCodes.Status409Conflict, "link-window-closed", "A finalized sale takes its customer only within 24 hours");
+            }
+
+            if (finalized && given == 1 && sale.TenantCustomerId is not null) return Problems.Create(http, StatusCodes.Status409Conflict, "customer-already-linked", "This sale already has its customer");
+
+            Guid? tenantCustomerId = null;
+            string? maskedName = null;
+            if (given == 1)
+            {
+                TenantCustomerView? member;
+                if (body.TenantCustomerId is { } picked)
+                {
+                    member = await members.GetAsync(s, picked, c);
+                    if (member is null) return Problems.NotFound(http);
+                }
+                else
+                {
+                    Guid? owner;
+                    if (body.QrToken is not null)
+                    {
+                        if (!CustomerQrToken.TryRead(protector, body.QrToken, out Guid jti) || await links.ConsumeQrAsync(s, jti, DateTimeOffset.UtcNow, c) is not { } scanned)
+                        {
+                            return Problems.Create(http, StatusCodes.Status401Unauthorized, "qr-invalid", "This QR is not valid any more; ask the customer to show a new one");
+                        }
+
+                        owner = scanned;
+                    }
+                    else
+                    {
+                        owner = PublicCode.IsValid(body.PublicCode) ? (await links.FindByCodeAsync(s, body.PublicCode!, c))?.Id : null;
+                    }
+
+                    member = owner is { } o ? await members.FindAsync(s, o, c) : null;
+                    if (member is null)
+                    {
+                        return Problems.Create(http, StatusCodes.Status422UnprocessableEntity, "not-a-member", "This customer is not a member of the store; link them first with a code sent to their phone (CUS-004)");
+                    }
+                }
+
+                (tenantCustomerId, maskedName) = (member.TenantCustomerId, member.MaskedPhone);
+            }
+
+            string? buyerType = body.BuyerTaxInfo?.Type;
+            byte[]? buyerEnc = body.BuyerTaxInfo is { } info ? protector.Protect(BuyerTaxRules.Canonical(info.Type!, info.NationalId, info.EconomicCode)) : null;
+            (AttachOutcome outcome, SaleView? updated) = await sales.AttachCustomerAsync(s, saleId, body.ExpectedVersion, tenantCustomerId, buyerType, buyerEnc, ctx.User!.Value.Value, DateTimeOffset.UtcNow, c);
+            switch (outcome)
+            {
+                case AttachOutcome.VersionConflict: return Problems.Create(http, StatusCodes.Status409Conflict, "version-conflict", "The cart changed meanwhile; reload it");
+                case AttachOutcome.AlreadyLinked: return Problems.Create(http, StatusCodes.Status409Conflict, "customer-already-linked", "This sale already has its customer or buyer");
+                case AttachOutcome.TooLate: return Problems.Create(http, StatusCodes.Status409Conflict, "link-window-closed", "A finalized sale takes its customer only within 24 hours");
+                case AttachOutcome.Cancelled: return Problems.Create(http, StatusCodes.Status409Conflict, "sale-cancelled", "A cancelled sale takes no customer");
+                case AttachOutcome.NotFound: return Problems.NotFound(http);
+            }
+
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry("sales.customer.attached", "Sale", saleId.ToString(),
+                Details: new { tenantCustomerId, buyer = buyerType, afterFinalize = finalized }), c);
+            return Results.Ok(SaleJson(updated!, customerMask: maskedName ?? (updated!.TenantCustomerId is { } linked ? (await members.GetAsync(s, linked, c))?.MaskedPhone : null)));
+        }, ct);
+    })
+    .RequirePermission(Permissions.CustomersLookup).RequireRateLimiting(RateLimits.CustomerLookup);
 
 // ---------------- US-083: hold a cart and resume it later, on another register of the branch too (SAL-011); cancel a cart
 // without payments in force (D02 §6.1). The database allows only the state table's transitions (RC031).
@@ -5461,6 +5555,8 @@ internal sealed record ReceiptOverridesInput(string? LogoObjectKey, string? Foot
 internal sealed record ReceiptTemplateUpdateInput(int? ExpectedVersion, ReceiptOverridesInput? Overrides);
 internal sealed record RetentionPolicyInput(string? Category, int? MinimumDays, int? DefaultDays, DateTimeOffset? ValidFrom, string? Reason);
 internal sealed record LegalHoldInput(string? Reason, DateTimeOffset? Until);
+internal sealed record BuyerTaxInput(string? Type, string? NationalId, string? EconomicCode);
+internal sealed record AttachCustomerInput(int? ExpectedVersion, string? QrToken, string? PublicCode, Guid? TenantCustomerId, BuyerTaxInput? BuyerTaxInfo);
 internal sealed record IdentifyInput(string? QrToken, string? PublicCode);
 internal sealed record CustomerOtpInput(string? Purpose, string? PublicCode, string? Phone);
 internal sealed record LinkMembershipInput(Guid? ChallengeId, string? Code, PortalConsentInput[]? Consents);

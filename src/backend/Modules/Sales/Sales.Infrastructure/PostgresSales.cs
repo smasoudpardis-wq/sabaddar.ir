@@ -15,7 +15,8 @@ public sealed class PostgresSales : ISales
 {
     private const string SaleColumns =
         "id, status, return_status, branch_id, register_id, shift_id, cashier_id, terminal_id, channel, client_draft_id, pricing_mode, invoice_no, total, " +
-        "finalized_at, version, hold_note, cancel_reason, last_activity_at";
+        "finalized_at, version, hold_note, cancel_reason, last_activity_at, tenant_customer_id, " +
+        "(SELECT b.buyer_type FROM sales.sale_buyer b WHERE b.tenant_id = sale.tenant_id AND b.sale_id = sale.id)";
 
     private const string LineColumns =
         "line_no, variant_id, name, sku, qty, unit, unit_factor, weighted_code, unit_price, gross, discount, discount_source, discount_bp, discount_rule_id, " +
@@ -55,6 +56,81 @@ public sealed class PostgresSales : ISales
 
     public async Task<SaleView?> GetAsync(IUnitOfWorkScope scope, Guid saleId, CancellationToken cancellationToken) =>
         (await ReadSalesAsync((PostgresUnitOfWorkScope)scope, "id = $1", saleId, cancellationToken)).SingleOrDefault();
+
+    public async Task<(AttachOutcome Outcome, SaleView? Sale)> AttachCustomerAsync(IUnitOfWorkScope scope, Guid saleId, int? expectedVersion, Guid? tenantCustomerId,
+        string? buyerType, byte[]? buyerIdentifier, Guid userId, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        var s = (PostgresUnitOfWorkScope)scope;
+        string status;
+        int version;
+        Guid? current;
+        DateTimeOffset? finalizedAt;
+        await using (NpgsqlCommand cmd = s.Command("SELECT status, version, tenant_customer_id, finalized_at FROM sales.sale WHERE id = $1 FOR UPDATE"))
+        {
+            cmd.Parameters.Add(new NpgsqlParameter { Value = saleId });
+            await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(cancellationToken);
+            if (!await r.ReadAsync(cancellationToken))
+            {
+                return (AttachOutcome.NotFound, null);
+            }
+
+            (status, version, current, finalizedAt) = (r.GetString(0), r.GetInt32(1), r.IsDBNull(2) ? null : r.GetGuid(2), r.IsDBNull(3) ? null : r.GetFieldValue<DateTimeOffset>(3));
+        }
+
+        if (status == "Cancelled")
+        {
+            return (AttachOutcome.Cancelled, await GetAsync(scope, saleId, cancellationToken));
+        }
+
+        bool finalized = status == "Finalized";
+        if (!finalized && expectedVersion is { } v && v != version)
+        {
+            return (AttachOutcome.VersionConflict, await GetAsync(scope, saleId, cancellationToken));
+        }
+
+        if (finalized && finalizedAt is { } at && now - at > TimeSpan.FromHours(24))
+        {
+            return (AttachOutcome.TooLate, await GetAsync(scope, saleId, cancellationToken));
+        }
+
+        if (finalized)
+        {
+            bool buyerExists;
+            await using (NpgsqlCommand chk = s.Command("SELECT EXISTS (SELECT 1 FROM sales.sale_buyer WHERE sale_id = $1)"))
+            {
+                chk.Parameters.Add(new NpgsqlParameter { Value = saleId });
+                buyerExists = (bool)(await chk.ExecuteScalarAsync(cancellationToken))!;
+            }
+
+            if ((tenantCustomerId is not null && current is not null) || (buyerType is not null && buyerExists))
+            {
+                return (AttachOutcome.AlreadyLinked, await GetAsync(scope, saleId, cancellationToken));
+            }
+        }
+
+        if (tenantCustomerId is { } customer)
+        {
+            await using NpgsqlCommand upd = s.Command("UPDATE sales.sale SET tenant_customer_id = $2, version = version + 1, last_activity_at = now() WHERE id = $1");
+            upd.Parameters.Add(new NpgsqlParameter { Value = saleId });
+            upd.Parameters.Add(new NpgsqlParameter { Value = customer });
+            await upd.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        if (buyerType is not null && buyerIdentifier is not null)
+        {
+            await using NpgsqlCommand buyer = s.Command(
+                "INSERT INTO sales.sale_buyer (tenant_id, sale_id, buyer_type, identifier_enc, set_by, set_at) VALUES (core.current_tenant(), $1, $2, $3, $4, $5) " +
+                "ON CONFLICT (tenant_id, sale_id) DO UPDATE SET buyer_type = EXCLUDED.buyer_type, identifier_enc = EXCLUDED.identifier_enc, set_by = EXCLUDED.set_by, set_at = EXCLUDED.set_at");
+            buyer.Parameters.Add(new NpgsqlParameter { Value = saleId });
+            buyer.Parameters.Add(new NpgsqlParameter { Value = buyerType });
+            buyer.Parameters.Add(new NpgsqlParameter { Value = buyerIdentifier });
+            buyer.Parameters.Add(new NpgsqlParameter { Value = userId });
+            buyer.Parameters.Add(new NpgsqlParameter { Value = now.UtcDateTime, NpgsqlDbType = NpgsqlDbType.TimestampTz });
+            await buyer.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        return (AttachOutcome.Done, await GetAsync(scope, saleId, cancellationToken));
+    }
 
     public async Task<SaleResult> LockDraftAsync(IUnitOfWorkScope scope, Guid saleId, int? expectedVersion, CancellationToken cancellationToken)
     {
@@ -388,7 +464,7 @@ public sealed class PostgresSales : ISales
                 sales.Add(new SaleView(r.GetGuid(0), r.GetString(1), r.GetString(2), r.GetGuid(3), r.GetGuid(4), r.GetGuid(5), r.GetGuid(6), r.GetGuid(7),
                     r.GetString(8), r.GetString(9), Enum.Parse<PricingMode>(r.GetString(10)), r.IsDBNull(11) ? null : r.GetString(11), r.GetInt64(12),
                     r.IsDBNull(13) ? null : r.GetFieldValue<DateTimeOffset>(13), r.GetInt32(14), [], null, r.IsDBNull(15) ? null : r.GetString(15),
-                    r.IsDBNull(16) ? null : r.GetString(16), r.GetFieldValue<DateTimeOffset>(17)));
+                    r.IsDBNull(16) ? null : r.GetString(16), r.GetFieldValue<DateTimeOffset>(17), r.IsDBNull(18) ? null : r.GetGuid(18), r.IsDBNull(19) ? null : r.GetString(19)));
             }
         }
 

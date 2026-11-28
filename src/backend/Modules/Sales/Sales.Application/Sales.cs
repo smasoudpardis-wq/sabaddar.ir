@@ -25,7 +25,7 @@ public sealed record SaleTenderView(int Seq, string Method, long Amount, Guid? P
 public sealed record SaleView(Guid Id, string Status, string ReturnStatus, Guid BranchId, Guid RegisterId, Guid ShiftId, Guid CashierId, Guid TerminalId,
     string Channel, string ClientDraftId, PricingMode PricingMode, string? InvoiceNo, long Total, DateTimeOffset? FinalizedAt, int Version,
     IReadOnlyList<SaleLineView> Lines, IReadOnlyList<SaleTenderView>? Tenders = null, string? HoldNote = null, string? CancelReason = null,
-    DateTimeOffset? LastActivityAt = null)
+    DateTimeOffset? LastActivityAt = null, Guid? TenantCustomerId = null, string? BuyerType = null)
 {
     /// <summary>What the payments still in force bring (a voided one no longer counts).</summary>
     public long Paid => Tenders?.Where(t => !t.Voided).Sum(t => t.Amount) ?? 0;
@@ -41,6 +41,16 @@ public sealed record SaleLineSpec(Guid VariantId, string Name, string Sku, decim
 
 /// <summary>A line as finalized: its cost (Σ qty × WAC of the moment) and its snapshot (SAL-005), as JSON.</summary>
 public sealed record FinalizedLine(int LineNo, long CostAtSale, string SnapshotJson);
+
+public enum AttachOutcome
+{
+    Done,
+    NotFound,
+    VersionConflict,
+    Cancelled,
+    AlreadyLinked,
+    TooLate,
+}
 
 public enum SaleOutcome
 {
@@ -63,6 +73,13 @@ public interface ISales
     Task<(SaleResult Result, bool Created)> CreateAsync(IUnitOfWorkScope scope, string clientDraftId, SaleOrigin origin, CancellationToken cancellationToken);
 
     Task<SaleView?> GetAsync(IUnitOfWorkScope scope, Guid saleId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// SAL-003 / CUS-006: links the sale to a member of this store and/or records the buyer's tax identifier (already encrypted by the caller).
+    /// A cart takes them again and again; a finalized sale only once and within 24 hours of finalizing.
+    /// </summary>
+    Task<(AttachOutcome Outcome, SaleView? Sale)> AttachCustomerAsync(IUnitOfWorkScope scope, Guid saleId, int? expectedVersion, Guid? tenantCustomerId, string? buyerType,
+        byte[]? buyerIdentifier, Guid userId, DateTimeOffset now, CancellationToken cancellationToken);
 
     /// <summary>
     /// Locks the cart (FOR UPDATE) and returns it if it is a Draft; a later write in the same transaction then sees no
@@ -206,3 +223,42 @@ public static class InvoiceNumbers
 
 /// <summary>BR-086: what a receipt prints besides the sale itself.</summary>
 public sealed record ReceiptSnapshot(string? TemplateRef, string? Footer, string? Signature, int PrintCount);
+
+/// <summary>BR-073: what a tax invoice needs of its buyer. An individual gives a national id (with its check digit); a legal entity its economic code.</summary>
+public static class BuyerTaxRules
+{
+    /// <summary>The first problem, as <c>field: message</c>, or null.</summary>
+    public static string? Problem(string? type, string? nationalId, string? economicCode)
+    {
+        switch (type)
+        {
+            case "Individual":
+                return IsNationalId(nationalId) ? (economicCode is null ? null : "economicCode: not for an individual") : "nationalId: a valid 10-digit national id";
+            case "Legal":
+                if (economicCode is not { Length: 12 or 14 } || !economicCode.All(char.IsAsciiDigit)) return "economicCode: 12 or 14 digits";
+                return nationalId is null || (nationalId.Length == 11 && nationalId.All(char.IsAsciiDigit)) ? null : "nationalId: 11 digits";
+            default:
+                return "type: Individual or Legal";
+        }
+    }
+
+    /// <summary>The Iranian national id: 10 digits, not all equal, and the check digit of the weighted sum.</summary>
+    public static bool IsNationalId(string? id)
+    {
+        if (id is not { Length: 10 } || !id.All(char.IsAsciiDigit) || id.Distinct().Count() == 1)
+        {
+            return false;
+        }
+
+        int sum = 0;
+        for (int i = 0; i < 9; i++)
+        {
+            sum += (id[i] - '0') * (10 - i);
+        }
+
+        int r = sum % 11, check = id[9] - '0';
+        return r < 2 ? check == r : check == 11 - r;
+    }
+
+    public static string Canonical(string type, string? nationalId, string? economicCode) => $"{type}|{nationalId}|{economicCode}";
+}

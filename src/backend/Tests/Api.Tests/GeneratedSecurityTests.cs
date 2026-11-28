@@ -62,6 +62,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
         ["printReceipt"] = _ => new { format = "80mm" },
         ["mergeProduct"] = f => new { targetProductId = Guid.CreateVersion7(), expectedVersion = 1, reason = "آزمون" },
         ["suggestToGlobalCatalog"] = _ => new { consent = true },
+        ["attachCustomer"] = _ => new { tenantCustomerId = Guid.CreateVersion7() },
         ["closeCount"] = _ => new { expectedVersion = 1 },
         ["confirmCount"] = _ => new { expectedVersion = 1 },
         ["finalizeSale"] = _ => new { expectedVersion = 1, expectedTotal = "1000" },

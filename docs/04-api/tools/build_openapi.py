@@ -374,7 +374,7 @@ schema("SaleCustomer", tenantCustomerId="uuid", maskedName="str", hasCreditAccou
        **{"availableCredit?": ("desc", "money", "Shown only with sales.credit.sell (D-25)")})
 schema("SaleDiscountInput", expectedVersion="int", kind=("enum", ["Percent", "Amount"]), value="str",
        **{"lineNo?": "int", "approvalId?": "uuid"})
-schema("AttachCustomer", expectedVersion="int", **{"qrToken?": "str", "publicCode?": "str", "tenantCustomerId?": "uuid"},
+schema("AttachCustomer", **{"expectedVersion?": ("desc", "int", "For a cart (409 version-conflict if it moved on); not needed for a finalized sale")}, **{"qrToken?": "str", "publicCode?": "str", "tenantCustomerId?": "uuid"},
        **{"buyerTaxInfo?": {"type": ("enum", ["Individual", "Legal"]), "nationalId?": "str", "economicCode?": "str"}})
 schema("TenderInput", method=("enum", ["Cash", "ExternalCardTerminal", "CustomerCredit", "StoreCredit"]), amount="money",
        **{"tendered?": ("desc", "money", "Cash only: amount handed over; change is computed (SAL-006.1)"),
@@ -732,6 +732,9 @@ ERROR_CATALOG = {
     "otp-rate-limited": (429, "Too many codes for this number or address (60 s between sends; 5 an hour and 10 a day per number); Retry-After and context.retryAfterSeconds (CUS-001, TM-043)"),
     "otp-send-failed": (503, "The SMS could not be sent; the challenge counts toward the limits (CUS-001)"),
     "customer-auth-not-configured": (503, "Customer sign-in has no keys configured in this environment (US-141)"),
+    "customer-already-linked": (409, "The finalized sale already has its customer or buyer (CUS-006)"),
+    "link-window-closed": (409, "A finalized sale takes its customer or buyer only within 24 hours (CUS-006)"),
+    "not-a-member": (422, "The customer is not a member of this store; link them with an OTP first (CUS-004)"),
     "qr-invalid": (401, "The customer QR is forged, expired (120 s) or already used; ask for a new one (CUS-005, AT-220)"),
     "invalid-invite": (400, "The store QR is forged, expired or revoked; one answer for all three (CUS-005, AT-222)"),
     "already-member": (409, "The customer already belongs to this store (DI-062)"),
@@ -1168,7 +1171,10 @@ op("post", "/pos/sales/{saleId}/discounts", "applyDiscount", "POS", "تخفیف 
    approval="above role cap (BR-021)")
 op("post", "/pos/sales/{saleId}/customer", "attachCustomer", "POS", "اتصال مشتری (QR / کد عمومی عضو / عضو انتخاب‌شده)",
    perm="customers.lookup", scope="Branch", body="AttachCustomer", resp="Sale", reqs=["SAL-003", "CUS-006", "BR-061", "TAX-004"],
-   conflict=True, audited=True, rate="customer-lookup")
+   conflict=True, audited=True, rate="customer-lookup",
+   desc="Exactly one of qrToken (the customer's own one-use QR), publicCode or tenantCustomerId, only a member of THIS store (422 not-a-member: "
+        "link them first with an OTP, CUS-004); or just buyerTaxInfo. A cart takes them again and again; a finalized sale once and within 24 hours "
+        "(409 customer-already-linked, link-window-closed). The buyer's identifier is stored encrypted and is never returned.")
 op("get", "/pos/held-sales", "listHeldSales", "POS", "سبدهای نگه‌داشته‌شده شعبه این دستگاه", perm="pos.sell", resp="HeldSale", list_of=True,
    reqs=["SAL-011"])
 op("post", "/pos/sales/{saleId}/hold", "holdSale", "POS", "نگه‌داشتن سبد", perm="pos.sell", scope="OwnShift", body="HoldRequest",

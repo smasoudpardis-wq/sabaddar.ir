@@ -1118,4 +1118,37 @@ SELECT t.ok('T303 the customer finds the store of their own pending request, and
   AND cid.pending_join_request_tenant('c3000000-0000-0000-0000-0000000000b1', gen_random_uuid()) IS NULL);
 RESET ROLE;
 
+-- US-094 customer and buyer on a sale (SAL-003, CUS-006, BR-073)
+SET ROLE rc_app;
+SELECT set_config('app.tenant_id', :A, false);
+UPDATE sales.sale SET tenant_customer_id = 'c2000000-0000-0000-0000-0000000000d1' WHERE id = 'a0000000-0000-0000-0000-000000000040';
+SELECT t.ok('T304 a sale finalized a moment ago takes its customer', (SELECT tenant_customer_id FROM sales.sale WHERE id = 'a0000000-0000-0000-0000-000000000040') IS NOT NULL);
+SELECT t.expect_error('T305 and only once: the customer of a finalized sale is not replaced', 'RC037',
+  $$UPDATE sales.sale SET tenant_customer_id = gen_random_uuid() WHERE id = 'a0000000-0000-0000-0000-000000000040'$$);
+INSERT INTO sales.sale_buyer (tenant_id, sale_id, buyer_type, identifier_enc, set_by) VALUES (:A, 'a0000000-0000-0000-0000-000000000040', 'Individual', '\x0102', gen_random_uuid());
+SELECT t.expect_error('T306 the buyer of a finalized sale is set once', 'RC037',
+  $$UPDATE sales.sale_buyer SET buyer_type = 'Legal' WHERE sale_id = 'a0000000-0000-0000-0000-000000000040'$$);
+SELECT t.expect_error('T307 a buyer is Individual or Legal', '23514',
+  $$INSERT INTO sales.sale_buyer (tenant_id, sale_id, buyer_type, identifier_enc, set_by) VALUES (core.current_tenant(), gen_random_uuid(), 'Alien', '\x01', gen_random_uuid())$$);
+RESET ROLE;
+SET session_replication_role = replica;
+INSERT INTO sales.sale (tenant_id, id, branch_id, register_id, shift_id, cashier_id, terminal_id, client_draft_id, pricing_mode, status, invoice_no, fiscal_year, finalized_at, total)
+  VALUES (:A, 'a0000000-0000-0000-0000-0000000000e1', 'a0000000-0000-0000-0000-000000000001', 'a0000000-0000-0000-0000-000000000002', 'a0000000-0000-0000-0000-000000000030',
+          gen_random_uuid(), gen_random_uuid(), 'old-sale-01', 'TaxExclusive', 'Finalized', 'B1-1405-000900', 1405, now() - interval '2 days', 0);
+SET session_replication_role = origin;
+SET ROLE rc_app;
+SELECT set_config('app.tenant_id', :A, false);
+SELECT t.expect_error('T308 a sale finalized two days ago takes no customer any more', 'RC037',
+  $$UPDATE sales.sale SET tenant_customer_id = gen_random_uuid() WHERE id = 'a0000000-0000-0000-0000-0000000000e1'$$);
+SELECT t.expect_error('T309 nor a buyer', 'RC037',
+  format($$INSERT INTO sales.sale_buyer (tenant_id, sale_id, buyer_type, identifier_enc, set_by) VALUES (%L, 'a0000000-0000-0000-0000-0000000000e1', 'Individual', '\x01', gen_random_uuid())$$, :A));
+SELECT set_config('app.tenant_id', :B, false);
+SELECT t.ok('T310 another store sees no buyer (RLS)', (SELECT count(*) FROM sales.sale_buyer) = 0);
+RESET ROLE;
+-- the old finalized sale was only scaffolding (it has no journal entry): remove it so the oracles below see real data
+SET session_replication_role = replica;
+DELETE FROM sales.sale WHERE id = 'a0000000-0000-0000-0000-0000000000e1';
+SET session_replication_role = origin;
+SELECT set_config('app.tenant_id', '', false);
+
 \echo '== ALL CHECKS PASSED'

@@ -180,9 +180,9 @@ BEGIN
     RETURN OLD;
   END IF;
   IF OLD.status = 'Finalized' THEN
-    -- the receipt snapshot (written once) and the print count (only up) are kept by sales.sale_receipt_guard (BR-086)
-    IF (to_jsonb(NEW) - ARRAY['return_status','version','last_activity_at','receipt_template','receipt_footer','receipt_signature','print_count'])
-       IS DISTINCT FROM (to_jsonb(OLD) - ARRAY['return_status','version','last_activity_at','receipt_template','receipt_footer','receipt_signature','print_count']) THEN
+    -- the receipt snapshot (written once) and the print count (only up) are kept by sales.sale_receipt_guard (BR-086); the customer by sales.sale_customer_guard (once, 24 h, RC037)
+    IF (to_jsonb(NEW) - ARRAY['return_status','version','last_activity_at','receipt_template','receipt_footer','receipt_signature','print_count','tenant_customer_id'])
+       IS DISTINCT FROM (to_jsonb(OLD) - ARRAY['return_status','version','last_activity_at','receipt_template','receipt_footer','receipt_signature','print_count','tenant_customer_id']) THEN
       RAISE EXCEPTION 'finalized sale % is immutable', OLD.id USING ERRCODE = 'RC002';
     END IF;
   ELSIF OLD.status = 'Cancelled' AND NEW IS DISTINCT FROM OLD THEN
@@ -242,6 +242,45 @@ CREATE TABLE sales.receipt_link (
 );
 CREATE UNIQUE INDEX ux_receipt_link_token ON sales.receipt_link (token_hash);
 CALL core.enable_tenant_rls('sales.receipt_link');
+
+-- SAL-003 / CUS-006 (US-094): the member a sale is linked to (sales.sale.tenant_customer_id, a TenantCustomerRef only, DI-064) and, optionally,
+-- the buyer's tax identifier for the tax invoice (BR-073). The identifier is PII-High: encrypted by the application, kept apart from sales.sale
+-- so that no reporting or export grant reaches it. A finalized sale takes its customer or buyer once, within 24 hours of finalizing (RC037).
+CREATE TABLE sales.sale_buyer (
+  tenant_id      uuid NOT NULL,
+  sale_id        uuid NOT NULL,
+  buyer_type     text NOT NULL CHECK (buyer_type IN ('Individual','Legal')),
+  identifier_enc bytea NOT NULL,
+  set_by         uuid NOT NULL,
+  set_at         timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, sale_id),
+  FOREIGN KEY (tenant_id, sale_id) REFERENCES sales.sale (tenant_id, id)
+);
+CALL core.enable_tenant_rls('sales.sale_buyer');
+
+CREATE OR REPLACE FUNCTION sales.sale_customer_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF OLD.status = 'Cancelled' THEN
+    RAISE EXCEPTION 'a cancelled sale takes no customer' USING ERRCODE = 'RC037';
+  END IF;
+  IF OLD.status = 'Finalized' AND (OLD.tenant_customer_id IS NOT NULL OR now() - OLD.finalized_at > interval '24 hours') THEN
+    RAISE EXCEPTION 'a finalized sale takes its customer once, within 24 hours' USING ERRCODE = 'RC037';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER tr_sale_customer_guard BEFORE UPDATE OF tenant_customer_id ON sales.sale
+  FOR EACH ROW WHEN (NEW.tenant_customer_id IS DISTINCT FROM OLD.tenant_customer_id) EXECUTE FUNCTION sales.sale_customer_guard();
+
+CREATE OR REPLACE FUNCTION sales.sale_buyer_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE v_status text; v_at timestamptz; v_sale uuid := COALESCE(NEW.sale_id, OLD.sale_id);
+BEGIN
+  SELECT status, finalized_at INTO v_status, v_at FROM sales.sale WHERE tenant_id = COALESCE(NEW.tenant_id, OLD.tenant_id) AND id = v_sale;
+  IF v_status = 'Cancelled' OR (v_status = 'Finalized' AND (TG_OP <> 'INSERT' OR now() - v_at > interval '24 hours')) THEN
+    RAISE EXCEPTION 'the buyer of a % sale is set once, within 24 hours of finalizing', v_status USING ERRCODE = 'RC037';
+  END IF;
+  RETURN COALESCE(NEW, OLD);
+END $$;
+CREATE TRIGGER tr_sale_buyer_guard BEFORE INSERT OR UPDATE OR DELETE ON sales.sale_buyer FOR EACH ROW EXECUTE FUNCTION sales.sale_buyer_guard();
 
 CREATE OR REPLACE FUNCTION sales.guard_finalized_line() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE v_status text;

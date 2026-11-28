@@ -8,6 +8,7 @@
 --   RC034  a sale's receipt snapshot is written once and its print count only increases (sales.sale_receipt_guard, BR-086)
 --   RC035  a catalog suggestion is decided once and what the store sent never changes (catalog.suggestion_guard, US-047)
 --   RC036  data is deleted only after its retention (the store's longer choice, never below the platform floor) and not under a legal hold (platform.retention_delete_guard, US-173)
+--   RC037  a finalized sale takes its customer and its buyer once, within 24 hours; a cancelled sale takes none (sales.sale_customer_guard, US-094)
 -- Run as rc_migrator.  Shared helpers used by every module schema.
 SET ROLE rc_migrator;
 
