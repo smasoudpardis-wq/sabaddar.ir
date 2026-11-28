@@ -110,3 +110,32 @@ public sealed class StoreInviteAndConsentRulesTests
         Assert.StartsWith("policyVersion", ConsentRules.Problem([op], ""), StringComparison.Ordinal);
     }
 }
+
+/// <summary>US-143 / CUS-005 / AT-220: the customer QR names no one and cannot be altered.</summary>
+public sealed class CustomerQrTokenTests
+{
+    private sealed class Mac(string key) : IContactProtector
+    {
+        public byte[] Hash(string purpose, string value) => System.Security.Cryptography.HMACSHA256.HashData(System.Text.Encoding.UTF8.GetBytes(key), System.Text.Encoding.UTF8.GetBytes(purpose + "\0" + value));
+
+        public byte[] Protect(string value) => throw new NotSupportedException();
+
+        public string Unprotect(byte[] protectedValue) => throw new NotSupportedException();
+    }
+
+    [Fact]
+    public void A_token_holds_only_a_random_id_and_any_other_id_or_key_breaks_it()
+    {
+        var protector = new Mac("k");
+        Guid jti = Guid.NewGuid();
+        string token = CustomerQrToken.Create(protector, jti);
+        Assert.True(CustomerQrToken.TryRead(protector, token, out Guid read));
+        Assert.Equal(jti, read);
+        Assert.Equal(3, token.Split('.').Length);
+        Assert.False(CustomerQrToken.TryRead(protector, $"q1.{Guid.NewGuid():N}.{token.Split('.')[2]}", out _));
+        Assert.False(CustomerQrToken.TryRead(new Mac("other"), token, out _));
+        Assert.False(CustomerQrToken.TryRead(protector, "v1." + token[3..], out _));   // another kind of token (a store invite) is never a customer QR
+        Assert.False(CustomerQrToken.TryRead(protector, null, out _));
+        Assert.Equal(120, CustomerQrToken.Lifetime.TotalSeconds);
+    }
+}

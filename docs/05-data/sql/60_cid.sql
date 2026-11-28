@@ -106,12 +106,40 @@ CREATE TABLE cid.store_invite (
 );
 CALL core.enable_tenant_rls('cid.store_invite');
 
+-- CUS-005 (US-143): the customer's own QR, shown at the counter: opaque, 120 seconds, used once. The token holds only the jti; this row says whose.
+CREATE TABLE cid.qr_token (
+  jti                uuid PRIMARY KEY,
+  global_customer_id uuid NOT NULL REFERENCES cid.global_customer (id),
+  created_at         timestamptz NOT NULL DEFAULT now(),
+  expires_at         timestamptz NOT NULL,
+  used_at            timestamptz,
+  CHECK (expires_at > created_at AND expires_at <= created_at + interval '120 seconds')
+);
+CREATE INDEX ix_qr_token_customer ON cid.qr_token (global_customer_id, created_at DESC);
+
+-- UC-03: a customer who showed their QR but is not a member yet gets a request on their own device to accept with consents
+CREATE TABLE cid.join_request (
+  tenant_id          uuid NOT NULL,
+  id                 uuid NOT NULL,
+  global_customer_id uuid NOT NULL REFERENCES cid.global_customer (id),
+  created_at         timestamptz NOT NULL DEFAULT now(),
+  expires_at         timestamptz NOT NULL,
+  accepted_at        timestamptz,
+  PRIMARY KEY (tenant_id, id),
+  CHECK (expires_at > created_at AND expires_at <= created_at + interval '1 hour')
+);
+CALL core.enable_tenant_rls('cid.join_request');
+
 GRANT USAGE ON SCHEMA cid TO rc_app, rc_worker;
 GRANT SELECT, INSERT, UPDATE ON cid.global_customer, cid.public_code_registry, cid.verified_contact,
                                cid.tenant_customer_membership TO rc_app;
 GRANT SELECT, INSERT ON cid.consent_record TO rc_app;
 GRANT SELECT, INSERT, UPDATE ON cid.otp_challenge TO rc_app;
 GRANT SELECT, INSERT ON cid.store_invite TO rc_app;
+GRANT SELECT, INSERT ON cid.qr_token, cid.join_request TO rc_app;
+GRANT UPDATE (used_at) ON cid.qr_token TO rc_app;
+GRANT UPDATE (accepted_at) ON cid.join_request TO rc_app;
+GRANT DELETE ON cid.qr_token TO rc_worker;   -- purge after a day
 GRANT UPDATE (revoked_at) ON cid.store_invite TO rc_app;
 GRANT DELETE ON cid.otp_challenge TO rc_worker;   -- purge after a day (data minimisation)
 GRANT SELECT ON ALL TABLES IN SCHEMA cid TO rc_worker;
@@ -134,3 +162,16 @@ ALTER FUNCTION cid.my_memberships(uuid) OWNER TO rc_tenant_directory;
 REVOKE CREATE ON SCHEMA cid FROM rc_tenant_directory;
 REVOKE ALL ON FUNCTION cid.my_memberships(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION cid.my_memberships(uuid) TO rc_app;
+
+-- US-143: a join request is accepted by the customer in the portal, who has no tenant context: this narrow function (tenant directory;
+-- fitness rule 5) returns the store a pending request of THIS customer belongs to.
+CREATE OR REPLACE FUNCTION cid.pending_join_request_tenant(p_request uuid, p_customer uuid)
+RETURNS uuid LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
+  SELECT tenant_id FROM cid.join_request WHERE id = p_request AND global_customer_id = p_customer AND accepted_at IS NULL AND expires_at > now()
+$$;
+GRANT SELECT (tenant_id, id, global_customer_id, accepted_at, expires_at) ON cid.join_request TO rc_tenant_directory;
+GRANT CREATE ON SCHEMA cid TO rc_tenant_directory;  -- a new owner needs CREATE on the schema; revoked at once (fitness 6)
+ALTER FUNCTION cid.pending_join_request_tenant(uuid, uuid) OWNER TO rc_tenant_directory;
+REVOKE CREATE ON SCHEMA cid FROM rc_tenant_directory;
+REVOKE ALL ON FUNCTION cid.pending_join_request_tenant(uuid, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION cid.pending_join_request_tenant(uuid, uuid) TO rc_app;

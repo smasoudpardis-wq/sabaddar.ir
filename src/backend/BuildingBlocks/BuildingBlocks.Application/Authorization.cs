@@ -42,6 +42,7 @@ public static class Permissions
     public const string TerminalsManage = "terminals.manage";
     public const string AuditView = "audit.view";
     public const string DataExport = "data.export";
+    public const string CustomersLookup = "customers.lookup";
     public const string CustomersPiiView = "customers.pii.view";
     public const string CatalogProductManage = "catalog.product.manage";
     public const string CatalogPriceManage = "catalog.price.manage";

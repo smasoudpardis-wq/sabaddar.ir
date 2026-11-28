@@ -1099,4 +1099,23 @@ SELECT t.ok('T299 the customer lists their own stores across tenants without a t
   AND (SELECT store_name FROM cid.my_memberships('c2000000-0000-0000-0000-0000000000c1')) = 'فروشگاه الف');
 RESET ROLE;
 
+-- US-143 customer QR and join requests (CUS-005, UC-03)
+SET ROLE rc_app;
+SELECT set_config('app.tenant_id', '', false);
+INSERT INTO cid.qr_token (jti, global_customer_id, expires_at) VALUES ('c3000000-0000-0000-0000-0000000000a1', 'c2000000-0000-0000-0000-0000000000c1', now() + interval '120 seconds');
+SELECT t.expect_error('T300 a customer QR lives at most 120 seconds', '23514',
+  $$INSERT INTO cid.qr_token (jti, global_customer_id, expires_at) VALUES (gen_random_uuid(), 'c2000000-0000-0000-0000-0000000000c1', now() + interval '10 minutes')$$);
+UPDATE cid.qr_token SET used_at = now() WHERE jti = 'c3000000-0000-0000-0000-0000000000a1';
+SELECT t.expect_error('T301 only the use of a QR can be recorded, never its owner or expiry', '42501',
+  $$UPDATE cid.qr_token SET expires_at = now() + interval '100 seconds' WHERE jti = 'c3000000-0000-0000-0000-0000000000a1'$$);
+SELECT set_config('app.tenant_id', :A, false);
+INSERT INTO cid.join_request (tenant_id, id, global_customer_id, expires_at) VALUES (:A, 'c3000000-0000-0000-0000-0000000000b1', 'c2000000-0000-0000-0000-0000000000c1', now() + interval '10 minutes');
+SELECT t.expect_error('T302 a join request lasts at most an hour', '23514',
+  format($$INSERT INTO cid.join_request (tenant_id, id, global_customer_id, expires_at) VALUES (%L, gen_random_uuid(), 'c2000000-0000-0000-0000-0000000000c1', now() + interval '1 day')$$, :A));
+SELECT set_config('app.tenant_id', '', false);
+SELECT t.ok('T303 the customer finds the store of their own pending request, and nobody else does',
+  cid.pending_join_request_tenant('c3000000-0000-0000-0000-0000000000b1', 'c2000000-0000-0000-0000-0000000000c1') = :A::uuid
+  AND cid.pending_join_request_tenant('c3000000-0000-0000-0000-0000000000b1', gen_random_uuid()) IS NULL);
+RESET ROLE;
+
 \echo '== ALL CHECKS PASSED'

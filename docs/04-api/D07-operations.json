@@ -2032,7 +2032,7 @@
    "code",
    "consents"
   ],
-  "idempotent": true
+  "idempotent": false
  },
  {
   "operationId": "getTenantCustomer",

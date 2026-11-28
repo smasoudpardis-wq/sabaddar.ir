@@ -732,6 +732,7 @@ ERROR_CATALOG = {
     "otp-rate-limited": (429, "Too many codes for this number or address (60 s between sends; 5 an hour and 10 a day per number); Retry-After and context.retryAfterSeconds (CUS-001, TM-043)"),
     "otp-send-failed": (503, "The SMS could not be sent; the challenge counts toward the limits (CUS-001)"),
     "customer-auth-not-configured": (503, "Customer sign-in has no keys configured in this environment (US-141)"),
+    "qr-invalid": (401, "The customer QR is forged, expired (120 s) or already used; ask for a new one (CUS-005, AT-220)"),
     "invalid-invite": (400, "The store QR is forged, expired or revoked; one answer for all three (CUS-005, AT-222)"),
     "already-member": (409, "The customer already belongs to this store (DI-062)"),
     "below-retention-floor": (422, "The store cannot keep data for less than the platform's minimum for the category (BR-087, RC036)"),
@@ -1366,8 +1367,9 @@ op("post", "/customers/otp-challenges", "startCustomerOtp", "Customers", "ارس
    perm="customers.lookup", scope="Branch", body="CustomerOtpChallengeCreate", resp="OtpChallenge", resp_code="201",
    reqs=["CUS-001", "CUS-004", "CUS-011", "TM-043"], rate="otp", audited=True)
 op("post", "/customer-memberships/link", "linkMembership", "Customers", "ایجاد عضویت با OTP اعلام‌شده توسط مشتری",
-   perm="customers.lookup", scope="Branch", idem=True, body="MembershipLinkRequest", resp="TenantCustomer", resp_code="201",
-   reqs=["CUS-003", "CUS-004", "CUS-007"], audited=True)
+   perm="customers.lookup", scope="Branch", body="MembershipLinkRequest", resp="TenantCustomer", resp_code="201",
+   reqs=["CUS-003", "CUS-004", "CUS-007"], audited=True,
+   desc="Safe to retry without a key: a code verifies once (a wrong try is counted even though the call fails) and a second link is 409 already-member.")
 op("get", "/customers/{tenantCustomerId}", "getTenantCustomer", "Customers", "مشتری عضو (شماره کامل فقط با customers.pii.view)",
    perm="customers.lookup", scope="Branch", resp="TenantCustomer", reqs=["BR-062", "CUS-006"], audited=True)
 op("post", "/store-invites", "createStoreInvite", "Customers", "صدور QR پیشخوان امضاشده", perm="tenant.settings.manage",

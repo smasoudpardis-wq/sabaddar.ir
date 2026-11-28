@@ -176,6 +176,14 @@ public static class ServiceCollectionExtensions
                 "ip|" + ClientAddress.Of(http),
                 _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions { PermitLimit = 20, Window = TimeSpan.FromMinutes(1) }));
 
+            // CUS-002: looking customers up, 30 a minute per user and device; a customer's QR, 6 a minute per customer
+            o.AddPolicy(RateLimits.CustomerLookup, http => System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+                http.User.FindFirst("iss")?.Value + "|" + http.User.FindFirst("sub")?.Value + "|" + http.Request.Headers[RequestContextMiddleware.DeviceHeader],
+                _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions { PermitLimit = 30, Window = TimeSpan.FromMinutes(1) }));
+            o.AddPolicy(RateLimits.QrIssue, http => System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+                "customer|" + http.User.FindFirst("sub")?.Value,
+                _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions { PermitLimit = 6, Window = TimeSpan.FromMinutes(1) }));
+
             // D07 README: barcode resolve 120 a minute per user (a scanner is fast, a scraper faster)
             o.AddPolicy(RateLimits.CatalogResolve, http => System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
                 http.User.FindFirst("iss")?.Value + "|" + http.User.FindFirst("sub")?.Value,
@@ -218,6 +226,8 @@ public static class RateLimits
     public const string ReceiptLink = "receipt-link";
     public const string Partner = "partner";
     public const string Otp = "otp";
+    public const string CustomerLookup = "customer-lookup";
+    public const string QrIssue = "qr-issue";
 }
 
 

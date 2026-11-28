@@ -6987,9 +6987,9 @@ paths:
       tags:
       - Customers
       summary: ایجاد عضویت با OTP اعلام‌شده توسط مشتری
+      description: 'Safe to retry without a key: a code verifies once (a wrong try is counted even though the call fails)
+        and a second link is 409 already-member.'
       security: *id001
-      parameters:
-      - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -7009,8 +7009,6 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '409':
-          $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Unprocessable'
         '429':
@@ -7023,7 +7021,7 @@ paths:
                 $ref: '#/components/schemas/Problem'
       x-permission: customers.lookup
       x-scope: Branch
-      x-idempotent: true
+      x-idempotent: false
       x-requirements:
       - CUS-003
       - CUS-004
@@ -16578,6 +16576,9 @@ x-error-catalog:
   customer-auth-not-configured:
     status: 503
     meaning: Customer sign-in has no keys configured in this environment (US-141)
+  qr-invalid:
+    status: 401
+    meaning: The customer QR is forged, expired (120 s) or already used; ask for a new one (CUS-005, AT-220)
   invalid-invite:
     status: 400
     meaning: The store QR is forged, expired or revoked; one answer for all three (CUS-005, AT-222)

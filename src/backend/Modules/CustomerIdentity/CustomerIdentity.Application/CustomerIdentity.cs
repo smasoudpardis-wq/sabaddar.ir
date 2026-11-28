@@ -255,3 +255,67 @@ public interface IMemberships
     /// <summary>Leaving withdraws every consent and ends the membership (the store keeps its invoices, DI-062).</summary>
     Task<bool> LeaveAsync(IUnitOfWorkScope scope, Guid membershipId, Guid customerId, DateTimeOffset now, CancellationToken cancellationToken);
 }
+
+/// <summary>CUS-005: the customer's own QR: <c>q1.&lt;jti&gt;.&lt;mac&gt;</c>. It names no one: the jti alone says whose, in the database (opaque).</summary>
+public static class CustomerQrToken
+{
+    public static readonly TimeSpan Lifetime = TimeSpan.FromSeconds(120);
+
+    public static string Create(IContactProtector protector, Guid jti)
+    {
+        ArgumentNullException.ThrowIfNull(protector);
+        string payload = jti.ToString("N");
+        return $"q1.{payload}.{Convert.ToBase64String(protector.Hash("customer-qr", payload)).TrimEnd('=').Replace('+', '-').Replace('/', '_')}";
+    }
+
+    public static bool TryRead(IContactProtector protector, string? token, out Guid jti)
+    {
+        ArgumentNullException.ThrowIfNull(protector);
+        jti = Guid.Empty;
+        string[] parts = (token ?? "").Split('.');
+        if (parts.Length != 3 || parts[0] != "q1" || parts[1].Length != 32)
+        {
+            return false;
+        }
+
+        string mac = Convert.ToBase64String(protector.Hash("customer-qr", parts[1])).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        return System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(System.Text.Encoding.ASCII.GetBytes(mac), System.Text.Encoding.ASCII.GetBytes(parts[2]))
+            && Guid.TryParseExact(parts[1], "N", out jti);
+    }
+}
+
+/// <summary>The store's view of a member (BR-061/062): masked by default; the full number only with customers.pii.view.</summary>
+public sealed record TenantCustomerView(Guid TenantCustomerId, Guid GlobalCustomerId, string MaskedPhone, DateTimeOffset JoinedAt, IReadOnlyList<ConsentView> Consents);
+
+public interface ICustomerLinks
+{
+    /// <summary>A QR for the customer, valid 120 seconds, once.</summary>
+    Task<(Guid Jti, DateTimeOffset ExpiresAt)> IssueQrAsync(IUnitOfWorkScope scope, Guid customerId, DateTimeOffset now, CancellationToken cancellationToken);
+
+    /// <summary>Marks the QR used and returns whose it is; null when unknown, expired or used before (AT-220).</summary>
+    Task<Guid?> ConsumeQrAsync(IUnitOfWorkScope scope, Guid jti, DateTimeOffset now, CancellationToken cancellationToken);
+
+    /// <summary>The customer behind a public code, or null (unknown, retired or merged).</summary>
+    Task<CustomerView?> FindByCodeAsync(IUnitOfWorkScope scope, string publicCode, CancellationToken cancellationToken);
+
+    Task<CustomerView?> FindByPhoneHashAsync(IUnitOfWorkScope scope, byte[] phoneHash, CancellationToken cancellationToken);
+
+    /// <summary>The customer's number, to send the proof-of-possession code to (only here, only for this).</summary>
+    Task<string?> PhoneOfAsync(IUnitOfWorkScope scope, Guid customerId, CancellationToken cancellationToken);
+}
+
+public interface IStoreMembers
+{
+    /// <summary>The customer's active membership in the current store (BR-061: only this store).</summary>
+    Task<TenantCustomerView?> FindAsync(IUnitOfWorkScope scope, Guid customerId, CancellationToken cancellationToken);
+
+    Task<TenantCustomerView?> GetAsync(IUnitOfWorkScope scope, Guid tenantCustomerId, CancellationToken cancellationToken);
+
+    Task<Guid> CreateJoinRequestAsync(IUnitOfWorkScope scope, Guid customerId, DateTimeOffset now, CancellationToken cancellationToken);
+
+    /// <summary>The store a still-open request of this customer belongs to (no tenant context).</summary>
+    Task<Guid?> JoinRequestTenantAsync(IUnitOfWorkScope scope, Guid requestId, Guid customerId, CancellationToken cancellationToken);
+
+    /// <summary>Marks the request of the current store accepted; false when it is not the customer's, expired or already accepted.</summary>
+    Task<bool> AcceptJoinRequestAsync(IUnitOfWorkScope scope, Guid requestId, Guid customerId, DateTimeOffset now, CancellationToken cancellationToken);
+}

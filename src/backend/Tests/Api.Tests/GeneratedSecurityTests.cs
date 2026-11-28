@@ -70,7 +70,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
 
     private sealed record Fixture(Guid Tenant, Guid Branch, Guid Branch2, Guid Terminal, Guid Terminal2, Guid User, Guid Assignment,
         Guid Approval, Guid Export, Guid SupportRequest, Guid Product, Guid Variant, Guid Barcode, Guid Shift, Guid Journal,
-        Guid PriceList, Guid DiscountRule, Guid Sale, Guid Count, Guid Supplier, Guid Period, Guid IntegrationKey, Guid SettlementImport, Guid Account, Guid StoreInvite)
+        Guid PriceList, Guid DiscountRule, Guid Sale, Guid Count, Guid Supplier, Guid Period, Guid IntegrationKey, Guid SettlementImport, Guid Account, Guid StoreInvite, Guid TenantCustomer)
     {
         /// <summary>A path value: ids from the fixture; a line number is a position inside the sale (line 1 exists).</summary>
         public string Path(string param) => param is "lineNo" or "seq" ? "1" : param == "category" ? "Notifications" : param == "code" ? "receipt" : Id(param).ToString();
@@ -98,6 +98,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
             "keyId" => IntegrationKey,
             "importId" => SettlementImport,
             "inviteId" => StoreInvite,
+            "tenantCustomerId" => TenantCustomer,
             "accountId" => Account,
             _ => throw new InvalidOperationException($"No fixture for path parameter '{param}': add one to GeneratedSecurityTests (US-010)"),
         };
@@ -166,7 +167,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
             owner = Guid.CreateVersion7(), member = Guid.CreateVersion7(), assignment = Guid.CreateVersion7(), approval = Guid.CreateVersion7(),
             export = Guid.CreateVersion7(), support = Guid.CreateVersion7(), product = Guid.CreateVersion7(), variant = Guid.CreateVersion7(),
             barcode = Guid.CreateVersion7(), register = Guid.CreateVersion7(), shift = Guid.CreateVersion7(), journal = Guid.CreateVersion7(), priceList = Guid.CreateVersion7(), rule = Guid.CreateVersion7(), sale = Guid.CreateVersion7(), warehouse = Guid.CreateVersion7(), count = Guid.CreateVersion7(), supplier = Guid.CreateVersion7(),
-            cash = Guid.CreateVersion7(), sales = Guid.CreateVersion7(), period = Guid.CreateVersion7(), key = Guid.CreateVersion7(), settlement = Guid.CreateVersion7(), invite = Guid.CreateVersion7();
+            cash = Guid.CreateVersion7(), sales = Guid.CreateVersion7(), period = Guid.CreateVersion7(), key = Guid.CreateVersion7(), settlement = Guid.CreateVersion7(), invite = Guid.CreateVersion7(), member2 = Guid.CreateVersion7();
         await using var ds = NpgsqlDataSource.Create(Cs);
         var uow = new PostgresUnitOfWork(ds);
         await uow.ExecuteWithoutTenantAsync(null, async (s, ct) =>
@@ -223,11 +224,17 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
                 t, key, Guid.NewGuid().ToString("N")[..10], owner);
             await Exec(s, ct, "INSERT INTO pay.settlement_import (tenant_id, id, file_name, file_sha256, line_count, matched_count, matched_amount, fees, imported_by) " +
                 "VALUES ($1, $2, 'gen.csv', sha256($2::text::bytea), 1, 0, 0, 0, $3)", t, settlement, owner);
+            Guid gc = Guid.CreateVersion7();
+            var protector = RetailCloud.CustomerIdentity.Infrastructure.AesContactProtector.FromBase64(ApiFactory.CustomerKey, ApiFactory.CustomerIndexKey);
+            await Exec(s, ct, "INSERT INTO cid.global_customer (id, public_code) VALUES ($1, $2)", gc, RetailCloud.CustomerIdentity.Application.PublicCode.Generate());
+            await Exec(s, ct, "INSERT INTO cid.verified_contact (id, global_customer_id, contact_type, value_enc, lookup_hash, verified_at) VALUES ($1, $2, 'Mobile', $3, $4, now())",
+                Guid.CreateVersion7(), gc, protector.Protect("+989120000000"), protector.Hash("phone", "+989120000000" + t));
+            await Exec(s, ct, "INSERT INTO cid.tenant_customer_membership (tenant_id, id, global_customer_id, join_source) VALUES ($1, $2, $3, 'Pos')", t, member2, gc);
             await Exec(s, ct, "INSERT INTO cid.store_invite (tenant_id, id, branch_id, created_by, expires_at) VALUES ($1, $2, $3, $4, now() + interval '90 days')", t, invite, b1, owner);
             return await Exec(s, ct, "INSERT INTO platform.export_job (tenant_id, id, requested_by, categories) VALUES ($1, $2, $3, '{Products}')", t, export, owner);
         });
         _roleSubjects[$"owner-{t}"] = $"gen-{_run}-owner-{t}";
-        return new Fixture(t, b1, b2, term, term2, member, assignment, approval, export, support, product, variant, barcode, shift, journal, priceList, rule, sale, count, supplier, period, key, settlement, cash, invite);
+        return new Fixture(t, b1, b2, term, term2, member, assignment, approval, export, support, product, variant, barcode, shift, journal, priceList, rule, sale, count, supplier, period, key, settlement, cash, invite, member2);
     }
 
     private static async Task<int> Exec(IUnitOfWorkScope s, CancellationToken ct, string sql, params object[] args)

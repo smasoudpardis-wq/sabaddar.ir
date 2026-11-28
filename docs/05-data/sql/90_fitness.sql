@@ -51,6 +51,7 @@ WHERE EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rc_tenant_directory')
         ('platform.tenant','id'), ('platform.tenant','status'), ('platform.tenant','legal_name'), ('platform.tenant','created_at'),
         ('cid.tenant_customer_membership','tenant_id'), ('cid.tenant_customer_membership','id'), ('cid.tenant_customer_membership','global_customer_id'),
         ('cid.tenant_customer_membership','status'), ('cid.tenant_customer_membership','joined_at'),
+        ('cid.join_request','tenant_id'), ('cid.join_request','id'), ('cid.join_request','global_customer_id'), ('cid.join_request','accepted_at'), ('cid.join_request','expires_at'),
         ('platform.subscription','tenant_id'), ('platform.subscription','plan_code'), ('platform.branch','tenant_id'), ('platform.branch','status'),
         ('iam.tenant_membership','tenant_id'), ('iam.tenant_membership','user_id'), ('iam.tenant_membership','status'),
         ('iam.role_assignment','tenant_id'), ('iam.role_assignment','user_id'), ('iam.role_assignment','role'),

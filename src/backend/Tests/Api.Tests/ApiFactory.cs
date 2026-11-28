@@ -24,6 +24,8 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
     public static readonly RsaSecurityKey SigningKey = new(Rsa) { KeyId = "test-key" };
 
     /// <summary>US-141: a 32-byte test key each for the customer token, the phone encryption and the blind index (never real keys).</summary>
+    public const string CustomerIndexKey = "dGVzdC1jdXN0b21lci1pbmRleC0wMTIzNDU2Nzg5YWJj";
+
     public const string CustomerKey = "dGVzdC1jdXN0b21lci1rZXktMDEyMzQ1Njc4OWFiY2Q=";
 
     /// <summary>The codes the API "sent" (a test cannot read an SMS): number → latest code.</summary>
@@ -54,7 +56,7 @@ public sealed class ApiFactory : WebApplicationFactory<Program>
         builder.UseSetting("Auth:Platform:Audience", PlatformAudience);
         builder.UseSetting("Auth:Customer:Key", CustomerKey);
         builder.UseSetting("CustomerIdentity:EncryptionKey", CustomerKey);
-        builder.UseSetting("CustomerIdentity:IndexKey", "dGVzdC1jdXN0b21lci1pbmRleC0wMTIzNDU2Nzg5YWJj");
+        builder.UseSetting("CustomerIdentity:IndexKey", CustomerIndexKey);
         builder.UseSetting("Network:TrustedProxies", "*"); // TestServer has no peer address; the tests act as the BFF
         builder.ConfigureTestServices(services =>
         {

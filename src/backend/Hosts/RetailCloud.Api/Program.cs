@@ -58,6 +58,8 @@ builder.Services.AddSingleton<IRetention, RetailCloud.Platform.Infrastructure.Po
         builder.Services.AddSingleton<ICustomers, RetailCloud.CustomerIdentity.Infrastructure.PostgresCustomers>();
         builder.Services.AddSingleton<IStoreInvites, RetailCloud.CustomerIdentity.Infrastructure.PostgresStoreInvites>();
         builder.Services.AddSingleton<IMemberships, RetailCloud.CustomerIdentity.Infrastructure.PostgresMemberships>();
+        builder.Services.AddSingleton<ICustomerLinks, RetailCloud.CustomerIdentity.Infrastructure.PostgresCustomerLinks>();
+        builder.Services.AddSingleton<IStoreMembers, RetailCloud.CustomerIdentity.Infrastructure.PostgresStoreMembers>();
         if (builder.Configuration["Notifications:Sms:BaseUrl"] is { Length: > 0 } smsUrl)
         {
             builder.Services.AddSingleton<IOtpSender>(_ => new RetailCloud.Api.SmsOtpSender(
@@ -705,35 +707,53 @@ RouteGroupBuilder customerApi = app.MapGroup("/api/v1/c");
 IResult CustomerAuthOff(HttpContext http) =>
     Problems.Create(http, StatusCodes.Status503ServiceUnavailable, "customer-auth-not-configured", "Customer sign-in is not available yet");
 
+// the proof-of-possession code: one place for starting (limits, hashing, sending) and one for checking it (tries, expiry, single use)
+async Task<IResult> StartOtpFor(string phone, IUnitOfWork uow, HttpContext http, CancellationToken ct)
+{
+    var sp = http.RequestServices;
+    if (sp.GetService<IContactProtector>() is not { } protector || sp.GetService<IOtpSender>() is not { } sender) return CustomerAuthOff(http);
+    string code = OtpCode.Generate();
+    byte[] phoneHash = protector.Hash("phone", phone);
+    OtpStart start = await uow.ExecuteWithoutTenantAsync(null, (s, c) => sp.GetRequiredService<IOtpChallenges>().StartAsync(s, phoneHash,
+        protector.Hash("ip", ClientIp(http) ?? "unknown"), protector.Hash("otp", code + ":" + Convert.ToHexString(phoneHash)), protector.Protect(phone),
+        DateTimeOffset.UtcNow, c), ct);
+    if (start.Outcome != OtpStartOutcome.Started)
+    {
+        int wait = Math.Max(1, (int)Math.Ceiling(start.RetryAfter.TotalSeconds));
+        http.Response.Headers.RetryAfter = wait.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return Problems.WithContext(http, StatusCodes.Status429TooManyRequests, "otp-rate-limited", "Too many codes requested; try again later",
+            new { retryAfterSeconds = wait });
+    }
+
+    // the same answer whether or not this number has an account (no enumeration); a send that fails is reported so the caller may retry later
+    if (!await sender.SendAsync(phone, code, start.ChallengeId.ToString("N") + ":1", ct))
+    {
+        return Problems.Create(http, StatusCodes.Status503ServiceUnavailable, "otp-send-failed", "The code could not be sent; try again later");
+    }
+
+    return Results.Created((string?)null, new { challengeId = start.ChallengeId, expiresAt = start.ExpiresAt, resendAfter = start.ResendAfter });
+}
+
+async Task<(int? Remaining, OtpChallengeState? State)> CheckOtpAsync(IUnitOfWorkScope s, IContactProtector protector, IOtpChallenges challenges, Guid challengeId, string code,
+    CancellationToken c)
+{
+    OtpChallengeState? state = await challenges.LockAsync(s, challengeId, c);
+    if (state is null || state.Status != "Pending" || state.ExpiresAt <= DateTimeOffset.UtcNow) return (0, null);
+    bool match = System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(state.CodeHash, protector.Hash("otp", code + ":" + Convert.ToHexString(state.PhoneHash)));
+    if (!match) return (await challenges.FailAttemptAsync(s, state.Id, c), null);
+    await challenges.VerifiedAsync(s, state.Id, c);
+    return (null, state);
+}
+
 customerApi.MapPost("/auth/otp", async (PortalOtpStartInput body, IUnitOfWork uow, HttpContext http, CancellationToken ct) =>
     {
-        var sp = http.RequestServices;
-        if (sp.GetService<IContactProtector>() is not { } protector || sp.GetService<IOtpSender>() is not { } sender) return CustomerAuthOff(http);
+        if (http.RequestServices.GetService<IContactProtector>() is null) return CustomerAuthOff(http);
         if (!PhoneNumber.TryNormalize(body.Phone, out string phone))
         {
             return Problems.Validation(http, new Dictionary<string, string[]> { ["phone"] = ["an Iranian mobile number (09xx xxx xxxx)"] });
         }
 
-        string code = OtpCode.Generate();
-        byte[] phoneHash = protector.Hash("phone", phone);
-        OtpStart start = await uow.ExecuteWithoutTenantAsync(null, (s, c) => sp.GetRequiredService<IOtpChallenges>().StartAsync(s, phoneHash,
-            protector.Hash("ip", ClientIp(http) ?? "unknown"), protector.Hash("otp", code + ":" + Convert.ToHexString(phoneHash)), protector.Protect(phone),
-            DateTimeOffset.UtcNow, c), ct);
-        if (start.Outcome != OtpStartOutcome.Started)
-        {
-            int wait = Math.Max(1, (int)Math.Ceiling(start.RetryAfter.TotalSeconds));
-            http.Response.Headers.RetryAfter = wait.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            return Problems.WithContext(http, StatusCodes.Status429TooManyRequests, "otp-rate-limited", "Too many codes requested; try again later",
-                new { retryAfterSeconds = wait });
-        }
-
-        // the same answer whether or not this number has an account (no enumeration); a send that fails is reported so the caller may retry later
-        if (!await sender.SendAsync(phone, code, start.ChallengeId.ToString("N") + ":1", ct))
-        {
-            return Problems.Create(http, StatusCodes.Status503ServiceUnavailable, "otp-send-failed", "The code could not be sent; try again later");
-        }
-
-        return Results.Created((string?)null, new { challengeId = start.ChallengeId, expiresAt = start.ExpiresAt, resendAfter = start.ResendAfter });
+        return await StartOtpFor(phone, uow, http, ct);
     })
     .AllowAnonymous().RequireRateLimiting(RateLimits.Otp);
 
@@ -749,13 +769,9 @@ customerApi.MapPost("/auth/otp/verify", async (PortalOtpVerifyInput body, IUnitO
         IOtpChallenges challenges = sp.GetRequiredService<IOtpChallenges>();
         (int? remaining, CustomerView? customer) = await uow.ExecuteWithoutTenantAsync(null, async (s, c) =>
         {
-            OtpChallengeState? state = await challenges.LockAsync(s, body.ChallengeId.Value, c);
-            if (state is null || state.Status != "Pending" || state.ExpiresAt <= DateTimeOffset.UtcNow) return ((int?)0, (CustomerView?)null);
-            bool match = System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(state.CodeHash,
-                protector.Hash("otp", code + ":" + Convert.ToHexString(state.PhoneHash)));
-            if (!match) return (await challenges.FailAttemptAsync(s, state.Id, c), null);
+            (int? left, OtpChallengeState? state) = await CheckOtpAsync(s, protector, challenges, body.ChallengeId.Value, code, c);
+            if (state is null) return (left, (CustomerView?)null);
             CustomerView view = await sp.GetRequiredService<ICustomers>().FindOrCreateAsync(s, protector.Unprotect(state.ProtectedPhone), DateTimeOffset.UtcNow, c);
-            await challenges.VerifiedAsync(s, state.Id, c);
             return ((int?)null, view);
         }, ct);
         if (customer is null)
@@ -895,6 +911,44 @@ customerApi.MapDelete("/memberships/{membershipId:guid}", async (Guid membership
     })
     .RequireAuthorization(ServiceCollectionExtensions.CustomerPolicy);
 
+customerApi.MapPost("/me/qr", async (IUnitOfWork uow, HttpContext http, CancellationToken ct) =>
+    {
+        if (http.RequestServices.GetService<IContactProtector>() is not { } protector || http.RequestServices.GetService<ICustomerLinks>() is not { } links) return CustomerAuthOff(http);
+        if (!Guid.TryParse(http.User.FindFirst("sub")?.Value, out Guid id)) return Problems.Create(http, StatusCodes.Status401Unauthorized, "invalid-token", "Not signed in");
+        (Guid jti, DateTimeOffset expires) = await uow.ExecuteWithoutTenantAsync(null, (s, c) => links.IssueQrAsync(s, id, DateTimeOffset.UtcNow, c), ct);
+        return Results.Created((string?)null, new { token = CustomerQrToken.Create(protector, jti), expiresAt = expires });
+    })
+    .RequireAuthorization(ServiceCollectionExtensions.CustomerPolicy).RequireRateLimiting(RateLimits.QrIssue);
+
+customerApi.MapPost("/join-requests/{joinRequestId:guid}/accept", async (Guid joinRequestId, PortalJoinInput body, IUnitOfWork uow, HttpContext http, CancellationToken ct) =>
+    {
+        if (http.RequestServices.GetService<IMemberships>() is not { } memberships || http.RequestServices.GetService<IStoreMembers>() is not { } members) return CustomerAuthOff(http);
+        if (!Guid.TryParse(http.User.FindFirst("sub")?.Value, out Guid customerId)) return Problems.Create(http, StatusCodes.Status401Unauthorized, "invalid-token", "Not signed in");
+        IReadOnlyList<ConsentChoice> choices = [.. (body.Consents ?? []).Select(c => new ConsentChoice(c.Purpose ?? "", c.Channel ?? "", c.Granted ?? false))];
+        if (ConsentRules.Problem(choices, body.PolicyVersion) is { } problem)
+        {
+            return Problems.Validation(http, new Dictionary<string, string[]> { [problem.Split(':')[0]] = [problem] });
+        }
+
+        // the request names its store; only the customer it was made for can find it
+        if (await uow.ExecuteWithoutTenantAsync(null, (s, c) => members.JoinRequestTenantAsync(s, joinRequestId, customerId, c), ct) is not { } tenant) return Problems.NotFound(http);
+        (JoinOutcome outcome, MembershipView? view) = await uow.ExecuteAsync(new FixedTenantContext(new TenantId(tenant)), async (s, c) =>
+        {
+            if (!await members.AcceptJoinRequestAsync(s, joinRequestId, customerId, DateTimeOffset.UtcNow, c)) return (JoinOutcome.AlreadyMember, (MembershipView?)null);
+            var joined = await memberships.JoinAsync(s, customerId, "Pos", choices, body.PolicyVersion!.Trim(), DateTimeOffset.UtcNow, c);
+            if (joined.Outcome == JoinOutcome.Joined)
+            {
+                await Audit(http, s, CustomerActor(http), new AuditEntry("customers.membership.joined", "Membership", joined.Membership.MembershipId.ToString(), Details: new { proof = "qr" }), c);
+            }
+
+            return (joined.Outcome, joined.Membership);
+        }, ct);
+        return view is null ? Problems.NotFound(http)
+            : outcome == JoinOutcome.AlreadyMember ? Problems.Create(http, StatusCodes.Status409Conflict, "already-member", "You are already a member of this store")
+            : Results.Created($"/api/v1/c/memberships/{view.MembershipId}", MembershipJson(view));
+    })
+    .RequireAuthorization(ServiceCollectionExtensions.CustomerPolicy);
+
 AuditActor CustomerActor(HttpContext http) => new(null, "Customer", [], null, null, ClientIp(http));
 
 static object MembershipJson(MembershipView m) => new
@@ -946,6 +1000,153 @@ v1.MapDelete("/store-invites/{inviteId:guid}", async (Guid inviteId, RequestCont
         return revoked ? Results.NoContent() : Problems.NotFound(http);
     })
     .RequirePermission(Permissions.TenantSettingsManage);
+
+// ---------------- US-143: the cashier identifies a customer (BR-061, CUS-004, AB-09/10). The answer is only about THIS store; a new membership needs the customer's own proof.
+v1.MapPost("/customers/identify", async (IdentifyInput body, RequestContext ctx, IUnitOfWork uow, HttpContext http, CancellationToken ct) =>
+    {
+        var sp = http.RequestServices;
+        if (sp.GetService<IContactProtector>() is not { } protector || sp.GetService<ICustomerLinks>() is not { } links || sp.GetService<IStoreMembers>() is not { } members) return CustomerAuthOff(http);
+        if ((body.QrToken is null) == (body.PublicCode is null))
+        {
+            return Problems.Validation(http, new Dictionary<string, string[]> { ["qrToken"] = ["exactly one of qrToken or publicCode"] });
+        }
+
+        string method = body.QrToken is not null ? "qr" : "code";
+        (string result, IResult? failure, object? payload) = await uow.ExecuteAsync<(string, IResult?, object?)>(ctx, async (s, c) =>
+        {
+            CustomerView? customer;
+            if (body.QrToken is not null)
+            {
+                // AT-220: a forged, expired or already used QR is refused; nothing says which of the three
+                if (!CustomerQrToken.TryRead(protector, body.QrToken, out Guid jti) || await links.ConsumeQrAsync(s, jti, DateTimeOffset.UtcNow, c) is not { } owner)
+                {
+                    return ("qr-invalid", Problems.Create(http, StatusCodes.Status401Unauthorized, "qr-invalid", "This QR is not valid any more; ask the customer to show a new one"), (object?)null);
+                }
+
+                customer = new CustomerView(owner, "", false, "");
+            }
+            else if (!PublicCode.IsValid(body.PublicCode))
+            {
+                return ("invalid", null, new { result = "invalid" });
+            }
+            else
+            {
+                customer = await links.FindByCodeAsync(s, body.PublicCode!, c);
+            }
+
+            // AT-221: another store's member, an unknown code and a plain non-member all answer the same: not a member here
+            TenantCustomerView? mine = customer is null ? null : await members.FindAsync(s, customer.Id, c);
+            if (mine is not null)
+            {
+                return ("member", null, new { result = "member", tenantCustomerId = mine.TenantCustomerId, maskedName = mine.MaskedPhone, hasCreditAccount = false });
+            }
+
+            // a customer who showed their own QR can be asked to join on their device; a spoken code only leads to the OTP route (CUS-004)
+            Guid? request = body.QrToken is not null && customer is not null ? await members.CreateJoinRequestAsync(s, customer.Id, DateTimeOffset.UtcNow, c) : null;
+            return ("not_member", null, request is { } r ? new { result = "not_member", joinRequestId = (Guid?)r } : new { result = "not_member", joinRequestId = (Guid?)null });   // a spoken code carries no request
+        }, ct);
+        // the audit of a refusal must survive it: written in its own unit of work
+        await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry("customers.identified", "Customer", null, Details: new { method, result }), c);
+            return 0;
+        }, ct);
+        return failure ?? Results.Ok(payload);
+    })
+    .RequirePermission(Permissions.CustomersLookup).RequireRateLimiting(RateLimits.CustomerLookup);
+
+v1.MapPost("/customers/otp-challenges", async (CustomerOtpInput body, RequestContext ctx, IUnitOfWork uow, HttpContext http, CancellationToken ct) =>
+    {
+        var sp = http.RequestServices;
+        if (sp.GetService<IContactProtector>() is null || sp.GetService<ICustomerLinks>() is not { } links) return CustomerAuthOff(http);
+        if (body.Purpose != "LinkMembership")
+        {
+            return body.Purpose == "GuestReceipt"
+                ? Problems.Create(http, StatusCodes.Status422UnprocessableEntity, "not-yet-supported", "A guest receipt code arrives with the receipt link story (US-144)")
+                : Problems.Validation(http, new Dictionary<string, string[]> { ["purpose"] = ["LinkMembership or GuestReceipt"] });
+        }
+
+        if (!PublicCode.IsValid(body.PublicCode))
+        {
+            return Problems.Validation(http, new Dictionary<string, string[]> { ["publicCode"] = ["CU- and eight characters"] });
+        }
+
+        // the code goes to the number the customer verified, never to one the cashier types (proof of possession)
+        string? phone = await uow.ExecuteAsync(ctx, async (s, c) =>
+            await links.FindByCodeAsync(s, body.PublicCode!, c) is { } customer ? await links.PhoneOfAsync(s, customer.Id, c) : null, ct);
+        if (phone is null)
+        {
+            // an unknown code looks like a known one: a challenge that nothing was sent for and that no code can open
+            return Results.Created((string?)null, new { challengeId = Guid.CreateVersion7(), expiresAt = DateTimeOffset.UtcNow.Add(OtpPolicy.Validity), resendAfter = DateTimeOffset.UtcNow.Add(OtpPolicy.ResendAfter) });
+        }
+
+        return await StartOtpFor(phone, uow, http, ct);
+    })
+    .RequirePermission(Permissions.CustomersLookup).RequireRateLimiting(RateLimits.Otp);
+
+v1.MapPost("/customer-memberships/link", async (LinkMembershipInput body, RequestContext ctx, IUnitOfWork uow, HttpContext http, CancellationToken ct) =>
+    {
+        var sp = http.RequestServices;
+        if (sp.GetService<IContactProtector>() is not { } protector || sp.GetService<IMemberships>() is not { } memberships || sp.GetService<ICustomerLinks>() is not { } links
+            || sp.GetService<IStoreMembers>() is not { } members) return CustomerAuthOff(http);
+        if (body.ChallengeId is null || body.Code is not { Length: OtpPolicy.Digits } code || !code.All(char.IsAsciiDigit))
+        {
+            return Problems.Validation(http, new Dictionary<string, string[]> { ["code"] = [$"{OtpPolicy.Digits} digits"] });
+        }
+
+        IReadOnlyList<ConsentChoice> choices = [.. (body.Consents ?? []).Select(x => new ConsentChoice(x.Purpose ?? "", x.Channel ?? "", x.Granted ?? false))];
+        if (ConsentRules.Problem(choices, "pos-link") is { } problem)
+        {
+            return Problems.Validation(http, new Dictionary<string, string[]> { [problem.Split(':')[0]] = [problem] });
+        }
+
+        // the tries are counted in a unit of work of their own so that a wrong code is remembered even though the request fails
+        IOtpChallenges challenges = sp.GetRequiredService<IOtpChallenges>();
+        (int? remaining, OtpChallengeState? state) = await uow.ExecuteWithoutTenantAsync(null, (s, c) => CheckOtpAsync(s, protector, challenges, body.ChallengeId.Value, code, c), ct);
+        if (state is null)
+        {
+            return Problems.WithContext(http, StatusCodes.Status422UnprocessableEntity, "otp-invalid", "The code is wrong or expired", new { attemptsRemaining = remaining ?? 0 });
+        }
+
+        (JoinOutcome outcome, TenantCustomerView? view) = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            if (await links.FindByPhoneHashAsync(s, state.PhoneHash, c) is not { } customer) return (JoinOutcome.AlreadyMember, (TenantCustomerView?)null);   // no such customer: nothing to link
+            var joined = await memberships.JoinAsync(s, customer.Id, "Pos", choices, "pos-link", DateTimeOffset.UtcNow, c);
+            if (joined.Outcome == JoinOutcome.Joined)
+            {
+                await Audit(http, s, ActorOf(ctx, http), new AuditEntry("customers.membership.linked", "Membership", joined.Membership.MembershipId.ToString(), Details: new { proof = "otp" }), c);
+            }
+
+            return (joined.Outcome, await members.GetAsync(s, joined.Membership.MembershipId, c));
+        }, ct);
+        return view is null || outcome == JoinOutcome.AlreadyMember
+            ? Problems.Create(http, StatusCodes.Status409Conflict, "already-member", "This customer is already a member of this store")
+            : Results.Created($"/api/v1/customers/{view.TenantCustomerId}", TenantCustomerJson(view, null));
+    })
+    .RequirePermission(Permissions.CustomersLookup);
+
+v1.MapGet("/customers/{tenantCustomerId:guid}", async (Guid tenantCustomerId, RequestContext ctx, IUnitOfWork uow, HttpContext http, CancellationToken ct) =>
+    {
+        if (http.RequestServices.GetService<IStoreMembers>() is not { } members || http.RequestServices.GetService<ICustomerLinks>() is not { } links) return CustomerAuthOff(http);
+        // BR-062: the full number only for customers.pii.view, with a fresh second factor; every such look is audited
+        bool pii = AccessPolicy.Allows(ctx.ActiveMembership!.Assignments, Permissions.CustomersPiiView, ScopeRef.Tenant)
+                   && ctx.MfaSatisfied && ctx.AuthTime is { } at && DateTimeOffset.UtcNow - at <= MfaPolicy.SensitiveFreshness;
+        (TenantCustomerView? view, string? phone) = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            TenantCustomerView? v = await members.GetAsync(s, tenantCustomerId, c);
+            string? full = v is not null && pii ? await links.PhoneOfAsync(s, v.GlobalCustomerId, c) : null;
+            if (v is not null) await Audit(http, s, ActorOf(ctx, http), new AuditEntry(full is null ? "customers.viewed" : "customers.pii.viewed", "TenantCustomer", tenantCustomerId.ToString()), c);
+            return (v, full);
+        }, ct);
+        return view is null ? Problems.NotFound(http) : Results.Ok(TenantCustomerJson(view, phone));
+    })
+    .RequirePermission(Permissions.CustomersLookup);
+
+static object TenantCustomerJson(TenantCustomerView v, string? fullPhone) => new
+{
+    tenantCustomerId = v.TenantCustomerId, maskedName = v.MaskedPhone, maskedPhone = v.MaskedPhone, joinedAt = v.JoinedAt, phone = fullPhone,
+    consents = v.Consents.Select(c => new { purpose = c.Purpose, channel = c.Channel, granted = c.Granted, updatedAt = c.UpdatedAt, policyVersion = c.PolicyVersion }),
+};
 
 // ---------------- US-013: POS terminals (TEN-002.1, ABAC-04)
 v1.MapPost("/branches/{branchId:guid}/pairing-codes", async (Guid branchId, RequestContext ctx, IUnitOfWork uow, ITerminalAdministration terminals,
@@ -5260,6 +5461,9 @@ internal sealed record ReceiptOverridesInput(string? LogoObjectKey, string? Foot
 internal sealed record ReceiptTemplateUpdateInput(int? ExpectedVersion, ReceiptOverridesInput? Overrides);
 internal sealed record RetentionPolicyInput(string? Category, int? MinimumDays, int? DefaultDays, DateTimeOffset? ValidFrom, string? Reason);
 internal sealed record LegalHoldInput(string? Reason, DateTimeOffset? Until);
+internal sealed record IdentifyInput(string? QrToken, string? PublicCode);
+internal sealed record CustomerOtpInput(string? Purpose, string? PublicCode, string? Phone);
+internal sealed record LinkMembershipInput(Guid? ChallengeId, string? Code, PortalConsentInput[]? Consents);
 internal sealed record StoreInviteInput(Guid? BranchId, int? ExpiresInDays);
 internal sealed record PortalConsentInput(string? Purpose, string? Channel, bool? Granted);
 internal sealed record PortalJoinInput(PortalConsentInput[]? Consents, string? PolicyVersion);
