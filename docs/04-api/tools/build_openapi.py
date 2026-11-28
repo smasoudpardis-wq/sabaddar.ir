@@ -728,6 +728,7 @@ ERROR_CATALOG = {
     "self-approval": (403, "The requester cannot approve their own request (SoD-01)"),
     "approval-expired": (409, "The pending request expired (10 minutes)"),
     "approval-not-pending": (409, "The request was already decided"),
+    "invalid-status-transition": (409, "The store is already in that status, or it is Closed (final) (TEN-004)"),
     "below-retention-floor": (422, "The store cannot keep data for less than the platform's minimum for the category (BR-087, RC036)"),
     "report-too-large": (422, "The report has more rows than the cap (5,000; 100,000 as csv): narrow the range or the branch; context.limit"),
     "already-imported": (409, "This settlement file was imported before; context.importId (PAY-002.2)"),
@@ -1496,9 +1497,13 @@ op("get", "/partner/inventory/balances", "partnerListBalances", "PartnerApi", "�
 # ---------------- Platform admin
 tag("Platform", "Platform Admin (Audience: platform-api؛ بدون دسترسی به داده کسب‌وکار)")
 op("get", "/platform/tenants", "platformListTenants", "Platform", "فهرست Tenantها (فراداده)", aud="platform",
-   resp="PlatformTenant", list_of=True, page=True, reqs=["§18.2"])
+   resp="PlatformTenant", list_of=True, page=True, reqs=["§18.2", "TEN-004"],
+   desc="Metadata only (name, status, plan, active branches, creation time), in id order; never a store's business data.")
 op("post", "/platform/tenants/{tenantId}/status", "platformChangeTenantStatus", "Platform", "تعلیق/فعال‌سازی", aud="platform",
-   body="PlatformTenantStatusChange", resp="PlatformTenant", reqs=["TEN-004"], audited=True)
+   body="PlatformTenantStatusChange", resp="PlatformTenant", reqs=["TEN-004"], audited=True,
+   desc="Active, Suspended or Closed with a reason; the history keeps who, why, from and to. A suspended store is read-only (sales, "
+        "receipts and new documents are refused; reading, reports and export work); Closed is final; 409 invalid-status-transition "
+        "for the same status or a closed store.")
 op("post", "/platform/tenants/{tenantId}/support-access-requests", "platformRequestSupportAccess", "Platform",
    "درخواست JIT (تأیید با Owner)", aud="platform", body="SupportAccessRequestCreate", resp="SupportAccessRequest",
    resp_code="201", reqs=["IAM-008", "SoD-05"], audited=True)

@@ -1033,4 +1033,33 @@ SELECT t.ok('T282 another store sees none of it (RLS)', (SELECT count(*) FROM no
 RESET ROLE;
 SELECT set_config('app.tenant_id', '', false);
 
+-- US-171 operator console: list stores, suspend and reactivate (TEN-004)
+SET ROLE rc_app;
+SELECT set_config('app.tenant_id', '', false);
+SELECT t.ok('T283 the operator lists stores across tenants with plan and branch count, in id order, paged',
+  (SELECT count(*) FROM platform.list_tenants(NULL, 100) WHERE id IN (:A, :B)) = 2
+  AND (SELECT count(*) FROM platform.list_tenants(NULL, 1)) = 1
+  AND (SELECT id FROM platform.list_tenants(:A, 1) ) > :A::uuid
+  AND (SELECT count(*) FROM platform.list_tenants(NULL, 5, :A)) = 1);
+SELECT t.ok('T284 an operator suspends a store', platform.set_tenant_status(:A, 'Suspended', 'عدم پرداخت', 'op|1') = 'ok');
+SELECT t.ok('T284b the store reads as suspended and the operator context is restored',
+  (SELECT status FROM platform.list_tenants(NULL, 5, :A)) = 'Suspended' AND coalesce(current_setting('app.tenant_id', true), '') = '');
+SELECT t.ok('T285 the same status again, an unknown status or an unknown store is refused',
+  platform.set_tenant_status(:A, 'Suspended', 'دوباره', 'op|1') = 'invalid-transition'
+  AND platform.set_tenant_status(:A, 'Trial', 'نامعتبر', 'op|1') = 'invalid-transition'
+  AND platform.set_tenant_status(gen_random_uuid(), 'Active', 'هیچ', 'op|1') = 'not-found');
+SELECT t.ok('T286 reactivation works and Closed is final',
+  platform.set_tenant_status(:A, 'Active', 'پرداخت شد', 'op|1') = 'ok'
+  AND platform.set_tenant_status(:A, 'Closed', 'درخواست مشتری', 'op|1') = 'ok'
+  AND platform.set_tenant_status(:A, 'Active', 'بازگشایی', 'op|1') = 'invalid-transition');
+SELECT set_config('app.tenant_id', :A, false);
+SELECT t.ok('T287 the store sees its own status history, three changes', (SELECT count(*) FROM platform.tenant_status_change) = 3);
+SELECT t.expect_error('T288 a store cannot change its own status or history', '42501',
+  $$UPDATE platform.tenant SET status = 'Active' WHERE true$$);
+SELECT t.expect_error('T289 the history is never rewritten', '42501', $$DELETE FROM platform.tenant_status_change$$);
+RESET ROLE;
+-- put the test store back as it was for the checks that follow
+UPDATE platform.tenant SET status = 'Trial' WHERE id = :A;
+SELECT set_config('app.tenant_id', '', false);
+
 \echo '== ALL CHECKS PASSED'

@@ -8939,6 +8939,8 @@ paths:
       tags:
       - Platform
       summary: فهرست Tenantها (فراداده)
+      description: Metadata only (name, status, plan, active branches, creation time), in id order; never a store's business
+        data.
       security: &id011
       - platformBearer: []
       parameters:
@@ -8977,12 +8979,16 @@ paths:
       x-idempotent: false
       x-requirements:
       - §18.2
+      - TEN-004
   /platform/tenants/{tenantId}/status:
     post:
       operationId: platformChangeTenantStatus
       tags:
       - Platform
       summary: تعلیق/فعال‌سازی
+      description: Active, Suspended or Closed with a reason; the history keeps who, why, from and to. A suspended store is
+        read-only (sales, receipts and new documents are refused; reading, reports and export work); Closed is final; 409
+        invalid-status-transition for the same status or a closed store.
       security: *id011
       parameters:
       - name: tenantId
@@ -16515,6 +16521,9 @@ x-error-catalog:
   approval-not-pending:
     status: 409
     meaning: The request was already decided
+  invalid-status-transition:
+    status: 409
+    meaning: The store is already in that status, or it is Closed (final) (TEN-004)
   below-retention-floor:
     status: 422
     meaning: The store cannot keep data for less than the platform's minimum for the category (BR-087, RC036)

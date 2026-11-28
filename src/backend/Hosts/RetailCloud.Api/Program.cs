@@ -45,6 +45,7 @@ builder.Services.AddSingleton<ICatalogProvider>(_ =>
     return new OpenFoodFactsProvider(http, offOptions);
 });
 builder.Services.AddSingleton<IIndustryTemplates, RetailCloud.Platform.Infrastructure.PostgresIndustryTemplates>();
+builder.Services.AddSingleton<ITenantDirectory, RetailCloud.Platform.Infrastructure.PostgresTenantDirectory>();
 builder.Services.AddSingleton<IRetention, RetailCloud.Platform.Infrastructure.PostgresRetention>();
 builder.Services.AddSingleton<ITemplateOverrides, RetailCloud.Notifications.Infrastructure.PostgresTemplateOverrides>();
 builder.Services.AddSingleton<IReceiptTemplateOverrides, PostgresReceiptTemplateOverrides>();
@@ -254,6 +255,52 @@ platformApi.MapDelete("/tenants/{tenantId:guid}/legal-holds/{category}", async (
 
 static object RetentionPolicyJson(RetentionPolicyView p) =>
     new { category = p.Category, version = p.Version, minimumDays = p.MinimumDays, defaultDays = p.DefaultDays, validFrom = p.ValidFrom, reason = p.Reason };
+
+// TEN-004 / US-171: the operator's list of stores (metadata only) and the suspend / reactivate / close decision with its reason.
+platformApi.MapGet("/tenants", async (string? cursor, int? limit, IUnitOfWork uow, ITenantDirectory tenants, HttpContext http, CancellationToken ct) =>
+    {
+        int size = limit ?? 50;
+        Guid? after = null;
+        var errors = new Dictionary<string, string[]>();
+        if (size is < 1 or > 200) errors["limit"] = ["Must be 1-200"];
+        if (cursor is not null)
+        {
+            if (Guid.TryParse(cursor, out Guid c)) after = c;
+            else errors["cursor"] = ["Invalid cursor"];
+        }
+
+        if (errors.Count > 0) return Problems.Validation(http, errors);
+        IReadOnlyList<PlatformTenantView> rows = await uow.ExecuteWithoutTenantAsync(null, (s, c) => tenants.ListAsync(s, after, size, c), ct);
+        bool more = rows.Count > size;
+        PlatformTenantView[] page = [.. rows.Take(size)];
+        return Results.Ok(new { items = page.Select(PlatformTenantJson), page = new { nextCursor = more ? page[^1].Id.ToString() : null, hasMore = more } });
+    });
+
+platformApi.MapPost("/tenants/{tenantId:guid}/status", async (Guid tenantId, TenantStatusInput body, IUnitOfWork uow, ITenantDirectory tenants,
+        HttpContext http, CancellationToken ct) =>
+    {
+        var errors = new Dictionary<string, string[]>();
+        if (body.Status is null || !TenantStatusRules.Settable.Contains(body.Status)) errors["status"] = ["Active, Suspended or Closed"];
+        if (body.Reason is null || body.Reason.Trim().Length is < 3 or > 500) errors["reason"] = ["3-500 characters"];
+        if (errors.Count > 0) return Problems.Validation(http, errors);
+        string operatorId = $"{http.User.FindFirst("iss")?.Value}|{http.User.FindFirst("sub")?.Value}";
+        (StatusChange outcome, PlatformTenantView? view) = await uow.ExecuteWithoutTenantAsync(null, async (s, c) =>
+        {
+            StatusChange result = await tenants.ChangeStatusAsync(s, tenantId, body.Status!, body.Reason!.Trim(), operatorId, c);
+            return (result, result == StatusChange.Done ? await tenants.GetAsync(s, tenantId, c) : null);
+        }, ct);
+        if (outcome == StatusChange.NotFound) return Problems.NotFound(http);
+        if (outcome == StatusChange.InvalidTransition)
+        {
+            return Problems.Create(http, StatusCodes.Status409Conflict, "invalid-status-transition", "The store is already in that status, or it is closed (final)");
+        }
+
+        PlatformLog.TenantStatusChanged(platformLogger, tenantId, body.Status!, operatorId);
+        return Results.Ok(PlatformTenantJson(view!));
+    });
+
+static object PlatformTenantJson(PlatformTenantView t) =>
+    new { id = t.Id, legalName = t.LegalName, status = t.Status, plan = t.Plan ?? "", createdAt = t.CreatedAt, branches = t.Branches };
 
 // IAM-008 / US-027 (platform side): PlatformSupport asks a store for time-limited access with a reason; only its TenantOwner
 // approves (SoD-05, store side). While the grant is in force the operator sees a read-only, masked view (no customer data,
@@ -4941,6 +4988,7 @@ internal sealed record ReceiptOverridesInput(string? LogoObjectKey, string? Foot
 internal sealed record ReceiptTemplateUpdateInput(int? ExpectedVersion, ReceiptOverridesInput? Overrides);
 internal sealed record RetentionPolicyInput(string? Category, int? MinimumDays, int? DefaultDays, DateTimeOffset? ValidFrom, string? Reason);
 internal sealed record LegalHoldInput(string? Reason, DateTimeOffset? Until);
+internal sealed record TenantStatusInput(string? Status, string? Reason);
 internal sealed record SmsTemplateInput(int? ExpectedVersion, string? StoreName, string? Signature);
 internal sealed record RetentionDaysInput(int? Days);
 internal sealed record IndustryProfileUpdateInput(int? ExpectedVersion, string? LegalText, string[]? LockedFields, string? Reason);
@@ -5027,6 +5075,9 @@ internal static partial class PlatformLog
 
     [LoggerMessage(EventId = 6105, Level = LogLevel.Information, Message = "platform.legal-hold.released {Tenant} {Category} by {Operator}")]
     public static partial void LegalHoldReleased(ILogger logger, Guid tenant, string category, string @operator);
+
+    [LoggerMessage(EventId = 6106, Level = LogLevel.Information, Message = "platform.tenant.status-changed {Tenant} to {Status} by {Operator}")]
+    public static partial void TenantStatusChanged(ILogger logger, Guid tenant, string status, string @operator);
 
     [LoggerMessage(EventId = 6102, Level = LogLevel.Information, Message = "platform.catalog.suggestion-decided {Suggestion} {Outcome} product {Product} by {Operator}")]
     public static partial void SuggestionDecided(ILogger logger, Guid suggestion, string outcome, Guid? product, string @operator);

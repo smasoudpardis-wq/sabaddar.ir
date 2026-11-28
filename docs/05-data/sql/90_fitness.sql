@@ -48,7 +48,8 @@ WHERE EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rc_tenant_directory')
   AND a.attnum > 0 AND NOT a.attisdropped
   AND has_column_privilege('rc_tenant_directory', c.oid, a.attname, 'SELECT')
   AND (n.nspname || '.' || c.relname, a.attname::text) NOT IN (VALUES
-        ('platform.tenant','id'), ('platform.tenant','status'), ('platform.tenant','legal_name'),
+        ('platform.tenant','id'), ('platform.tenant','status'), ('platform.tenant','legal_name'), ('platform.tenant','created_at'),
+        ('platform.subscription','tenant_id'), ('platform.subscription','plan_code'), ('platform.branch','tenant_id'), ('platform.branch','status'),
         ('iam.tenant_membership','tenant_id'), ('iam.tenant_membership','user_id'), ('iam.tenant_membership','status'),
         ('iam.role_assignment','tenant_id'), ('iam.role_assignment','user_id'), ('iam.role_assignment','role'),
         ('iam.role_assignment','scope_type'), ('iam.role_assignment','scope_id'),

@@ -409,6 +409,47 @@ CALL core.enable_tenant_rls('platform.retention_run');
 CREATE TRIGGER tr_retention_run_append_only BEFORE UPDATE OR DELETE ON platform.retention_run
   FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
 
+-- TEN-004 / US-171: a platform operator suspends, reactivates or closes a store. A store cannot change its own status (the
+-- application has no UPDATE on it); the operator's call goes through this function, which keeps the history (who, why, from,
+-- to). Closed is final. Returns 'ok', 'not-found' or 'invalid-transition'.
+CREATE TABLE platform.tenant_status_change (
+  tenant_id   uuid NOT NULL REFERENCES platform.tenant (id),
+  id          uuid NOT NULL,
+  from_status text NOT NULL,
+  to_status   text NOT NULL CHECK (to_status IN ('Active','Suspended','Closed')),
+  reason      text NOT NULL CHECK (char_length(btrim(reason)) BETWEEN 3 AND 500),
+  changed_by  text NOT NULL,                       -- the platform operator (issuer|subject)
+  changed_at  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, id),
+  CHECK (from_status <> to_status)
+);
+CALL core.enable_tenant_rls('platform.tenant_status_change');
+CREATE TRIGGER tr_tenant_status_change_append_only BEFORE UPDATE OR DELETE ON platform.tenant_status_change
+  FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
+
+CREATE FUNCTION platform.set_tenant_status(p_tenant uuid, p_status text, p_reason text, p_by text) RETURNS text
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
+DECLARE v_prev text := coalesce(current_setting('app.tenant_id', true), ''); v_from text;
+BEGIN
+  PERFORM set_config('app.tenant_id', p_tenant::text, true);
+  SELECT status INTO v_from FROM platform.tenant WHERE id = p_tenant FOR UPDATE;
+  IF v_from IS NULL THEN
+    PERFORM set_config('app.tenant_id', v_prev, true);
+    RETURN 'not-found';
+  END IF;
+  IF v_from = 'Closed' OR v_from = p_status OR p_status NOT IN ('Active','Suspended','Closed') THEN
+    PERFORM set_config('app.tenant_id', v_prev, true);
+    RETURN 'invalid-transition';
+  END IF;
+  UPDATE platform.tenant SET status = p_status, version = version + 1 WHERE id = p_tenant;
+  INSERT INTO platform.tenant_status_change (tenant_id, id, from_status, to_status, reason, changed_by)
+    VALUES (p_tenant, gen_random_uuid(), v_from, p_status, p_reason, p_by);
+  PERFORM set_config('app.tenant_id', v_prev, true);
+  RETURN 'ok';
+END $$;
+REVOKE ALL ON FUNCTION platform.set_tenant_status(uuid, text, text, text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION platform.set_tenant_status(uuid, text, text, text) TO rc_app;
+
 GRANT USAGE ON SCHEMA platform TO rc_app, rc_worker, rc_reporting;
 GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA platform TO rc_app;
 REVOKE INSERT, UPDATE ON platform.industry_profile FROM rc_app;   -- reference data: changed by migration only
@@ -417,6 +458,7 @@ REVOKE UPDATE ON platform.retention_policy FROM rc_app;            -- a policy v
 GRANT DELETE ON platform.tenant_retention TO rc_app;               -- a store returns to the default by clearing its choice
 REVOKE INSERT, UPDATE ON platform.legal_hold FROM rc_app;          -- operators use set_legal_hold / release_legal_hold
 REVOKE INSERT, UPDATE ON platform.retention_run FROM rc_app;       -- only the Workers record a run
+REVOKE INSERT, UPDATE ON platform.tenant_status_change FROM rc_app;   -- operators use set_tenant_status
 GRANT SELECT ON ALL TABLES IN SCHEMA platform TO rc_worker, rc_reporting;
 REVOKE INSERT, UPDATE ON platform.plan, platform.subscription FROM rc_app;   -- read-only for the application
 -- TEN-004: suspension is a platform decision, so the application may edit only the settings of TenantUpdate (D07),
@@ -442,3 +484,23 @@ ALTER FUNCTION platform.integration_key_target(text) OWNER TO rc_tenant_director
 REVOKE CREATE ON SCHEMA platform FROM rc_tenant_directory;
 REVOKE ALL ON FUNCTION platform.integration_key_target(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION platform.integration_key_target(text) TO rc_app;
+
+-- US-171: the operator's list of stores (metadata only: no store data). Across stores, so it is owned by the tenant
+-- directory with column grants only (fitness rule 5); optional p_only returns one store.
+CREATE OR REPLACE FUNCTION platform.list_tenants(p_after uuid, p_limit int, p_only uuid DEFAULT NULL)
+RETURNS TABLE (id uuid, legal_name text, status text, plan_code text, created_at timestamptz, branches bigint)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
+  SELECT t.id, t.legal_name, t.status, s.plan_code, t.created_at,
+         (SELECT count(*) FROM platform.branch b WHERE b.tenant_id = t.id AND b.status = 'Active')
+    FROM platform.tenant t LEFT JOIN platform.subscription s ON s.tenant_id = t.id
+   WHERE (p_only IS NULL OR t.id = p_only) AND (p_after IS NULL OR t.id > p_after)
+   ORDER BY t.id LIMIT greatest(least(p_limit, 200), 1)
+$$;
+GRANT SELECT (id, status, legal_name, created_at) ON platform.tenant TO rc_tenant_directory;
+GRANT SELECT (tenant_id, plan_code) ON platform.subscription TO rc_tenant_directory;
+GRANT SELECT (tenant_id, status) ON platform.branch TO rc_tenant_directory;
+GRANT CREATE ON SCHEMA platform TO rc_tenant_directory;  -- a new owner needs CREATE on the schema; revoked at once (fitness 6)
+ALTER FUNCTION platform.list_tenants(uuid, int, uuid) OWNER TO rc_tenant_directory;
+REVOKE CREATE ON SCHEMA platform FROM rc_tenant_directory;
+REVOKE ALL ON FUNCTION platform.list_tenants(uuid, int, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION platform.list_tenants(uuid, int, uuid) TO rc_app;
