@@ -8233,15 +8233,22 @@ paths:
       operationId: reportSalesDaily
       tags:
       - Reports
-      summary: فروش روزانه
+      summary: فروش روزانه به تفکیک شعبه، صندوق و صندوق‌دار
+      description: 'Read in place with plain reads: no lock a POS write waits on (RPT-002); meta.dataAsOf is the time of the
+        read. Only the branches the caller''s reports.view reaches (a branch beyond it is 403); 422 report-too-large above
+        5,000 rows (100,000 as csv). Range [from, to), default the last 30 days, at most 366.'
       security: *id001
       parameters:
       - $ref: '#/components/parameters/Cursor'
       - $ref: '#/components/parameters/Limit'
-      - $ref: '#/components/parameters/BranchFilter'
-      - $ref: '#/components/parameters/From'
-      - $ref: '#/components/parameters/To'
-      - name: format
+      - &id006
+        $ref: '#/components/parameters/BranchFilter'
+      - &id008
+        $ref: '#/components/parameters/From'
+      - &id009
+        $ref: '#/components/parameters/To'
+      - &id007
+        name: format
         in: query
         required: false
         schema:
@@ -8249,7 +8256,14 @@ paths:
           enum:
           - json
           - csv
-          - xlsx
+        description: csv needs data.export, is audited (reports.exported) and answers text/csv with a BOM for Excel; xlsx
+          and an async job above 100,000 rows follow (RPT-003)
+      - name: groupBy
+        in: query
+        required: false
+        schema:
+          type: string
+        description: Comma list of `register`, `cashier` (day and branch always)
       responses:
         '200':
           description: Success
@@ -8291,28 +8305,22 @@ paths:
       - RPT-001
       - RPT-002
       - RPT-003
+      x-audited: true
   /reports/stock:
     get:
       operationId: reportStock
       tags:
       - Reports
-      summary: موجودی و ارزش
+      summary: موجودی و ارزش به تفکیک انبار
+      description: 'Current quantity and value per warehouse and variant. Read in place with plain reads: no lock a POS write
+        waits on (RPT-002); meta.dataAsOf is the time of the read. Only the branches the caller''s reports.view reaches (a
+        branch beyond it is 403); 422 report-too-large above 5,000 rows (100,000 as csv). '
       security: *id001
       parameters:
       - $ref: '#/components/parameters/Cursor'
       - $ref: '#/components/parameters/Limit'
-      - $ref: '#/components/parameters/BranchFilter'
-      - $ref: '#/components/parameters/From'
-      - $ref: '#/components/parameters/To'
-      - name: format
-        in: query
-        required: false
-        schema:
-          type: string
-          enum:
-          - json
-          - csv
-          - xlsx
+      - *id006
+      - *id007
       responses:
         '200':
           description: Success
@@ -8354,28 +8362,22 @@ paths:
       - RPT-001.1
       - RPT-002
       - RPT-003
+      x-audited: true
   /reports/returns:
     get:
       operationId: reportReturns
       tags:
       - Reports
-      summary: برگشتی‌ها
+      summary: برگشتی‌ها به تفکیک دلیل و صندوق‌دار
+      description: 'Not yet available: it comes with sales returns (US-093).'
       security: *id001
       parameters:
       - $ref: '#/components/parameters/Cursor'
       - $ref: '#/components/parameters/Limit'
-      - $ref: '#/components/parameters/BranchFilter'
-      - $ref: '#/components/parameters/From'
-      - $ref: '#/components/parameters/To'
-      - name: format
-        in: query
-        required: false
-        schema:
-          type: string
-          enum:
-          - json
-          - csv
-          - xlsx
+      - *id006
+      - *id008
+      - *id009
+      - *id007
       responses:
         '200':
           description: Success
@@ -8417,28 +8419,34 @@ paths:
       - RPT-001.2
       - RPT-002
       - RPT-003
+      x-audited: true
   /reports/gross-profit:
     get:
       operationId: reportGrossProfit
       tags:
       - Reports
-      summary: سود ناخالص (مبنای WAC)
+      summary: سود ناخالص (مبنای WAC در لحظه فروش)
+      description: 'Read in place with plain reads: no lock a POS write waits on (RPT-002); meta.dataAsOf is the time of the
+        read. Only the branches the caller''s reports.view reaches (a branch beyond it is 403); 422 report-too-large above
+        5,000 rows (100,000 as csv). Range [from, to), default the last 30 days, at most 366.'
       security: *id001
       parameters:
       - $ref: '#/components/parameters/Cursor'
       - $ref: '#/components/parameters/Limit'
-      - $ref: '#/components/parameters/BranchFilter'
-      - $ref: '#/components/parameters/From'
-      - $ref: '#/components/parameters/To'
-      - name: format
+      - *id006
+      - *id008
+      - *id009
+      - *id007
+      - name: groupBy
         in: query
         required: false
         schema:
           type: string
           enum:
-          - json
-          - csv
-          - xlsx
+          - day
+          - branch
+          - product
+          default: day
       responses:
         '200':
           description: Success
@@ -8480,6 +8488,7 @@ paths:
       - RPT-001.3
       - RPT-002
       - RPT-003
+      x-audited: true
   /audit:
     get:
       operationId: listAudit
@@ -8563,7 +8572,7 @@ paths:
       - PartnerApi
       summary: کاتالوگ Tenant (catalog.read)
       description: The store's products (not merged), with variants, barcodes and current prices. Needs catalog.read.
-      security: &id006
+      security: &id010
       - integrationKey: []
       parameters:
       - $ref: '#/components/parameters/Cursor'
@@ -8611,7 +8620,7 @@ paths:
       summary: موجودی (inventory.read؛ بدون بها)
       description: 'Quantities only: never the cost (WAC) or the value. 401 invalid-api-key for an unknown, wrong, revoked
         or expired key; 403 scope-missing without inventory.read; 120 calls a minute per key.'
-      security: *id006
+      security: *id010
       parameters:
       - $ref: '#/components/parameters/Cursor'
       - $ref: '#/components/parameters/Limit'
@@ -8670,7 +8679,7 @@ paths:
       tags:
       - Platform
       summary: فهرست Tenantها (فراداده)
-      security: &id007
+      security: &id011
       - platformBearer: []
       parameters:
       - $ref: '#/components/parameters/Cursor'
@@ -8714,7 +8723,7 @@ paths:
       tags:
       - Platform
       summary: تعلیق/فعال‌سازی
-      security: *id007
+      security: *id011
       parameters:
       - name: tenantId
         in: path
@@ -8763,7 +8772,7 @@ paths:
       tags:
       - Platform
       summary: درخواست JIT (تأیید با Owner)
-      security: *id007
+      security: *id011
       parameters:
       - name: tenantId
         in: path
@@ -8816,7 +8825,7 @@ paths:
       description: PlatformSupport with MFA, only while the store owner's grant to this operator is in force (403 support-access-required
         otherwise). No customer data, payment references or card digits; every call is audited in the store with actor kind
         Support.
-      security: *id007
+      security: *id011
       parameters:
       - name: tenantId
         in: path
@@ -8864,7 +8873,7 @@ paths:
       tags:
       - Platform
       summary: Policyهای مهلت مؤدیان
-      security: *id007
+      security: *id011
       responses:
         '200':
           description: Success
@@ -8901,7 +8910,7 @@ paths:
       tags:
       - Platform
       summary: نسخه جدید Policy مهلت
-      security: *id007
+      security: *id011
       requestBody:
         required: true
         content:
@@ -8942,7 +8951,7 @@ paths:
       tags:
       - Platform
       summary: Policyهای نگهداری
-      security: *id007
+      security: *id011
       responses:
         '200':
           description: Success
@@ -8978,7 +8987,7 @@ paths:
       tags:
       - Platform
       summary: تعیین کف و پیش‌فرض نگهداری
-      security: *id007
+      security: *id011
       requestBody:
         required: true
         content:
@@ -9018,7 +9027,7 @@ paths:
       tags:
       - Platform
       summary: صنف‌ها و قالب فاکتور
-      security: *id007
+      security: *id011
       responses:
         '200':
           description: Success
@@ -9055,7 +9064,7 @@ paths:
       tags:
       - Platform
       summary: نسخه جدید قالب صنف
-      security: *id007
+      security: *id011
       parameters:
       - name: code
         in: path
@@ -9106,7 +9115,7 @@ paths:
       - Platform
       summary: صف Moderation کاتالوگ
       description: CatalogModerator (MFA) only. Pending suggestions, oldest first; never which store sent one.
-      security: *id007
+      security: *id011
       parameters:
       - $ref: '#/components/parameters/Cursor'
       - $ref: '#/components/parameters/Limit'
@@ -9153,7 +9162,7 @@ paths:
       description: 'Publish copies only name, brand and category (edited if given) into the global catalog: a new product
         with its public barcode, or the product that already holds it, re-verified; every pending suggestion for that code
         is settled with it. Reject settles this one only. 409 already-decided.'
-      security: *id007
+      security: *id011
       parameters:
       - name: suggestionId
         in: path
@@ -11134,10 +11143,17 @@ components:
       properties:
         key:
           type: string
+          description: The day (yyyy-MM-dd, store-local), the branch id or the variant id, by groupBy
+        name:
+          type:
+          - string
+          - 'null'
+          description: SKU and name, with groupBy=product
         netSales:
           $ref: '#/components/schemas/Money'
         cost:
           $ref: '#/components/schemas/Money'
+          description: 'Σ costAtSale: the moving average of the moment of sale'
         grossProfit:
           $ref: '#/components/schemas/Money'
         marginBp:
@@ -11150,8 +11166,10 @@ components:
         itemsWithZeroCost:
           type: integer
           format: int32
+          description: 'Lines sold with a zero or unknown cost: their profit is overstated (RPT-001.3)'
       required:
       - key
+      - name
       - netSales
       - cost
       - grossProfit
@@ -13714,6 +13732,7 @@ components:
         businessDate:
           type: string
           format: date
+          description: The store's local day (its time zone), not UTC
         jalaliDate:
           type: string
           pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}$
@@ -13726,11 +13745,13 @@ components:
           - string
           - 'null'
           format: uuid
+          description: Only with groupBy=register
         cashierId:
           type:
           - string
           - 'null'
           format: uuid
+          description: Only with groupBy=cashier
         invoices:
           type: integer
           format: int32
@@ -13742,8 +13763,10 @@ components:
           $ref: '#/components/schemas/Money'
         net:
           $ref: '#/components/schemas/Money'
+          description: 'Σ line net: gross − discount'
         returns:
           $ref: '#/components/schemas/Money'
+          description: Always 0 until sales returns exist (US-093)
       required:
       - businessDate
       - jalaliDate
@@ -14188,13 +14211,18 @@ components:
           type: string
           format: uuid
         sku:
-          type: string
+          type:
+          - string
+          - 'null'
         name:
-          type: string
+          type:
+          - string
+          - 'null'
         onHand:
           $ref: '#/components/schemas/Quantity'
         value:
           $ref: '#/components/schemas/Money'
+          description: Σ qty × WAC
         belowReorderPoint:
           type: boolean
       required:
@@ -15907,6 +15935,9 @@ x-error-catalog:
   approval-not-pending:
     status: 409
     meaning: The request was already decided
+  report-too-large:
+    status: 422
+    meaning: 'The report has more rows than the cap (5,000; 100,000 as csv): narrow the range or the branch; context.limit'
   already-imported:
     status: 409
     meaning: This settlement file was imported before; context.importId (PAY-002.2)

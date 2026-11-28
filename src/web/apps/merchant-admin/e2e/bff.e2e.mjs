@@ -839,6 +839,28 @@ try {
   check('AR03', 'the cash ledger lists its lines with a running balance and exports as CSV for Excel',
     cashLines > 0 && csvDownload.suggestedFilename() === 'ledger-1101.csv', `${cashLines} ${csvDownload.suggestedFilename()}`);
   await shot(page, 'accounting-reports');
+  // RP01–RP03 US-161: the store's own sales (V07) show in the daily report with the time of the data; profit and stock value
+  // follow the same sale; the CSV opens as a download for someone who may export (RPT-001..003, AT-170, AT-171, AT-173, AT-175)
+  await page.goto(`${BFF}/reports`);
+  await page.getByTestId('rp-show').click();
+  await page.getByTestId('report').waitFor();
+  const dailyRows = await page.locator('[data-testid="row"]').evaluateAll((els) => els.map((e) => [e.getAttribute('data-invoices'), e.getAttribute('data-net')]));
+  check('RP01', 'the daily sales report lists the finalized sale of the day with the time its data was read',
+    dailyRows.length >= 1 && Number(dailyRows[0][0]) >= 1 && Number(dailyRows[0][1]) > 0 && ((await page.getByTestId('report-meta').textContent()) ?? '').includes('به‌روزرسانی'),
+    JSON.stringify(dailyRows));
+  await page.getByTestId('tab-gross-profit').click();
+  await page.getByTestId('rp-show').click();
+  await page.locator('[data-testid="report"][data-report="gross-profit"]').waitFor();
+  const profit = await page.locator('[data-testid="row"]').first().getAttribute('data-profit');
+  await page.getByTestId('tab-stock').click();
+  await page.getByTestId('rp-show').click();
+  await page.locator('[data-testid="report"][data-report="stock"]').waitFor();
+  const colaValue = (await page.locator('[data-testid="row"][data-sku="E2E-COLA"]').first().getAttribute('data-value')) ?? '';
+  check('RP02', 'gross profit is net sales less the cost at sale, and the stock report values what is left at average cost',
+    Number(profit) > 0 && Number(colaValue) > 0, `${profit} ${colaValue}`);
+  const [reportCsv] = await Promise.all([page.waitForEvent('download'), page.getByTestId('rp-export').click()]);
+  check('RP03', 'the report exports as CSV for the owner (data export right)', reportCsv.suggestedFilename() === 'stock.csv', reportCsv.suggestedFilename());
+  await shot(page, 'reports');
   await page.goto(BFF);
   await page.getByTestId('logout').waitFor();
 

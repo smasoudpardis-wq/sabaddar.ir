@@ -563,11 +563,16 @@ schema("ReceiptTemplate", industryTemplateVersion=("desc", "str", "e.g. supermar
 schema("ReceiptTemplateUpdate", expectedVersion="int",
        overrides={"logoObjectKey?": ("desc", "str", "Not yet supported (uploads with US-092)"), "footerText?": ("desc", "str", "Up to 300 characters"),
                   "signature?": ("desc", "str", "Up to 100 characters")})
-schema("SalesDailyRow", businessDate="date", jalaliDate="jalali", branchId="uuid", registerId="uuid?", cashierId="uuid?",
-       invoices="int", gross="money", discount="money", tax="money", net="money", returns="money")
-schema("StockReportRow", warehouseId="uuid", variantId="uuid", sku="str", name="str", onHand="qty", value="money", belowReorderPoint="bool")
-schema("GrossProfitRow", key="str", netSales="money", cost="money", grossProfit="money", marginBp="int",
-       costBasis=("enum", ["MovingWeightedAverageAtSale"]), itemsWithZeroCost="int")
+schema("SalesDailyRow", businessDate=("desc", "date", "The store's local day (its time zone), not UTC"), jalaliDate="jalali", branchId="uuid",
+       registerId=("desc", "uuid?", "Only with groupBy=register"), cashierId=("desc", "uuid?", "Only with groupBy=cashier"),
+       invoices="int", gross="money", discount="money", tax="money", net=("desc", "money", "Σ line net: gross − discount"),
+       returns=("desc", "money", "Always 0 until sales returns exist (US-093)"))
+schema("StockReportRow", warehouseId="uuid", variantId="uuid", sku="str?", name="str?", onHand="qty", value=("desc", "money", "Σ qty × WAC"),
+       belowReorderPoint="bool")
+schema("GrossProfitRow", key=("desc", "str", "The day (yyyy-MM-dd, store-local), the branch id or the variant id, by groupBy"), name=("desc", "str?", "SKU and name, with groupBy=product"),
+       netSales="money", cost=("desc", "money", "Σ costAtSale: the moving average of the moment of sale"), grossProfit="money", marginBp="int",
+       costBasis=("enum", ["MovingWeightedAverageAtSale"]),
+       itemsWithZeroCost=("desc", "int", "Lines sold with a zero or unknown cost: their profit is overstated (RPT-001.3)"))
 schema("ReturnsReportRow", reason="str", cashierId="uuid", count="int", amount="money")
 schema("ReportMeta", generatedAt="dt", dataAsOf=("desc", "dt", "Read model freshness (RPT-002)"))
 schema("AuditRecord", seq="long", occurredAt="dt", actorKind="str", actorId="uuid?", actorRoles=["str"], impersonatedBy="uuid?",
@@ -712,6 +717,7 @@ ERROR_CATALOG = {
     "self-approval": (403, "The requester cannot approve their own request (SoD-01)"),
     "approval-expired": (409, "The pending request expired (10 minutes)"),
     "approval-not-pending": (409, "The request was already decided"),
+    "report-too-large": (422, "The report has more rows than the cap (5,000; 100,000 as csv): narrow the range or the branch; context.limit"),
     "already-imported": (409, "This settlement file was imported before; context.importId (PAY-002.2)"),
     "invalid-settlement-file": (400, "The settlement CSV has unreadable rows; nothing imported; context.rows[] (line, field, message)"),
     "duplicate-code": (409, "Branch code (per tenant), register code (per branch), product SKU (per tenant) or variant axis values (per product, DI-081) already used"),
@@ -1415,16 +1421,28 @@ op("post", "/integrations/keys", "createIntegrationKey", "Settings", "کلید A
 op("delete", "/integrations/keys/{keyId}", "revokeIntegrationKey", "Settings", "ابطال کلید API", perm="integrations.manage",
    scope="Tenant", no_content=True, reqs=["INT-001"], audited=True)
 tag("Reports", "گزارش‌ها از Read Model (RPT)")
-for path, opid, sch, summ, rq in [
-        ("/reports/sales-daily", "reportSalesDaily", "SalesDailyRow", "فروش روزانه", ["RPT-001"]),
-        ("/reports/stock", "reportStock", "StockReportRow", "موجودی و ارزش", ["RPT-001.1"]),
-        ("/reports/returns", "reportReturns", "ReturnsReportRow", "برگشتی‌ها", ["RPT-001.2"]),
-        ("/reports/gross-profit", "reportGrossProfit", "GrossProfitRow", "سود ناخالص (مبنای WAC)", ["RPT-001.3"])]:
-    op("get", path, opid, "Reports", summ, perm="reports.view", scope="Branch",
-       params=[{"$ref": "#/components/parameters/BranchFilter"}, {"$ref": "#/components/parameters/From"},
-               {"$ref": "#/components/parameters/To"},
-               {"name": "format", "in": "query", "required": False, "schema": {"type": "string", "enum": ["json", "csv", "xlsx"]}}],
-       resp=sch, list_of=True, page=True, reqs=rq + ["RPT-002", "RPT-003"])
+REPORT_COMMON = [{"$ref": "#/components/parameters/BranchFilter"}]
+REPORT_RANGE_Q = [{"$ref": "#/components/parameters/From"}, {"$ref": "#/components/parameters/To"}]
+REPORT_FORMAT = {"name": "format", "in": "query", "required": False, "schema": {"type": "string", "enum": ["json", "csv"]},
+                 "description": "csv needs data.export, is audited (reports.exported) and answers text/csv with a BOM for Excel; xlsx and "
+                                "an async job above 100,000 rows follow (RPT-003)"}
+REPORT_DESC = ("Read in place with plain reads: no lock a POS write waits on (RPT-002); meta.dataAsOf is the time of the read. Only the branches "
+               "the caller's reports.view reaches (a branch beyond it is 403); 422 report-too-large above 5,000 rows (100,000 as csv). "
+               "Range [from, to), default the last 30 days, at most 366.")
+op("get", "/reports/sales-daily", "reportSalesDaily", "Reports", "فروش روزانه به تفکیک شعبه، صندوق و صندوق‌دار", perm="reports.view", scope="Branch",
+   params=REPORT_COMMON + REPORT_RANGE_Q + [REPORT_FORMAT, {"name": "groupBy", "in": "query", "required": False, "schema": {"type": "string"},
+                                                          "description": "Comma list of `register`, `cashier` (day and branch always)"}],
+   resp="SalesDailyRow", list_of=True, page=True, reqs=["RPT-001", "RPT-002", "RPT-003"], audited=True, desc=REPORT_DESC)
+op("get", "/reports/stock", "reportStock", "Reports", "موجودی و ارزش به تفکیک انبار", perm="reports.view", scope="Branch",
+   params=REPORT_COMMON + [REPORT_FORMAT], resp="StockReportRow", list_of=True, page=True, reqs=["RPT-001.1", "RPT-002", "RPT-003"], audited=True,
+   desc="Current quantity and value per warehouse and variant. " + REPORT_DESC.split("Range")[0])
+op("get", "/reports/returns", "reportReturns", "Reports", "برگشتی‌ها به تفکیک دلیل و صندوق‌دار", perm="reports.view", scope="Branch",
+   params=REPORT_COMMON + REPORT_RANGE_Q + [REPORT_FORMAT], resp="ReturnsReportRow", list_of=True, page=True, reqs=["RPT-001.2", "RPT-002", "RPT-003"],
+   audited=True, desc="Not yet available: it comes with sales returns (US-093).")
+op("get", "/reports/gross-profit", "reportGrossProfit", "Reports", "سود ناخالص (مبنای WAC در لحظه فروش)", perm="reports.view", scope="Branch",
+   params=REPORT_COMMON + REPORT_RANGE_Q + [REPORT_FORMAT, {"name": "groupBy", "in": "query", "required": False,
+                                                          "schema": {"type": "string", "enum": ["day", "branch", "product"], "default": "day"}}],
+   resp="GrossProfitRow", list_of=True, page=True, reqs=["RPT-001.3", "RPT-002", "RPT-003"], audited=True, desc=REPORT_DESC)
 tag("Audit", "ممیزی")
 op("get", "/audit", "listAudit", "Audit", "رکوردهای ممیزی Tenant", perm="audit.view", scope="Tenant",
    params=[{"$ref": "#/components/parameters/From"}, {"$ref": "#/components/parameters/To"},

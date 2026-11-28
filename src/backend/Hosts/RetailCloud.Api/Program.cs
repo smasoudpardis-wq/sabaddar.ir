@@ -56,6 +56,7 @@ builder.Services.AddSingleton<ISettlements, RetailCloud.Payments.Infrastructure.
 builder.Services.AddSingleton<IShifts, PostgresShifts>();
 builder.Services.AddSingleton<IJournals, PostgresJournals>();
 builder.Services.AddSingleton<IAccountingReports, PostgresAccountingReports>();
+builder.Services.AddSingleton<ISalesReports, PostgresSalesReports>();
 ObjectStorageOptions? storage = builder.Configuration.GetSection("Storage").Get<ObjectStorageOptions>();
 builder.Services.AddSingleton<IObjectStorage>(storage is { ServiceUrl.Length: > 0 } ? new S3ObjectStorage(storage) : new UnconfiguredObjectStorage());
 builder.Services.AddSingleton<IIdempotencyStore, PostgresIdempotencyStore>();
@@ -839,6 +840,136 @@ v1.MapGet("/accounting/reports/ledger/{accountId:guid}", async (Guid accountId, 
         });
     })
     .RequirePermission(Permissions.AccountingRead);
+
+// US-161 / RPT-001..003: sales, stock and gross profit for the branches the caller may see (reports.view reach), read in place
+// (plain READ COMMITTED reads: nothing a POS write waits on, RPT-002); CSV only with data.export, audited. Rows are capped.
+const int ReportJsonRows = 5_000, ReportCsvRows = 100_000;
+
+async Task<IResult> ReportAsync<T>(HttpContext http, RequestContext ctx, IUnitOfWork uow, string report, bool ranged, Guid? branchId, DateTimeOffset? from,
+    DateTimeOffset? to, string? format, Func<IUnitOfWorkScope, ReportScope, int, CancellationToken, Task<IReadOnlyList<T>>> load, Func<T, object> json,
+    string[] header, Func<T, string[]> csvRow, CancellationToken ct)
+{
+    DateTimeOffset now = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
+    DateTimeOffset until = to ?? now, since = from ?? until.AddDays(-30);
+    var errors = new Dictionary<string, string[]>();
+    if (format is not (null or "json" or "csv")) errors["format"] = ["json|csv"];
+    if (ranged && (since >= until || until - since > TimeSpan.FromDays(366))) errors["range"] = ["from < to, at most 366 days"];
+    if (errors.Count > 0) return Problems.Validation(http, errors);
+    bool csv = format == "csv";
+    var grants = ctx.ActiveMembership!.Assignments;
+    if (csv && !AccessPolicy.Allows(grants, Permissions.DataExport, ScopeRef.Tenant)) return Forbidden(http);
+
+    TenantProfile profile = (await http.RequestServices.GetRequiredService<ITenantProfileQuery>().GetAsync(ctx.ActiveTenant!.Value, ct))!;
+    int cap = csv ? ReportCsvRows : ReportJsonRows;
+    (IReadOnlyList<T>? Rows, IResult? Problem) outcome = await uow.ExecuteAsync(ctx, async (s, c) =>
+    {
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)s).Command("SELECT id FROM platform.branch");
+        var all = new List<Guid>();
+        await using (NpgsqlDataReader r = await cmd.ExecuteReaderAsync(c)) while (await r.ReadAsync(c)) all.Add(r.GetGuid(0));
+        List<Guid> allowed = [.. all.Where(b => AccessPolicy.Allows(grants, Permissions.ReportsView, new ScopeRef(ScopeType.Branch, b, b)))];
+        if (branchId is { } one)
+        {
+            if (!all.Contains(one)) return ((IReadOnlyList<T>?)null, (IResult?)Problems.NotFound(http));
+            if (!allowed.Contains(one)) return ((IReadOnlyList<T>?)null, (IResult?)Forbidden(http));
+            allowed = [one];
+        }
+
+        IReadOnlyList<T> rows = await load(s, new ReportScope(allowed, profile.TimeZone, since, until), cap + 1, c);
+        if (rows.Count > cap)
+        {
+            return ((IReadOnlyList<T>?)null, (IResult?)Problems.WithContext(http, StatusCodes.Status422UnprocessableEntity, "report-too-large", "The report has too many rows: narrow the range or the branch",
+                new { limit = cap }));
+        }
+
+        if (csv)
+        {
+            await Audit(http, s, ActorOf(ctx, http), new AuditEntry("reports.exported", "Report", report, null, new { report, from = ranged ? since : (DateTimeOffset?)null, to = ranged ? until : (DateTimeOffset?)null, branchId, rows = rows.Count }), c);
+        }
+
+        return ((IReadOnlyList<T>?)rows, (IResult?)null);
+    }, ct);
+    if (outcome.Problem is not null) return outcome.Problem;
+    IReadOnlyList<T> result = outcome.Rows!;
+    if (csv)
+    {
+        string text = SalesReportRules.Csv(header, result.Select(csvRow));
+        return Results.File(new System.Text.UTF8Encoding(true).GetPreamble().Concat(System.Text.Encoding.UTF8.GetBytes(text)).ToArray(), "text/csv; charset=utf-8", $"{report}.csv");
+    }
+
+    return Results.Ok(new { items = result.Select(json), page = new { nextCursor = (string?)null, hasMore = false }, meta = new { generatedAt = now, dataAsOf = now } });
+}
+
+v1.MapGet("/reports/sales-daily", async (RequestContext ctx, IUnitOfWork uow, ISalesReports sales, HttpContext http, Guid? branchId, DateTimeOffset? from,
+        DateTimeOffset? to, string? format, string? groupBy, CancellationToken ct) =>
+    {
+        string[] groups = groupBy?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) ?? [];
+        if (groups.Any(g => g is not ("register" or "cashier"))) return Problems.Validation(http, new Dictionary<string, string[]> { ["groupBy"] = ["register,cashier"] });
+        bool byRegister = groups.Contains("register"), byCashier = groups.Contains("cashier");
+        return await ReportAsync<SalesDailyLine>(http, ctx, uow, "sales-daily", true, branchId, from, to, format,
+            (s, rs, limit, c) => sales.DailyAsync(s, rs.From, rs.To, rs.TimeZone, rs.Branches, byRegister, byCashier, limit, c),
+            l => new
+            {
+                businessDate = l.BusinessDate, jalaliDate = SalesReportRules.Jalali(l.BusinessDate), l.BranchId, registerId = l.RegisterId, cashierId = l.CashierId,
+                invoices = l.Invoices, gross = Rial(l.Gross), discount = Rial(l.Discount), tax = Rial(l.Tax), net = Rial(l.Net), returns = "0",
+            },
+            ["Date", "JalaliDate", "BranchId", "RegisterId", "CashierId", "Invoices", "Gross", "Discount", "Tax", "Net"],
+            l => [l.BusinessDate.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), SalesReportRules.Jalali(l.BusinessDate), l.BranchId.ToString(),
+                l.RegisterId?.ToString() ?? "", l.CashierId?.ToString() ?? "", l.Invoices.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                Rial(l.Gross), Rial(l.Discount), Rial(l.Tax), Rial(l.Net)], ct);
+    })
+    .RequirePermission(Permissions.ReportsView);
+
+v1.MapGet("/reports/gross-profit", async (RequestContext ctx, IUnitOfWork uow, ISalesReports sales, HttpContext http, Guid? branchId, DateTimeOffset? from,
+        DateTimeOffset? to, string? format, string? groupBy, CancellationToken ct) =>
+    {
+        if (!Enum.TryParse(groupBy ?? "day", ignoreCase: true, out GrossProfitGroup group) || !Enum.IsDefined(group))
+        {
+            return Problems.Validation(http, new Dictionary<string, string[]> { ["groupBy"] = ["day|branch|product"] });
+        }
+
+        return await ReportAsync<GrossProfitLine>(http, ctx, uow, "gross-profit", true, branchId, from, to, format,
+            (s, rs, limit, c) => sales.GrossProfitAsync(s, rs.From, rs.To, rs.TimeZone, rs.Branches, group, limit, c),
+            l => new
+            {
+                l.Key, l.Name, netSales = Rial(l.NetSales), cost = Rial(l.Cost), grossProfit = Rial(l.NetSales - l.Cost),
+                marginBp = SalesReportRules.MarginBp(l.NetSales, l.NetSales - l.Cost), costBasis = "MovingWeightedAverageAtSale", itemsWithZeroCost = l.ItemsWithZeroCost,
+            },
+            ["Key", "Name", "NetSales", "Cost", "GrossProfit", "MarginBp", "CostBasis", "ItemsWithZeroCost"],
+            l => [l.Key, l.Name ?? "", Rial(l.NetSales), Rial(l.Cost), Rial(l.NetSales - l.Cost),
+                SalesReportRules.MarginBp(l.NetSales, l.NetSales - l.Cost).ToString(System.Globalization.CultureInfo.InvariantCulture), "MovingWeightedAverageAtSale",
+                l.ItemsWithZeroCost.ToString(System.Globalization.CultureInfo.InvariantCulture)], ct);
+    })
+    .RequirePermission(Permissions.ReportsView);
+
+v1.MapGet("/reports/stock", async (RequestContext ctx, IUnitOfWork uow, IStockLedger ledger, IProductCatalog catalog, HttpContext http, Guid? branchId, string? format,
+        CancellationToken ct) =>
+    {
+        var names = new Dictionary<Guid, SellableVariant>();
+        var branchOf = new Dictionary<Guid, Guid>();
+        return await ReportAsync<StockBalanceView>(http, ctx, uow, "stock", false, branchId, null, null, format,
+            async (s, rs, limit, c) =>
+            {
+                await using (NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)s).Command("SELECT id, branch_id FROM inv.warehouse"))
+                await using (NpgsqlDataReader r = await cmd.ExecuteReaderAsync(c)) while (await r.ReadAsync(c)) branchOf[r.GetGuid(0)] = r.GetGuid(1);
+                IReadOnlyList<StockBalanceView> rows = [.. (await ledger.BalancesAsync(s, null, null, c)).Where(b => branchOf.TryGetValue(b.WarehouseId, out Guid br) && rs.Branches.Contains(br))
+                    .OrderBy(b => b.WarehouseId).ThenBy(b => b.VariantId).Take(limit)];
+                foreach (Guid v in rows.Select(b => b.VariantId).Distinct())
+                {
+                    if (await catalog.SellableAsync(s, v, c) is { } sv) names[v] = sv;
+                }
+
+                return rows;
+            },
+            b => new
+            {
+                b.WarehouseId, b.VariantId, sku = names.GetValueOrDefault(b.VariantId)?.Sku, name = names.GetValueOrDefault(b.VariantId)?.Name,
+                onHand = Qty(b.OnHand), value = Rial(b.Value), belowReorderPoint = b.BelowReorderPoint,
+            },
+            ["WarehouseId", "VariantId", "Sku", "Name", "OnHand", "Value", "BelowReorderPoint"],
+            b => [b.WarehouseId.ToString(), b.VariantId.ToString(), names.GetValueOrDefault(b.VariantId)?.Sku ?? "", names.GetValueOrDefault(b.VariantId)?.Name ?? "",
+                Qty(b.OnHand), Rial(b.Value), b.BelowReorderPoint ? "true" : "false"], ct);
+    })
+    .RequirePermission(Permissions.ReportsView);
 
 v1.MapIdempotentPost<JournalCreateInput>("/accounting/journals", "accounting.create-journal", async (body, scope, http, ct) =>
     {
@@ -4597,6 +4728,7 @@ v1.MapDelete("/users/{userId:guid}/role-assignments/{assignmentId:guid}", async 
 await app.RunAsync();
 
 internal sealed record SelectTenant(Guid TenantId);
+internal sealed record ReportScope(IReadOnlyList<Guid> Branches, string TimeZone, DateTimeOffset From, DateTimeOffset To);
 internal sealed record SettlementImportInput(string? FileName, string? Content);
 internal sealed record UserUpdateInput(int? ExpectedVersion, string? Status, string? DisplayName);
 internal sealed record AccountCreateInput(string? Code, string? Name, string? AccountType, Guid? ParentId, bool? RequiresDetail);
