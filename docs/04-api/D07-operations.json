@@ -107,6 +107,34 @@
   "idempotent": false
  },
  {
+  "operationId": "listNotificationTemplates",
+  "method": "GET",
+  "path": "/settings/notification-templates",
+  "permission": "tenant.settings.manage",
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
+ },
+ {
+  "operationId": "updateNotificationTemplate",
+  "method": "PUT",
+  "path": "/settings/notification-templates/{code}",
+  "permission": "tenant.settings.manage",
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [
+   "code"
+  ],
+  "bodyProps": [
+   "expectedVersion",
+   "signature",
+   "storeName"
+  ],
+  "idempotent": false
+ },
+ {
   "operationId": "listBranches",
   "method": "GET",
   "path": "/branches",

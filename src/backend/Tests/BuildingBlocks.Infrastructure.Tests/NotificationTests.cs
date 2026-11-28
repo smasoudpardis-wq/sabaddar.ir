@@ -200,4 +200,31 @@ public sealed class NotificationTests
         Assert.Equal($"{id}:Sms:2", Assert.Single(channel.Sent).IdempotencyKey);
         Assert.Equal(("Sent", 2), ((await StateAsync(tenant, id)).Status, (await StateAsync(tenant, id)).Attempts));
     }
+
+    [DbFact]
+    public async Task The_Workers_send_the_text_with_the_stores_newest_name_and_signature_and_a_later_edit_does_not_touch_the_platform_text()
+    {
+        var (tenant, id) = await QueueAsync(Receipt());
+        await using (var ds = NpgsqlDataSource.Create(App))
+        {
+            await new PostgresUnitOfWork(ds).ExecuteAsync(new FixedTenantContext(new TenantId(tenant)), async (s, ct) =>
+            {
+                var overrides = new PostgresTemplateOverrides();
+                var first = await overrides.PublishAsync(s, "receipt", 0, "نان‌آور", null, Guid.NewGuid(), ct);
+                var second = await overrides.PublishAsync(s, "receipt", 1, "نان‌آور", "با تشکر", Guid.NewGuid(), ct);
+                var stale = await overrides.PublishAsync(s, "receipt", 1, "دیگر", null, Guid.NewGuid(), ct);
+                Assert.Equal((TemplateChange.Done, TemplateChange.Done, TemplateChange.VersionConflict), (first.Outcome, second.Outcome, stale.Outcome));
+                Assert.Equal(2, (await overrides.LatestAsync(s, ct)).Single(v => v.Code == "receipt").Version);
+                Assert.Equal(0, (await overrides.LatestAsync(s, ct)).Single(v => v.Code == "due-reminder").Version);
+                return 0;
+            });
+        }
+
+        var channel = new ScriptedChannel(ChannelOutcome.Sent);
+        await RunAsync(tenant, channel);
+        string text = Assert.Single(channel.Sent).Text;
+        Assert.StartsWith("نان‌آور:", text, StringComparison.Ordinal);
+        Assert.EndsWith("با تشکر", text, StringComparison.Ordinal);
+        Assert.Contains("1,000", text, StringComparison.Ordinal);
+    }
 }

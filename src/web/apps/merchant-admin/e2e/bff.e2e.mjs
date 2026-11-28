@@ -885,6 +885,24 @@ try {
   await page.goto(BFF);
   await page.getByTestId('logout').waitFor();
 
+  // SM01–SM02 US-152: the store signs its SMS with its own name and signature; the preview follows, a link is refused (NOT-009, AT-147)
+  await page.goto(`${BFF}/sms-templates`);
+  await page.getByTestId('tpl-receipt').waitFor();
+  await page.locator('input[name="name-receipt"]').fill('نان‌آور');
+  await page.locator('input[name="sig-receipt"]').fill('با تشکر از خرید شما');
+  await page.getByTestId('tpl-save-receipt').click();
+  await page.getByTestId('tpl-saved-receipt').waitFor();
+  const smsPreview = (await page.getByTestId('tpl-preview-receipt').textContent()) ?? '';
+  check('SM01', 'the saved name opens the SMS preview and the signature closes it',
+    smsPreview.includes('نان‌آور:') && smsPreview.includes('با تشکر از خرید شما'), smsPreview);
+  await page.locator('input[name="sig-receipt"]').fill('سایت http://x.ir');
+  await page.getByTestId('tpl-save-receipt').click();
+  const smsError = ((await page.getByTestId('sms-error').textContent()) ?? '');
+  check('SM02', 'a link in the store\'s own words is refused', smsError.includes('بدون لینک'), smsError);
+  await shot(page, 'sms-templates');
+  await page.goto(BFF);
+  await page.getByTestId('logout').waitFor();
+
   // D01–D05 US-024: my sessions on every device; sign one out, disable a colleague (IAM-009), sign out everywhere
   const signInCashier = async () => {
     const c = await browser.newContext();

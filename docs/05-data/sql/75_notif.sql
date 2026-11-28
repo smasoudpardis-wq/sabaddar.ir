@@ -79,6 +79,25 @@ GRANT USAGE ON SCHEMA notif TO rc_app, rc_worker, rc_reporting;
 GRANT SELECT, INSERT ON notif.notification TO rc_app;                       -- producers queue; only the Workers send
 GRANT SELECT, INSERT, UPDATE ON notif.notification, notif.notification_attempt TO rc_worker;
 GRANT SELECT (tenant_id, id, purpose, channel, status, attempts, created_at, updated_at) ON notif.notification TO rc_reporting;
+-- NOT-009 (US-152): a store changes only the name it signs with and a closing signature of its SMS texts; the text itself
+-- belongs to the platform template. Each change is a new version (append-only); the dispatcher uses the newest.
+CREATE TABLE notif.template_override (
+  tenant_id     uuid NOT NULL,
+  template_code text NOT NULL CHECK (template_code IN ('receipt','due-reminder')),
+  version       int  NOT NULL CHECK (version >= 1),
+  store_name    text CHECK (store_name IS NULL OR char_length(btrim(store_name)) BETWEEN 1 AND 30),
+  signature     text CHECK (signature IS NULL OR char_length(btrim(signature)) BETWEEN 1 AND 40),
+  created_by    uuid NOT NULL,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, template_code, version),
+  CHECK (store_name !~ '[[:cntrl:]]' AND signature !~ '[[:cntrl:]]')
+);
+CALL core.enable_tenant_rls('notif.template_override');
+CREATE TRIGGER tr_template_override_append_only BEFORE UPDATE OR DELETE ON notif.template_override
+  FOR EACH ROW EXECUTE FUNCTION core.forbid_update_delete();
+GRANT SELECT, INSERT ON notif.template_override TO rc_app;
+GRANT SELECT ON notif.template_override TO rc_worker;
+
 -- BR-087 (US-173): the Workers delete old notifications by the retention policy, and the trigger refuses any deletion
 -- inside the store's retention or under a legal hold, whoever asks.
 GRANT DELETE ON notif.notification, notif.notification_attempt TO rc_worker;

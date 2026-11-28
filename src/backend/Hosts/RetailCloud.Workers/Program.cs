@@ -33,6 +33,15 @@ if (builder.Configuration.GetValue<bool>("Notifications:DevChannel"))
     // Development only: a logging SMS channel; the real SMS/Bale adapters come with the provider contracts (X-03)
     builder.Services.AddSingleton<RetailCloud.Notifications.Application.INotificationChannel, RetailCloud.Notifications.Infrastructure.DevSmsChannel>();
 }
+else if (builder.Configuration["Notifications:Sms:BaseUrl"] is { Length: > 0 } smsUrl)
+{
+    // US-152: the provider's service line (X-03 supplies the contract); the key comes from the environment, never from the repository
+    var sms = new RetailCloud.Notifications.Infrastructure.SmsProviderOptions(smsUrl, builder.Configuration["Notifications:Sms:ApiKey"] ?? "",
+        builder.Configuration["Notifications:Sms:SenderLine"] ?? "");
+    builder.Services.AddSingleton<RetailCloud.Notifications.Application.IRecipientAddressResolver, RetailCloud.Notifications.Infrastructure.NoAddressResolver>();
+    builder.Services.AddSingleton<RetailCloud.Notifications.Application.INotificationChannel>(sp => new RetailCloud.Notifications.Infrastructure.HttpSmsChannel(
+        new HttpClient { Timeout = TimeSpan.FromSeconds(10) }, sms, sp.GetRequiredService<RetailCloud.Notifications.Application.IRecipientAddressResolver>()));
+}
 
 builder.Services.AddSingleton<OracleRunner>();
 builder.Services.AddSingleton(TimeProvider.System);

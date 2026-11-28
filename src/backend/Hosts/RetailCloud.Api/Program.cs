@@ -6,6 +6,7 @@ using RetailCloud.BuildingBlocks.Infrastructure;
 using Microsoft.Extensions.Caching.Memory;
 using RetailCloud.IdentityAccess.Application;
 using RetailCloud.IdentityAccess.Infrastructure;
+using RetailCloud.Notifications.Application;
 using RetailCloud.Platform.Application;
 using RetailCloud.Platform.Infrastructure;
 using RetailCloud.Merchandising.Application;
@@ -45,6 +46,7 @@ builder.Services.AddSingleton<ICatalogProvider>(_ =>
 });
 builder.Services.AddSingleton<IIndustryTemplates, RetailCloud.Platform.Infrastructure.PostgresIndustryTemplates>();
 builder.Services.AddSingleton<IRetention, RetailCloud.Platform.Infrastructure.PostgresRetention>();
+builder.Services.AddSingleton<ITemplateOverrides, RetailCloud.Notifications.Infrastructure.PostgresTemplateOverrides>();
 builder.Services.AddSingleton<IReceiptTemplateOverrides, PostgresReceiptTemplateOverrides>();
 builder.Services.AddSingleton<IStockLedger, RetailCloud.Inventory.Infrastructure.PostgresStockLedger>();
 builder.Services.AddSingleton<IStockAdjustments, RetailCloud.Inventory.Infrastructure.PostgresStockAdjustments>();
@@ -579,6 +581,52 @@ static object StoreRetentionJson(StoreRetentionView v) => new
     category = v.Category, minimumDays = v.MinimumDays, defaultDays = v.DefaultDays, overrideDays = v.OverrideDays, effectiveDays = v.EffectiveDays,
     legalHold = v.LegalHold, holdReason = v.HoldReason, holdUntil = v.HoldUntil,
 };
+
+// ---------------- US-152: the store's own words in its SMS texts (NOT-009)
+v1.MapGet("/settings/notification-templates", async (RequestContext ctx, IUnitOfWork uow, ITemplateOverrides templates, CancellationToken ct) =>
+        Results.Ok(new { items = (await uow.ExecuteAsync(ctx, (s, c) => templates.LatestAsync(s, c), ct)).Select(SmsTemplateJson) }))
+    .RequirePermission(Permissions.TenantSettingsManage);
+
+v1.MapPut("/settings/notification-templates/{code}", async (string code, SmsTemplateInput body, RequestContext ctx, IUnitOfWork uow,
+        ITemplateOverrides templates, HttpContext http, CancellationToken ct) =>
+    {
+        if (!SmsTextRules.Codes.Contains(code)) return Problems.NotFound(http);
+        var errors = new Dictionary<string, string[]>();
+        if (body.ExpectedVersion is null or < 0) errors["expectedVersion"] = ["required"];
+        if (SmsTextRules.Problem(body.StoreName, body.Signature) is { } problem) errors[problem.Split(':')[0]] = [problem];
+        if (errors.Count > 0) return Problems.Validation(http, errors);
+        var (outcome, current) = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            var result = await templates.PublishAsync(s, code, body.ExpectedVersion!.Value, body.StoreName, body.Signature, ctx.User!.Value.Value, c);
+            if (result.Outcome == TemplateChange.Done)
+            {
+                await Audit(http, s, ActorOf(ctx, http), new AuditEntry("settings.notification-template.updated", "NotificationTemplate", code,
+                    Details: new { code, version = result.Current!.Version }), c);
+            }
+
+            return result;
+        }, ct);
+        return outcome == TemplateChange.VersionConflict
+            ? Problems.Create(http, StatusCodes.Status409Conflict, "version-conflict", "The text was changed meanwhile; reload it")
+            : Results.Ok(SmsTemplateJson(current!));
+    })
+    .RequirePermission(Permissions.TenantSettingsManage);
+
+static object SmsTemplateJson(TemplateOverrideView v)
+{
+    var sample = new Dictionary<string, string>
+    {
+        ["storeName"] = "فروشگاه نمونه", ["amount"] = "1,250,000", ["link"] = "https://r.example/abc", ["dueDate"] = "۱۴۰۵/۰۹/۱۵",
+    };
+    var fields = new[] { "storeName", "amount", "link", "dueDate" };
+    string? text = NotificationTemplates.Text(v.Code, 1);
+    var payload = sample.Where(kv => text!.Contains("{" + kv.Key + "}", StringComparison.Ordinal)).ToDictionary(kv => kv.Key, kv => kv.Value);
+    return new
+    {
+        code = v.Code, version = v.Version, platformText = text, storeName = v.StoreName, signature = v.Signature,
+        preview = NotificationTemplates.Render(v.Code, 1, payload, new TemplateOverride(v.StoreName, v.Signature)),
+    };
+}
 
 // ---------------- US-013: POS terminals (TEN-002.1, ABAC-04)
 v1.MapPost("/branches/{branchId:guid}/pairing-codes", async (Guid branchId, RequestContext ctx, IUnitOfWork uow, ITerminalAdministration terminals,
@@ -4893,6 +4941,7 @@ internal sealed record ReceiptOverridesInput(string? LogoObjectKey, string? Foot
 internal sealed record ReceiptTemplateUpdateInput(int? ExpectedVersion, ReceiptOverridesInput? Overrides);
 internal sealed record RetentionPolicyInput(string? Category, int? MinimumDays, int? DefaultDays, DateTimeOffset? ValidFrom, string? Reason);
 internal sealed record LegalHoldInput(string? Reason, DateTimeOffset? Until);
+internal sealed record SmsTemplateInput(int? ExpectedVersion, string? StoreName, string? Signature);
 internal sealed record RetentionDaysInput(int? Days);
 internal sealed record IndustryProfileUpdateInput(int? ExpectedVersion, string? LegalText, string[]? LockedFields, string? Reason);
 internal sealed record HoldInput(int? ExpectedVersion, string? Note);

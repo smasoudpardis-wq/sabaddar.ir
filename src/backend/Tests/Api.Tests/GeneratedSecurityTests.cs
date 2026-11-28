@@ -29,6 +29,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
     private static readonly Dictionary<string, string> NotTenantResources = new()
     {
         ["token"] = "an invitation token is a bearer capability; it is not tied to the caller's tenant (AT-011 covers it)",
+        ["code"] = "a template code, not an id: a store only ever edits its own SMS texts (NOT-009)",
         ["category"] = "a data category name, not an id: a store only ever reads and sets its own retention (AT-007)",
     };
 
@@ -72,7 +73,7 @@ public sealed class GeneratedSecurityTests : IClassFixture<ApiFactory>, IAsyncLi
         Guid PriceList, Guid DiscountRule, Guid Sale, Guid Count, Guid Supplier, Guid Period, Guid IntegrationKey, Guid SettlementImport, Guid Account)
     {
         /// <summary>A path value: ids from the fixture; a line number is a position inside the sale (line 1 exists).</summary>
-        public string Path(string param) => param is "lineNo" or "seq" ? "1" : param == "category" ? "Notifications" : Id(param).ToString();
+        public string Path(string param) => param is "lineNo" or "seq" ? "1" : param == "category" ? "Notifications" : param == "code" ? "receipt" : Id(param).ToString();
 
         public Guid Id(string param) => param switch
         {

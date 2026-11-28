@@ -602,6 +602,9 @@ schema("LegalHold", tenantId="uuid", category=("enum", RETENTION_CATEGORIES), re
 schema("StoreRetention", category=("enum", RETENTION_CATEGORIES), minimumDays="int", defaultDays="int", overrideDays="int?", effectiveDays="int",
        legalHold="bool", holdReason="str?", holdUntil="dt?")
 schema("RetentionDaysInput", days="int")
+schema("SmsTemplate", code=("enum", ["receipt", "due-reminder"]), version=("desc", "int", "0 = the store never changed it"), platformText="str",
+       storeName="str?", signature="str?", preview="str")
+schema("SmsTemplateInput", expectedVersion="int", **{"storeName?": "str", "signature?": "str"})
 schema("RetentionRun", category=("enum", RETENTION_CATEGORIES), outcome=("enum", ["Purged", "Held"]), cutoff="dt", deletedRows="int", ranAt="dt")
 schema("IndustryProfile", code="str", name="str", receiptTemplateVersion="str", version="int", lockedFields=["str"], legalText="str",
        reason="str", publishedAt="dt")
@@ -876,6 +879,12 @@ op("delete", "/settings/retention/{category}", "clearRetention", "Tenant", "با
    no_content=True, reqs=["TEN-005.1", "BR-087"], audited=True)
 op("get", "/settings/retention/runs", "listRetentionRuns", "Tenant", "اجراهای اخیر Job نگهداری (حذف یا توقف با Legal Hold)", perm="tenant.settings.manage",
    scope="Tenant", resp="RetentionRun", list_of=True, reqs=["TEN-005.1"])
+op("get", "/settings/notification-templates", "listNotificationTemplates", "Tenant", "متن پیامک‌ها و بخش‌های قابل تغییر فروشگاه", perm="tenant.settings.manage",
+   scope="Tenant", resp="SmsTemplate", list_of=True, reqs=["NOT-009"])
+op("put", "/settings/notification-templates/{code}", "updateNotificationTemplate", "Tenant", "نام فروشگاه و امضای پیامک (نسخه‌ی بعدی)",
+   perm="tenant.settings.manage", scope="Tenant", body="SmsTemplateInput", resp="SmsTemplate", reqs=["NOT-009"], audited=True,
+   desc="Only the name the store signs with (30 characters) and a closing signature (40); a single line, no links. The text itself is the "
+        "platform's. Each change is the next version (409 version-conflict if two people save at once); the Workers use the newest.")
 op("get", "/branches", "listBranches", "Tenant", "فهرست شعب مجاز کاربر", resp="Branch", list_of=True, reqs=["TEN-002"])
 op("post", "/branches", "createBranch", "Tenant", "ایجاد شعبه", perm="tenant.settings.manage", scope="Tenant",
    body="BranchCreate", resp="Branch", resp_code="201", reqs=["TEN-002"], audited=True, conflict=True,

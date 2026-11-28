@@ -417,6 +417,98 @@ paths:
       x-idempotent: false
       x-requirements:
       - TEN-005.1
+  /settings/notification-templates:
+    get:
+      operationId: listNotificationTemplates
+      tags:
+      - Tenant
+      summary: متن پیامک‌ها و بخش‌های قابل تغییر فروشگاه
+      security: *id001
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - items
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SmsTemplate'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: tenant.settings.manage
+      x-scope: Tenant
+      x-idempotent: false
+      x-requirements:
+      - NOT-009
+  /settings/notification-templates/{code}:
+    put:
+      operationId: updateNotificationTemplate
+      tags:
+      - Tenant
+      summary: نام فروشگاه و امضای پیامک (نسخه‌ی بعدی)
+      description: Only the name the store signs with (30 characters) and a closing signature (40); a single line, no links.
+        The text itself is the platform's. Each change is the next version (409 version-conflict if two people save at once);
+        the Workers use the newest.
+      security: *id001
+      parameters:
+      - name: code
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SmsTemplateInput'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SmsTemplate'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: tenant.settings.manage
+      x-scope: Tenant
+      x-idempotent: false
+      x-requirements:
+      - NOT-009
+      x-audited: true
   /branches:
     get:
       operationId: listBranches
@@ -14442,6 +14534,51 @@ components:
           format: uuid
       required:
       - branchId
+    SmsTemplate:
+      type: object
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          enum:
+          - receipt
+          - due-reminder
+        version:
+          type: integer
+          format: int32
+          description: 0 = the store never changed it
+        platformText:
+          type: string
+        storeName:
+          type:
+          - string
+          - 'null'
+        signature:
+          type:
+          - string
+          - 'null'
+        preview:
+          type: string
+      required:
+      - code
+      - version
+      - platformText
+      - storeName
+      - signature
+      - preview
+    SmsTemplateInput:
+      type: object
+      additionalProperties: false
+      properties:
+        expectedVersion:
+          type: integer
+          format: int32
+        storeName:
+          type: string
+        signature:
+          type: string
+      required:
+      - expectedVersion
     SourceRef:
       type: object
       additionalProperties: false

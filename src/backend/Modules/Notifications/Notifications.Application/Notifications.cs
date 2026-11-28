@@ -84,5 +84,84 @@ public static class NotificationTemplates
         return t.Fields.Aggregate(t.Text, (text, f) => text.Replace("{" + f + "}", payload[f], StringComparison.Ordinal));
     }
 
+    /// <summary>The text with the store's own name and closing signature (NOT-009); null as <see cref="Render(string,int,IReadOnlyDictionary{string,string})"/>.</summary>
+    public static string? Render(string code, int version, IReadOnlyDictionary<string, string> payload, TemplateOverride? custom)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        if (custom is null || (custom.StoreName is null && custom.Signature is null))
+        {
+            return Render(code, version, payload);
+        }
+
+        var fields = new Dictionary<string, string>(payload, StringComparer.Ordinal);
+        if (custom.StoreName is not null && fields.ContainsKey("storeName"))
+        {
+            fields["storeName"] = custom.StoreName;
+        }
+
+        string? text = Render(code, version, fields);
+        return text is null || custom.Signature is null ? text : text + " " + custom.Signature;
+    }
+
+    /// <summary>The platform's text of a template (its fields in braces), for the store to see what it personalises.</summary>
+    public static string? Text(string code, int version) => All.TryGetValue((code, version), out var t) ? t.Text : null;
+
     public static string Amount(long rial) => rial.ToString("#,0", CultureInfo.InvariantCulture);
+}
+
+/// <summary>NOT-009: the only parts of an SMS text a store may change: the name it signs with and a closing signature.</summary>
+public sealed record TemplateOverride(string? StoreName, string? Signature);
+
+public sealed record TemplateOverrideView(string Code, int Version, string? StoreName, string? Signature, DateTimeOffset? CreatedAt);
+
+public enum TemplateChange
+{
+    Done,
+    VersionConflict,
+    NotFound,
+}
+
+public interface ITemplateOverrides
+{
+    /// <summary>The newest version of each customisable template (version 0 = never changed).</summary>
+    Task<IReadOnlyList<TemplateOverrideView>> LatestAsync(IUnitOfWorkScope scope, CancellationToken cancellationToken);
+
+    /// <summary>Publishes version <paramref name="expectedVersion"/> + 1; a concurrent publish of the same number loses.</summary>
+    Task<(TemplateChange Outcome, TemplateOverrideView? Current)> PublishAsync(IUnitOfWorkScope scope, string code, int expectedVersion,
+        string? storeName, string? signature, Guid userId, CancellationToken cancellationToken);
+}
+
+public static class SmsTextRules
+{
+    public static readonly IReadOnlyList<string> Codes = ["receipt", "due-reminder"];
+
+    /// <summary>The first problem, as <c>field: message</c>, or null. An SMS line refuses links in a store's own words (a link is the platform's).</summary>
+    public static string? Problem(string? storeName, string? signature)
+    {
+        foreach ((string field, string? v, int max) in new[] { ("storeName", storeName, 30), ("signature", signature, 40) })
+        {
+            if (v is null)
+            {
+                continue;
+            }
+
+            if (v.Trim().Length < 1 || v.Trim().Length > max || v.Any(char.IsControl))
+            {
+                return $"{field}: 1-{max} characters on one line";
+            }
+
+            if (v.Contains("http", StringComparison.OrdinalIgnoreCase) || v.Contains("www.", StringComparison.OrdinalIgnoreCase))
+            {
+                return $"{field}: links are not allowed";
+            }
+        }
+
+        return storeName is null && signature is null ? "storeName: a name or a signature is required" : null;
+    }
+}
+
+/// <summary>NOT-001: the SMS adapter asks for the phone number only at send time (DI-064); null = no number is known.</summary>
+public interface IRecipientAddressResolver
+{
+    Task<string?> ResolveAsync(Guid tenantId, string recipientRef, CancellationToken cancellationToken);
 }

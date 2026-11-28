@@ -157,13 +157,24 @@ public sealed partial class NotificationDispatcher(IUnitOfWork unitOfWork, IEnum
             }
         }
 
+        var custom = new Dictionary<string, TemplateOverride>(StringComparer.Ordinal);
+        await using (NpgsqlCommand ov = s.Command(
+                         "SELECT DISTINCT ON (template_code) template_code, store_name, signature FROM notif.template_override ORDER BY template_code, version DESC"))
+        await using (NpgsqlDataReader r = await ov.ExecuteReaderAsync(ct))
+        {
+            while (await r.ReadAsync(ct))
+            {
+                custom[r.GetString(0)] = new TemplateOverride(r.IsDBNull(1) ? null : r.GetString(1), r.IsDBNull(2) ? null : r.GetString(2));
+            }
+        }
+
         var claims = new List<Claim>();
         foreach (var n in due)
         {
             int attempt = n.Attempts + 1;
             string key = $"{n.Id}:{n.Channel}:{attempt}";
             string? text = NotificationTemplates.Render(n.Code, n.Version,
-                JsonSerializer.Deserialize<Dictionary<string, string>>(n.Payload) ?? []);
+                JsonSerializer.Deserialize<Dictionary<string, string>>(n.Payload) ?? [], custom.GetValueOrDefault(n.Code));
             await Exec(s, "UPDATE notif.notification SET status = 'Sending', attempts = $2 WHERE id = $1", ct, n.Id, attempt);
             await Exec(s, "INSERT INTO notif.notification_attempt (tenant_id, notification_id, attempt_no, idempotency_key) VALUES (core.current_tenant(), $1, $2, $3)",
                 ct, n.Id, attempt, key);

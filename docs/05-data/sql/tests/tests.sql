@@ -1015,4 +1015,22 @@ SELECT t.expect_error('T277 a run record is never rewritten', '42501', $$UPDATE 
 RESET ROLE;
 SELECT set_config('app.tenant_id', '', false);
 
+-- US-152 SMS template overrides (NOT-009)
+SET ROLE rc_app;
+SELECT set_config('app.tenant_id', :A, false);
+INSERT INTO notif.template_override (tenant_id, template_code, version, store_name, signature, created_by)
+  VALUES (:A, 'receipt', 1, 'فروشگاه الف', 'با تشکر', gen_random_uuid());
+SELECT t.expect_error('T278 an override is a new version, never an edit', '42501',
+  $$UPDATE notif.template_override SET store_name = 'x' WHERE version = 1$$);
+SELECT t.expect_error('T279 only the receipt and reminder texts can be personalised', '23514',
+  format($$INSERT INTO notif.template_override (tenant_id, template_code, version, store_name, created_by) VALUES (%L, 'internal', 1, 'x', gen_random_uuid())$$, :A));
+SELECT t.expect_error('T280 the signed name is short and a single line', '23514',
+  format($$INSERT INTO notif.template_override (tenant_id, template_code, version, store_name, created_by) VALUES (%L, 'receipt', 2, %L, gen_random_uuid())$$, :A, 'ا' || chr(10) || 'ب'));
+SELECT t.expect_error('T281 a version number is used once', '23505',
+  format($$INSERT INTO notif.template_override (tenant_id, template_code, version, store_name, created_by) VALUES (%L, 'receipt', 1, 'دیگر', gen_random_uuid())$$, :A));
+SELECT set_config('app.tenant_id', :B, false);
+SELECT t.ok('T282 another store sees none of it (RLS)', (SELECT count(*) FROM notif.template_override) = 0);
+RESET ROLE;
+SELECT set_config('app.tenant_id', '', false);
+
 \echo '== ALL CHECKS PASSED'
