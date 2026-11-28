@@ -162,6 +162,43 @@ public static class SaleCostRule
     };
 }
 
+/// <summary>
+/// D08 J4 / PAY-002.2 (D-59): the bank's settlement of standalone terminal payments. CardInTransit is credited with the gross
+/// the matched lines settle; Bank is debited with what arrived (gross less fees) and BankFees with what the bank kept. Version 1.
+/// </summary>
+public static class CardSettlementRule
+{
+    public const int Version = 1;
+
+    public static PostingDraft? For(Guid importId, long gross, long fees, DateTimeOffset at, string description)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(gross);
+        if (fees < 0 || fees > gross)
+        {
+            throw new ArgumentOutOfRangeException(nameof(fees), "the fees are part of the gross");
+        }
+
+        if (gross == 0)
+        {
+            return null;
+        }
+
+        var lines = new List<RoleLine>();
+        if (gross > fees)
+        {
+            lines.Add(new RoleLine("Bank", gross - fees, 0));
+        }
+
+        if (fees > 0)
+        {
+            lines.Add(new RoleLine("BankFees", fees, 0));
+        }
+
+        lines.Add(new RoleLine("CardInTransit", 0, gross));
+        return new PostingDraft("SettlementImport", importId, "card-settlement", Version, at, description, lines);
+    }
+}
+
 /// <summary>PRC-003: a payment to a supplier debits TradePayables (detail Supplier) and credits CashOnHand or Bank. Version 1.</summary>
 public static class SupplierPaymentRule
 {

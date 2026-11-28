@@ -126,6 +126,9 @@ public interface ISales
     /// <summary>The store's most recently active sales, newest first (IAM-008: what a support session may look at).</summary>
     Task<IReadOnlyList<SaleView>> RecentAsync(IUnitOfWorkScope scope, int limit, CancellationToken cancellationToken);
 
+    /// <summary>PAY-002.2: which of these sales are finalized, with their invoice numbers (a settlement only clears a booked sale).</summary>
+    Task<IReadOnlyDictionary<Guid, string>> FinalizedInvoicesAsync(IUnitOfWorkScope scope, IReadOnlyCollection<Guid> saleIds, CancellationToken cancellationToken);
+
     /// <summary>SAL-006: applies a payment to the locked bill (the database refuses more than the total, RC027); bumps the version.</summary>
     Task<SaleView> AddTenderAsync(IUnitOfWorkScope scope, Guid saleId, string method, long amount, Guid? paymentId, CancellationToken cancellationToken);
 }

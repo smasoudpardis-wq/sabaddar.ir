@@ -463,6 +463,30 @@ SELECT t.expect_error('T207 a card reference is taken once per bank terminal and
 INSERT INTO pay.payment (tenant_id, id, method, status, amount, reference_no, terminal_no, business_date, recorded_by, override_approval_id)
   VALUES (core.current_tenant(), gen_random_uuid(), 'ExternalCardTerminal', 'ConfirmedManual', 400, '123456789012', '8899', '2026-11-24', gen_random_uuid(), gen_random_uuid());
 SELECT t.ok('T208 a manager-approved override may repeat it; another day or terminal is a different reference', true);
+-- US-105 / PAY-002.2 settlement imports
+INSERT INTO pay.payment (tenant_id, id, method, status, amount, reference_no, terminal_no, business_date, recorded_by)
+  VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-0000000000b1', 'ExternalCardTerminal', 'ConfirmedManual', 600000, '777788889999', '8899', '2026-11-24', gen_random_uuid());
+INSERT INTO pay.settlement_import (tenant_id, id, file_name, file_sha256, line_count, matched_count, matched_amount, fees, journal_entry_id, imported_by)
+  VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-0000000000b2', 'settle.csv', sha256('one'), 2, 1, 600000, 3000, gen_random_uuid(), gen_random_uuid());
+INSERT INTO pay.settlement_line (tenant_id, import_id, line_no, terminal_no, reference_no, transaction_date, amount, fee, outcome, payment_id)
+  VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-0000000000b2', 1, '8899', '777788889999', '2026-11-24', 600000, 3000, 'Matched', 'a0000000-0000-0000-0000-0000000000b1'),
+         (core.current_tenant(), 'a0000000-0000-0000-0000-0000000000b2', 2, '8899', '111122223333', '2026-11-24', 5000, 0, 'NotFound', NULL);
+SELECT t.expect_error('T259 a payment is settled once, whichever file brings it (PAY-002.2)', '23505',
+  $$INSERT INTO pay.settlement_import (tenant_id, id, file_name, file_sha256, line_count, matched_count, matched_amount, fees, journal_entry_id, imported_by)
+      VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-0000000000b3', 'again.csv', sha256('two'), 1, 1, 600000, 0, gen_random_uuid(), gen_random_uuid())$$,
+  $$INSERT INTO pay.settlement_line (tenant_id, import_id, line_no, reference_no, transaction_date, amount, outcome, payment_id)
+      VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-0000000000b3', 1, '777788889999', '2026-11-24', 600000, 'Matched', 'a0000000-0000-0000-0000-0000000000b1')$$);
+SELECT t.expect_error('T260 the same settlement file is not imported twice', '23505',
+  $$INSERT INTO pay.settlement_import (tenant_id, id, file_name, file_sha256, line_count, matched_count, matched_amount, fees, imported_by)
+      VALUES (core.current_tenant(), gen_random_uuid(), 'copy.csv', sha256('one'), 1, 0, 0, 0, gen_random_uuid())$$);
+SELECT t.expect_error('T261 an import with matched lines always carries its journal entry (J4)', '23514',
+  $$INSERT INTO pay.settlement_import (tenant_id, id, file_name, file_sha256, line_count, matched_count, matched_amount, fees, imported_by)
+      VALUES (core.current_tenant(), gen_random_uuid(), 'x.csv', sha256('three'), 1, 1, 1000, 0, gen_random_uuid())$$);
+SELECT t.expect_error('T262 a settlement line is never rewritten (append-only)', '42501',
+  $$UPDATE pay.settlement_line SET outcome = 'Matched' WHERE line_no = 2 AND import_id = 'a0000000-0000-0000-0000-0000000000b2'$$);
+SELECT t.expect_error('T263 a not-found line points at no payment', '23514',
+  $$INSERT INTO pay.settlement_line (tenant_id, import_id, line_no, reference_no, transaction_date, amount, outcome, payment_id)
+      VALUES (core.current_tenant(), 'a0000000-0000-0000-0000-0000000000b2', 3, '444455556666', '2026-11-24', 10, 'NotFound', 'a0000000-0000-0000-0000-0000000000b1')$$);
 SELECT t.expect_error('T209 cash records what was handed over and the change from it (SAL-006.1)', '23514',
   $$INSERT INTO pay.payment (tenant_id, id, method, status, amount, tendered, change_given, business_date, recorded_by)
     VALUES (core.current_tenant(), gen_random_uuid(), 'Cash', 'ConfirmedCash', 400, 1000, 500, '2026-11-24', gen_random_uuid())$$);

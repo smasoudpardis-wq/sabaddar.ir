@@ -238,6 +238,28 @@ public sealed class PostgresSales : ISales
         return await ReadSalesAsync((PostgresUnitOfWorkScope)scope, "true ORDER BY last_activity_at DESC, id DESC LIMIT $1", limit, cancellationToken);
     }
 
+    public async Task<IReadOnlyDictionary<Guid, string>> FinalizedInvoicesAsync(IUnitOfWorkScope scope, IReadOnlyCollection<Guid> saleIds,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(saleIds);
+        var found = new Dictionary<Guid, string>();
+        if (saleIds.Count == 0)
+        {
+            return found;
+        }
+
+        await using NpgsqlCommand cmd = ((PostgresUnitOfWorkScope)scope).Command(
+            "SELECT id, invoice_no FROM sales.sale WHERE id = ANY($1) AND status = 'Finalized' AND invoice_no IS NOT NULL");
+        cmd.Parameters.Add(new NpgsqlParameter { Value = saleIds.ToArray() });
+        await using NpgsqlDataReader r = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await r.ReadAsync(cancellationToken))
+        {
+            found[r.GetGuid(0)] = r.GetString(1);
+        }
+
+        return found;
+    }
+
     private async Task<SaleView> SetAsync(PostgresUnitOfWorkScope s, Guid saleId, string set, object?[] args, CancellationToken ct)
     {
         await using (NpgsqlCommand cmd = s.Command($"UPDATE sales.sale SET {set}, version = version + 1, last_activity_at = now() WHERE id = $1"))

@@ -52,6 +52,7 @@ builder.Services.AddSingleton<IStockTransfers, RetailCloud.Inventory.Infrastruct
 builder.Services.AddSingleton<ICounts, RetailCloud.Inventory.Infrastructure.PostgresCounts>();
 builder.Services.AddSingleton<ISales, PostgresSales>();
 builder.Services.AddSingleton<RetailCloud.Payments.Application.IPayments, RetailCloud.Payments.Infrastructure.PostgresPayments>();
+builder.Services.AddSingleton<ISettlements, RetailCloud.Payments.Infrastructure.PostgresSettlements>();
 builder.Services.AddSingleton<IShifts, PostgresShifts>();
 builder.Services.AddSingleton<IJournals, PostgresJournals>();
 ObjectStorageOptions? storage = builder.Configuration.GetSection("Storage").Get<ObjectStorageOptions>();
@@ -2280,6 +2281,132 @@ v1.MapIdempotentPost<SupplierPaymentInput>("/suppliers/{supplierId:guid}/payment
     })
     .RequirePermission(Permissions.AccountingJournalPost);
 
+// US-105 / PAY-002.2 / AB-14: the bank's settlement file against the standalone terminal's payments (D08 J4)
+object SettlementImportJson(SettlementImportView v) => new
+{
+    v.Id, v.FileName, v.LineCount, v.MatchedCount, matchedAmount = Rial(v.MatchedAmount), fees = Rial(v.Fees),
+    deposited = Rial(v.MatchedAmount - v.Fees), v.JournalEntryId, v.ImportedBy, v.ImportedAt,
+    outcomes = v.Lines?.GroupBy(l => l.Outcome.ToString()).ToDictionary(g => g.Key, g => g.Count()),
+    lines = v.Lines?.Select(l => new
+    {
+        l.Line.LineNo, l.Line.TerminalNo, l.Line.ReferenceNo, transactionDate = l.Line.TransactionDate, amount = Rial(l.Line.Amount), fee = Rial(l.Line.Fee),
+        outcome = l.Outcome.ToString(), l.PaymentId,
+    }),
+};
+
+async Task<DateOnly> StoreTodayAsync(HttpContext http, RequestContext ctx, CancellationToken ct)
+{
+    TenantProfile profile = (await http.RequestServices.GetRequiredService<ITenantProfileQuery>().GetAsync(ctx.ActiveTenant!.Value, ct))!;
+    DateTimeOffset now = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
+    return DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(now, TimeZoneInfo.FindSystemTimeZoneById(profile.TimeZone)).DateTime);
+}
+
+v1.MapIdempotentPost<SettlementImportInput>("/settlements/imports", "payments.import-settlement", async (body, scope, http, ct) =>
+    {
+        RequestContext ctx = http.RequestServices.GetRequiredService<RequestContext>();
+        var errors = new Dictionary<string, string[]>();
+        string? fileName = body.FileName?.Trim();
+        if (fileName is not { Length: >= 1 and <= 200 }) errors["fileName"] = ["1-200 characters"];
+        if (string.IsNullOrEmpty(body.Content)) errors["content"] = ["required: the CSV text"];
+        else if (System.Text.Encoding.UTF8.GetByteCount(body.Content) > SettlementCsv.MaxBytes) errors["content"] = [$"at most {SettlementCsv.MaxBytes} bytes"];
+        if (errors.Count > 0) return CommandResult.Fail(Problems.Validation(http, errors));
+
+        (IReadOnlyList<SettlementLine> rows, IReadOnlyList<SettlementRowError> rowErrors) = SettlementCsv.Parse(body.Content!);
+        if (rowErrors.Count > 0)
+        {
+            return CommandResult.Fail(Problems.WithContext(http, StatusCodes.Status400BadRequest, "invalid-settlement-file",
+                "The settlement file could not be read; nothing was imported", new { rows = rowErrors.Select(e => new { e.Line, e.Field, e.Message }) }));
+        }
+
+        ISettlements settlements = http.RequestServices.GetRequiredService<ISettlements>();
+        await settlements.LockAsync(scope, ct);
+        byte[] sha = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(body.Content!.Replace("\r\n", "\n", StringComparison.Ordinal)));
+        if (await settlements.FindByFileAsync(scope, sha, ct) is { } earlier)
+        {
+            return CommandResult.Fail(Problems.WithContext(http, StatusCodes.Status409Conflict, "already-imported", "This file was imported before",
+                new { importId = earlier }));
+        }
+
+        IReadOnlyList<SettlementCandidate> candidates = await settlements.CandidatesAsync(scope, [.. rows.Select(r => r.ReferenceNo)], ct);
+        IReadOnlyDictionary<Guid, string> finalized = await http.RequestServices.GetRequiredService<ISales>()
+            .FinalizedInvoicesAsync(scope, [.. candidates.Where(c => c.SaleId is not null).Select(c => c.SaleId!.Value).Distinct()], ct);
+        IReadOnlyList<SettlementMatch> matches = SettlementMatcher.Match(rows, candidates, finalized.Keys.ToHashSet());
+        (int matched, long gross, long fees) = SettlementMatcher.Totals(matches);
+
+        Guid id = Guid.CreateVersion7();
+        DateTimeOffset now = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow();
+        Guid? journalId = null;
+        if (CardSettlementRule.For(id, gross, fees, now, $"تسویه کارتخوان: {fileName} ({matched} تراکنش)") is { } draft)
+        {
+            AccountingResult<JournalView> entry = await http.RequestServices.GetRequiredService<IJournals>().PostAutomaticAsync(scope, draft, ct);
+            if (entry.Outcome != AccountingOutcome.Done) return CommandResult.Fail(AutomaticEntryProblem(http, entry));
+            journalId = entry.Value!.Id;
+        }
+
+        SettlementImportView imported = await settlements.RecordAsync(scope, id, fileName!, sha, matches, journalId, ctx.User!.Value.Value, ct);
+        await Audit(http, scope, ActorOf(ctx, http), new AuditEntry("payments.settlement.imported", "SettlementImport", id.ToString(), null, new
+        {
+            fileName, lines = rows.Count, matched, gross, fees, journalId,
+            outcomes = matches.GroupBy(m => m.Outcome.ToString()).ToDictionary(g => g.Key, g => g.Count()),
+        }), ct);
+        return CommandResult.Created(SettlementImportJson(imported));
+    })
+    .RequirePermission(Permissions.AccountingJournalPost);
+
+v1.MapGet("/settlements/imports", async (RequestContext ctx, IUnitOfWork uow, ISettlements settlements, CancellationToken ct) =>
+    {
+        IReadOnlyList<SettlementImportView> rows = await uow.ExecuteAsync(ctx, (s, c) => settlements.RecentAsync(s, 50, c), ct);
+        return Results.Ok(new { items = rows.Select(SettlementImportJson) });
+    })
+    .RequirePermission(Permissions.AccountingRead);
+
+v1.MapGet("/settlements/imports/{importId:guid}", async (Guid importId, RequestContext ctx, IUnitOfWork uow, ISettlements settlements, HttpContext http,
+        CancellationToken ct) =>
+    {
+        SettlementImportView? v = await uow.ExecuteAsync(ctx, (s, c) => settlements.GetAsync(s, importId, c), ct);
+        return v is null ? Problems.NotFound(http) : Results.Ok(SettlementImportJson(v));
+    })
+    .RequirePermission(Permissions.AccountingRead);
+
+// AB-14: «پرداخت دستی بدون تطبیق» — booked card payments no settlement has matched, per cashier
+v1.MapGet("/settlements/unreconciled-payments", async (RequestContext ctx, IUnitOfWork uow, HttpContext http, DateOnly? from, DateOnly? to, CancellationToken ct) =>
+    {
+        DateOnly until = to ?? await StoreTodayAsync(http, ctx, ct);
+        DateOnly since = from ?? until.AddDays(-30);
+        if (since > until || until.DayNumber - since.DayNumber > 92)
+        {
+            return Problems.Validation(http, new Dictionary<string, string[]> { ["query"] = ["from <= to, at most 92 days"] });
+        }
+
+        const int Cap = 2000;
+        var report = await uow.ExecuteAsync(ctx, async (s, c) =>
+        {
+            IReadOnlyList<UnreconciledPayment> open = await http.RequestServices.GetRequiredService<ISettlements>().UnreconciledAsync(s, since, until, Cap + 1, c);
+            IReadOnlyDictionary<Guid, string> invoices = await http.RequestServices.GetRequiredService<ISales>()
+                .FinalizedInvoicesAsync(s, [.. open.Where(p => p.SaleId is not null).Select(p => p.SaleId!.Value).Distinct()], c);
+            Dictionary<Guid, string> names = (await http.RequestServices.GetRequiredService<IUserAdministration>().ListAsync(s, c))
+                .ToDictionary(u => u.Id, u => u.DisplayName);
+            return (open, invoices, names);
+        }, ct);
+        bool truncated = report.open.Count > Cap;
+        UnreconciledPayment[] booked = [.. report.open.Take(Cap).Where(p => p.SaleId is { } id && report.invoices.ContainsKey(id))];
+        return Results.Ok(new
+        {
+            from = since, to = until, truncated,
+            total = new { count = booked.Length, amount = Rial(booked.Sum(p => p.Amount)) },
+            byCashier = booked.GroupBy(p => p.RecordedBy).OrderByDescending(g => g.Sum(p => p.Amount)).Select(g => new
+            {
+                cashierId = g.Key, displayName = report.names.GetValueOrDefault(g.Key), count = g.Count(), amount = Rial(g.Sum(p => p.Amount)),
+            }),
+            items = booked.Select(p => new
+            {
+                p.PaymentId, p.SaleId, invoiceNo = report.invoices[p.SaleId!.Value], p.ReferenceNo, p.TerminalNo, p.CardLast4, amount = Rial(p.Amount),
+                p.BusinessDate, cashierId = p.RecordedBy, cashierName = report.names.GetValueOrDefault(p.RecordedBy), p.RegisterId, p.RecordedAt,
+            }),
+        });
+    })
+    .RequirePermission(Permissions.AccountingRead);
+
 v1.MapIdempotentPost<PurchaseReturnInput>("/purchase-returns", "procurement.post-purchase-return", async (body, scope, http, ct) =>
     {
         RequestContext ctx = http.RequestServices.GetRequiredService<RequestContext>();
@@ -4383,6 +4510,7 @@ v1.MapDelete("/users/{userId:guid}/role-assignments/{assignmentId:guid}", async 
 await app.RunAsync();
 
 internal sealed record SelectTenant(Guid TenantId);
+internal sealed record SettlementImportInput(string? FileName, string? Content);
 internal sealed record UserUpdateInput(int? ExpectedVersion, string? Status, string? DisplayName);
 internal sealed record AccountCreateInput(string? Code, string? Name, string? AccountType, Guid? ParentId, bool? RequiresDetail);
 internal sealed record AccountMappingItem(string? Role, Guid? AccountId, Guid? BranchId);

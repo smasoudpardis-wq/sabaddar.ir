@@ -410,9 +410,27 @@ schema("PaymentIntent", id="uuid", saleId="uuid?", collectionFor="uuid?", amount
        paymentUrl="str?", expiresAt="dt", gateway="str", providerRef="str?")
 schema("RefundManualCompletion", reference="str", **{"note?": "str"})
 schema("Refund", id="uuid", amount="money", method="str", status=("enum", ["Requested", "Processing", "Completed", "Failed", "NeedsReview", "ManualCompleted"]))
-schema("SettlementImportCreate", gatewayOrTerminal="str", fileObjectKey="str", format=("enum", ["Csv"]))
-schema("SettlementImport", id="uuid", status=("enum", ["Processing", "Completed", "Failed"]), matched="int", unmatched="int",
-       amountDifference="money")
+schema("SettlementImportCreate",
+       fileName=("desc", "str", "1-200 characters; shown in the import list"),
+       content=("desc", "str", "The bank's settlement report as CSV text (UTF-8, at most 1 MiB, 5000 rows). First row names the columns "
+                "(English or Persian): reference_no, transaction_date, amount required; terminal_no, fee optional. Persian digits and "
+                "thousands separators accepted; dates ISO or Jalali (1405/09/03); amounts in rials (RQ-16)."))
+SETTLEMENT_OUTCOMES = ["Matched", "AmountMismatch", "NotFound", "Ambiguous", "AlreadySettled", "DuplicateInFile", "Unfinalized"]
+schema("SettlementLine", lineNo="int", terminalNo="str?", referenceNo="str", transactionDate="date", amount="money", fee="money",
+       outcome=("enum", SETTLEMENT_OUTCOMES),
+       paymentId=("desc", "uuid?", "The payment it settled (Matched) or resembles (AmountMismatch, Unfinalized)"))
+schema("SettlementImport", id="uuid", fileName="str", lineCount="int", matchedCount="int",
+       matchedAmount=("desc", "money", "Σ gross of the matched lines: what left CardInTransit (D08 J4)"),
+       fees=("desc", "money", "What the bank kept (BankFees)"), deposited=("desc", "money", "matchedAmount − fees (Bank)"),
+       journalEntryId=("desc", "uuid?", "The J4 entry; null when nothing matched"), importedBy="uuid", importedAt="dt",
+       **{"outcomes?": ("desc", "obj", "Count of lines per outcome (with the lines)"), "lines?": ["#SettlementLine"]})
+schema("UnreconciledPayment", paymentId="uuid", saleId="uuid", invoiceNo="str", referenceNo="str", terminalNo="str?", cardLast4="str?",
+       amount="money", businessDate="date", cashierId="uuid", cashierName="str?", registerId="uuid?", recordedAt="dt")
+schema("UnreconciledReport", **{"from": "date"}, to="date",
+       truncated=("desc", "bool", "More than 2000 open payments in the range: narrow it"),
+       total={"count": "int", "amount": "money"},
+       byCashier=[{"cashierId": "uuid", "displayName": "str?", "count": "int", "amount": "money"}],
+       items=["#UnreconciledPayment"])
 schema("GatewayConfigInput", gatewayType="str", displayName="str", credentials={"_desc": "Write-only; stored in OpenBao (PAY-005)",
                                                                                  "merchantId": "str", "terminalId?": "str", "secret?": "str"},
        enabled="bool")
@@ -679,6 +697,8 @@ ERROR_CATALOG = {
     "self-approval": (403, "The requester cannot approve their own request (SoD-01)"),
     "approval-expired": (409, "The pending request expired (10 minutes)"),
     "approval-not-pending": (409, "The request was already decided"),
+    "already-imported": (409, "This settlement file was imported before; context.importId (PAY-002.2)"),
+    "invalid-settlement-file": (400, "The settlement CSV has unreadable rows; nothing imported; context.rows[] (line, field, message)"),
     "duplicate-code": (409, "Branch code (per tenant), register code (per branch), product SKU (per tenant) or variant axis values (per product, DI-081) already used"),
 }
 
@@ -1182,9 +1202,25 @@ op("post", "/payment-gateways", "createGatewayConfig", "Payments", "افزودن
    reqs=["PAY-005", "ADR-012"], audited=True)
 op("post", "/refunds/{refundId}/manual-completion", "completeRefundManually", "Payments", "ثبت مرجع بازپرداخت دستی",
    perm="payments.refund", scope="Branch", idem=True, body="RefundManualCompletion", resp="Refund", reqs=["PAY-006"], audited=True)
-op("post", "/settlements/imports", "importSettlement", "Payments", "Import فایل تسویه برای تطبیق کارتخوان و درگاه",
-   perm="accounting.read", scope="Tenant", idem=True, body="SettlementImportCreate", resp="SettlementImport", resp_code="202",
-   reqs=["PAY-002.2", "AB-14"], audited=True)
+op("post", "/settlements/imports", "importSettlement", "Payments", "Import فایل تسویه کارتخوان و تطبیق با پرداخت‌ها",
+   perm="accounting.journal.post", scope="Tenant", idem=True, body="SettlementImportCreate", resp="SettlementImport", resp_code="201",
+   reqs=["PAY-002.2", "AB-14", "AT-083"], audited=True, conflict=True,
+   desc="Synchronous (MVP, US-105): each line settles the one open ConfirmedManual payment with its reference (same terminal when both "
+        "name one, business date within a day) and amount, on a finalized sale; every other line is kept with why. The matched gross "
+        "is posted in one entry (D08 J4: Bank and BankFees against CardInTransit). A file with any unreadable row imports nothing "
+        "(400 invalid-settlement-file, context.rows); the same file again is 409 already-imported (context.importId). "
+        "Online-gateway settlement follows with UC-08.")
+op("get", "/settlements/imports", "listSettlementImports", "Payments", "فایل‌های تسویه اخیر", perm="accounting.read", scope="Tenant",
+   resp="SettlementImport", list_of=True, reqs=["PAY-002.2"], desc="The 50 most recent imports, newest first, without their lines.")
+op("get", "/settlements/imports/{importId}", "getSettlementImport", "Payments", "یک فایل تسویه با سطرهایش", perm="accounting.read",
+   scope="Tenant", resp="SettlementImport", reqs=["PAY-002.2"])
+op("get", "/settlements/unreconciled-payments", "listUnreconciledPayments", "Payments", "پرداخت دستی بدون تطبیق (به تفکیک صندوق‌دار)",
+   perm="accounting.read", scope="Tenant", resp="UnreconciledReport", reqs=["PAY-002.2", "AB-14"],
+   params=[{"name": "from", "in": "query", "required": False, "schema": {"type": "string", "format": "date"},
+            "description": "Store-local business date; default 30 days before `to`"},
+           {"name": "to", "in": "query", "required": False, "schema": {"type": "string", "format": "date"},
+            "description": "Default the store's today; at most 92 days after `from`"}],
+   desc="Card-terminal payments of finalized sales that no settlement file has matched, oldest first, with totals per cashier.")
 
 # ---------------- Accounting
 tag("Accounting", "شجره حساب، سند، دوره و گزارش مالی (ACC)")

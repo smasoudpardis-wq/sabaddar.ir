@@ -792,6 +792,32 @@ try {
   const afterRevoke = await partnerGet('/catalog/products', partnerKey);
   check('IK03', 'a revoked key is refused at once (401 invalid-api-key)', afterRevoke.status() === 401, String(afterRevoke.status()));
   await shot(page, 'integrations');
+  // CS01–CS03 US-105: the card slip of V08 waits on the unreconciled report until the bank's settlement file settles it; the
+  // bank's fee is shown, a line no slip has is left aside, and the same file is not imported twice (PAY-002.2, AB-14, AT-083)
+  await page.goto(`${BFF}/card-settlements`);
+  await page.getByTestId('unreconciled-E2E558813').waitFor();
+  check('CS01', 'a finalized card slip no file settled is on the report, with its cashier; the voided one is not',
+    (await page.getByTestId('unreconciled-E2E558812').count()) === 0, (await page.getByTestId('unreconciled').textContent()) ?? '');
+  const today = new Date().toISOString().slice(0, 10);
+  const settlementCsv = `شماره پیگیری,تاریخ,مبلغ,کارمزد\nE2E558813,${today},"100,000",500\nE2E999999,${today},5000,0\n`;
+  const csvFile = { name: 'bank-settlement.csv', mimeType: 'text/csv', buffer: Buffer.from(settlementCsv, 'utf8') };
+  await page.getByTestId('settlement-file').setInputFiles(csvFile);
+  await page.getByTestId('settlement-submit').click();
+  await page.getByTestId('settlement-result').waitFor();
+  check('CS02', 'the matching slip is settled: 99,500 to the bank and 500 the bank\'s fee; the unknown line is left aside',
+    (await page.getByTestId('result-deposited').getAttribute('data-value')) === '99500'
+    && (await page.getByTestId('result-fees').getAttribute('data-value')) === '500'
+    && (await page.getByTestId('line-outcome-1').getAttribute('data-outcome')) === 'Matched'
+    && (await page.getByTestId('line-outcome-2').getAttribute('data-outcome')) === 'NotFound', (await page.getByTestId('settlement-result').textContent()) ?? '');
+  await page.getByTestId('import-bank-settlement.csv').waitFor();
+  for (let i = 0; i < 50 && (await page.getByTestId('unreconciled-E2E558813').count()) > 0; i++) await page.waitForTimeout(100);
+  const stillOpen = await page.getByTestId('unreconciled-E2E558813').count();
+  await page.getByTestId('settlement-file').setInputFiles(csvFile);
+  await page.getByTestId('settlement-submit').click();
+  await page.getByTestId('error').waitFor();
+  check('CS03', 'the settled slip leaves the report, and the same file again is refused',
+    stillOpen === 0 && ((await page.getByTestId('error').textContent()) ?? '').includes('قبلاً'), String(stillOpen));
+  await shot(page, 'card-settlements');
   await page.goto(BFF);
   await page.getByTestId('logout').waitFor();
 

@@ -1577,16 +1577,50 @@
   "operationId": "importSettlement",
   "method": "POST",
   "path": "/settlements/imports",
-  "permission": "accounting.read",
+  "permission": "accounting.journal.post",
   "allowedWhenReadOnly": false,
   "scope": "Tenant",
   "pathParams": [],
   "bodyProps": [
-   "fileObjectKey",
-   "format",
-   "gatewayOrTerminal"
+   "content",
+   "fileName"
   ],
   "idempotent": true
+ },
+ {
+  "operationId": "listSettlementImports",
+  "method": "GET",
+  "path": "/settlements/imports",
+  "permission": "accounting.read",
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
+ },
+ {
+  "operationId": "getSettlementImport",
+  "method": "GET",
+  "path": "/settlements/imports/{importId}",
+  "permission": "accounting.read",
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [
+   "importId"
+  ],
+  "bodyProps": null,
+  "idempotent": false
+ },
+ {
+  "operationId": "listUnreconciledPayments",
+  "method": "GET",
+  "path": "/settlements/unreconciled-payments",
+  "permission": "accounting.read",
+  "allowedWhenReadOnly": false,
+  "scope": "Tenant",
+  "pathParams": [],
+  "bodyProps": null,
+  "idempotent": false
  },
  {
   "operationId": "listAccounts",

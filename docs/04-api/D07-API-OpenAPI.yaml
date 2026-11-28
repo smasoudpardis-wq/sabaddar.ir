@@ -5410,7 +5410,12 @@ paths:
       operationId: importSettlement
       tags:
       - Payments
-      summary: Import فایل تسویه برای تطبیق کارتخوان و درگاه
+      summary: Import فایل تسویه کارتخوان و تطبیق با پرداخت‌ها
+      description: 'Synchronous (MVP, US-105): each line settles the one open ConfirmedManual payment with its reference (same
+        terminal when both name one, business date within a day) and amount, on a finalized sale; every other line is kept
+        with why. The matched gross is posted in one entry (D08 J4: Bank and BankFees against CardInTransit). A file with
+        any unreadable row imports nothing (400 invalid-settlement-file, context.rows); the same file again is 409 already-imported
+        (context.importId). Online-gateway settlement follows with UC-08.'
       security: *id001
       parameters:
       - $ref: '#/components/parameters/IdempotencyKey'
@@ -5421,7 +5426,7 @@ paths:
             schema:
               $ref: '#/components/schemas/SettlementImportCreate'
       responses:
-        '202':
+        '201':
           description: Success
           content:
             application/json:
@@ -5445,13 +5450,154 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
-      x-permission: accounting.read
+      x-permission: accounting.journal.post
       x-scope: Tenant
       x-idempotent: true
       x-requirements:
       - PAY-002.2
       - AB-14
+      - AT-083
       x-audited: true
+    get:
+      operationId: listSettlementImports
+      tags:
+      - Payments
+      summary: فایل‌های تسویه اخیر
+      description: The 50 most recent imports, newest first, without their lines.
+      security: *id001
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                - items
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SettlementImport'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: accounting.read
+      x-scope: Tenant
+      x-idempotent: false
+      x-requirements:
+      - PAY-002.2
+  /settlements/imports/{importId}:
+    get:
+      operationId: getSettlementImport
+      tags:
+      - Payments
+      summary: یک فایل تسویه با سطرهایش
+      security: *id001
+      parameters:
+      - name: importId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettlementImport'
+          headers:
+            ETag:
+              schema:
+                type: string
+              description: Weak ETag of version
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: accounting.read
+      x-scope: Tenant
+      x-idempotent: false
+      x-requirements:
+      - PAY-002.2
+  /settlements/unreconciled-payments:
+    get:
+      operationId: listUnreconciledPayments
+      tags:
+      - Payments
+      summary: پرداخت دستی بدون تطبیق (به تفکیک صندوق‌دار)
+      description: Card-terminal payments of finalized sales that no settlement file has matched, oldest first, with totals
+        per cashier.
+      security: *id001
+      parameters:
+      - name: from
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date
+        description: Store-local business date; default 30 days before `to`
+      - name: to
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date
+        description: Default the store's today; at most 92 days after `from`
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnreconciledReport'
+          headers:
+            ETag:
+              schema:
+                type: string
+              description: Weak ETag of version
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        default:
+          description: Unexpected error
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      x-permission: accounting.read
+      x-scope: Tenant
+      x-idempotent: false
+      x-requirements:
+      - PAY-002.2
+      - AB-14
   /accounting/accounts:
     get:
       operationId: listAccounts
@@ -13505,42 +13651,113 @@ components:
         id:
           type: string
           format: uuid
-        status:
+        fileName:
           type: string
-          enum:
-          - Processing
-          - Completed
-          - Failed
-        matched:
+        lineCount:
           type: integer
           format: int32
-        unmatched:
+        matchedCount:
           type: integer
           format: int32
-        amountDifference:
+        matchedAmount:
           $ref: '#/components/schemas/Money'
+          description: 'Σ gross of the matched lines: what left CardInTransit (D08 J4)'
+        fees:
+          $ref: '#/components/schemas/Money'
+          description: What the bank kept (BankFees)
+        deposited:
+          $ref: '#/components/schemas/Money'
+          description: matchedAmount − fees (Bank)
+        journalEntryId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: The J4 entry; null when nothing matched
+        importedBy:
+          type: string
+          format: uuid
+        importedAt:
+          type: string
+          format: date-time
+        outcomes:
+          type: object
+          description: Count of lines per outcome (with the lines)
+        lines:
+          type: array
+          items:
+            $ref: '#/components/schemas/SettlementLine'
       required:
       - id
-      - status
-      - matched
-      - unmatched
-      - amountDifference
+      - fileName
+      - lineCount
+      - matchedCount
+      - matchedAmount
+      - fees
+      - deposited
+      - journalEntryId
+      - importedBy
+      - importedAt
     SettlementImportCreate:
       type: object
       additionalProperties: false
       properties:
-        gatewayOrTerminal:
+        fileName:
           type: string
-        fileObjectKey:
+          description: 1-200 characters; shown in the import list
+        content:
           type: string
-        format:
+          description: 'The bank''s settlement report as CSV text (UTF-8, at most 1 MiB, 5000 rows). First row names the columns
+            (English or Persian): reference_no, transaction_date, amount required; terminal_no, fee optional. Persian digits
+            and thousands separators accepted; dates ISO or Jalali (1405/09/03); amounts in rials (RQ-16).'
+      required:
+      - fileName
+      - content
+    SettlementLine:
+      type: object
+      additionalProperties: false
+      properties:
+        lineNo:
+          type: integer
+          format: int32
+        terminalNo:
+          type:
+          - string
+          - 'null'
+        referenceNo:
+          type: string
+        transactionDate:
+          type: string
+          format: date
+        amount:
+          $ref: '#/components/schemas/Money'
+        fee:
+          $ref: '#/components/schemas/Money'
+        outcome:
           type: string
           enum:
-          - Csv
+          - Matched
+          - AmountMismatch
+          - NotFound
+          - Ambiguous
+          - AlreadySettled
+          - DuplicateInFile
+          - Unfinalized
+        paymentId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: The payment it settled (Matched) or resembles (AmountMismatch, Unfinalized)
       required:
-      - gatewayOrTerminal
-      - fileObjectKey
-      - format
+      - lineNo
+      - terminalNo
+      - referenceNo
+      - transactionDate
+      - amount
+      - fee
+      - outcome
+      - paymentId
     Shift:
       type: object
       additionalProperties: false
@@ -14901,6 +15118,120 @@ components:
       - periodCredit
       - closingDebit
       - closingCredit
+    UnreconciledPayment:
+      type: object
+      additionalProperties: false
+      properties:
+        paymentId:
+          type: string
+          format: uuid
+        saleId:
+          type: string
+          format: uuid
+        invoiceNo:
+          type: string
+        referenceNo:
+          type: string
+        terminalNo:
+          type:
+          - string
+          - 'null'
+        cardLast4:
+          type:
+          - string
+          - 'null'
+        amount:
+          $ref: '#/components/schemas/Money'
+        businessDate:
+          type: string
+          format: date
+        cashierId:
+          type: string
+          format: uuid
+        cashierName:
+          type:
+          - string
+          - 'null'
+        registerId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+        recordedAt:
+          type: string
+          format: date-time
+      required:
+      - paymentId
+      - saleId
+      - invoiceNo
+      - referenceNo
+      - terminalNo
+      - cardLast4
+      - amount
+      - businessDate
+      - cashierId
+      - cashierName
+      - registerId
+      - recordedAt
+    UnreconciledReport:
+      type: object
+      additionalProperties: false
+      properties:
+        from:
+          type: string
+          format: date
+        to:
+          type: string
+          format: date
+        truncated:
+          type: boolean
+          description: 'More than 2000 open payments in the range: narrow it'
+        total:
+          type: object
+          additionalProperties: false
+          properties:
+            count:
+              type: integer
+              format: int32
+            amount:
+              $ref: '#/components/schemas/Money'
+          required:
+          - count
+          - amount
+        byCashier:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              cashierId:
+                type: string
+                format: uuid
+              displayName:
+                type:
+                - string
+                - 'null'
+              count:
+                type: integer
+                format: int32
+              amount:
+                $ref: '#/components/schemas/Money'
+            required:
+            - cashierId
+            - displayName
+            - count
+            - amount
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/UnreconciledPayment'
+      required:
+      - from
+      - to
+      - truncated
+      - total
+      - byCashier
+      - items
     User:
       type: object
       additionalProperties: false
@@ -15387,6 +15718,12 @@ x-error-catalog:
   approval-not-pending:
     status: 409
     meaning: The request was already decided
+  already-imported:
+    status: 409
+    meaning: This settlement file was imported before; context.importId (PAY-002.2)
+  invalid-settlement-file:
+    status: 400
+    meaning: The settlement CSV has unreadable rows; nothing imported; context.rows[] (line, field, message)
   duplicate-code:
     status: 409
     meaning: Branch code (per tenant), register code (per branch), product SKU (per tenant) or variant axis values (per product,
