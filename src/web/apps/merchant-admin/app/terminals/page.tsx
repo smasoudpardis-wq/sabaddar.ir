@@ -61,7 +61,7 @@ export default function TerminalsPage() {
         ))}
       </ul>
       <h2>صدور کد جفت‌سازی (۱۰ دقیقه)</h2>
-      <select value={branchId} onChange={(e) => setBranchId(e.target.value)} name="branch">
+      <select aria-label="شعبه" value={branchId} onChange={(e) => setBranchId(e.target.value)} name="branch">
         {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
       </select>
       <button onClick={() => void issue()} data-testid="issue-code" style={{ minHeight: 44 }}>صدور کد</button>

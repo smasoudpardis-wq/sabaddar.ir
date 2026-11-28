@@ -146,7 +146,7 @@ export default function JournalsPage() {
               {j.status === 'Posted' && !j.reversalOf && (
                 <>
                   <input placeholder="دلیل برگشت" value={reason[j.id] ?? ''} onChange={(e) => setReason({ ...reason, [j.id]: e.target.value })}
-                    data-testid="journal-reason" />{' '}
+                    data-testid="journal-reason" aria-label="دلیل برگشت سند" />{' '}
                   <button type="button" style={{ minHeight: 44 }} data-testid="journal-reverse"
                     onClick={() => void call(`/bff/accounting/journals/${j.id}/reverse`, 'POST', { reason: (reason[j.id] ?? '').trim() })}>سند معکوس</button>
                 </>

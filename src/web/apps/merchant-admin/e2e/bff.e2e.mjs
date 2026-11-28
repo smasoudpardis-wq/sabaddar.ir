@@ -2,6 +2,7 @@
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
 import { createHmac } from 'node:crypto';
+import { auditInPage } from './a11y.mjs';
 const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
 const Redis = createRequire(`${process.env.APP_DIR}/package.json`)('ioredis');
@@ -900,6 +901,27 @@ try {
   const smsError = ((await page.getByTestId('sms-error').textContent()) ?? '');
   check('SM02', 'a link in the store\'s own words is refused', smsError.includes('بدون لینک'), smsError);
   await shot(page, 'sms-templates');
+  await page.goto(BFF);
+  await page.getByTestId('logout').waitFor();
+
+  // A11Y01 US-185 (NFR-UX-001/002): every page of the panel passes the DOM-decidable WCAG 2.2 A/AA rules (language and
+  // direction, title, one h1, landmarks, names for controls, labels, headers, target size, announced messages); phone width
+  const A11Y_PAGES = ['', 'products', 'branches', 'users', 'terminals', 'approvals', 'audit', 'support-access', 'sessions', 'discounts', 'weighted-barcodes',
+    'adjustments', 'counts', 'transfers', 'low-stock', 'journals', 'accounting-reports', 'card-settlements', 'settlements', 'reports', 'receipts',
+    'receipt-template', 'exports', 'integrations', 'retention', 'sms-templates', 'pos'];
+  await page.setViewportSize({ width: 390, height: 800 });
+  const violations = [];
+  for (const path of A11Y_PAGES) {
+    await page.goto(`${BFF}/${path}`);
+    await page.locator('h1').first().waitFor({ timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(400);
+    for (const v of await page.evaluate(auditInPage)) violations.push(`/${path}: ${v.rule} ${v.detail}`);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
+    if (overflow) violations.push(`/${path}: reflow the page scrolls sideways at 390 px (WCAG 1.4.10)`);
+  }
+  check('A11Y01', `all ${A11Y_PAGES.length} panel pages pass the accessibility rules at phone width`, violations.length === 0, violations.slice(0, 40).join(' | '));
+  if (violations.length) console.log('A11Y violations (' + violations.length + '):\n' + violations.join('\n'));
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto(BFF);
   await page.getByTestId('logout').waitFor();
 

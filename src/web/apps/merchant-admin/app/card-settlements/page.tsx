@@ -90,7 +90,7 @@ export default function CardSettlementsPage() {
       <h1>تسویه کارتخوان</h1>
       <p>فایل گزارش تسویه بانک (CSV) را وارد کنید. ستون‌های لازم: شماره مرجع، تاریخ و مبلغ (ریال)؛ شماره پایانه و کارمزد اختیاری‌اند.</p>
       <form onSubmit={(e) => void upload(e)} data-testid="settlement-form">
-        <input type="file" accept=".csv,text/csv,text/plain" required onChange={(e) => setFile(e.target.files?.[0] ?? null)} data-testid="settlement-file" />{' '}
+        <input type="file" aria-label="فایل تسویه بانک (CSV)" accept=".csv,text/csv,text/plain" required onChange={(e) => setFile(e.target.files?.[0] ?? null)} data-testid="settlement-file" />{' '}
         <button type="submit" disabled={busy || !file} style={{ minHeight: 44 }} data-testid="settlement-submit">ورود و تطبیق</button>
       </form>
       {error && <p role="alert" data-testid="error">{ERRORS[error] ?? MESSAGES[error] ?? error}</p>}
